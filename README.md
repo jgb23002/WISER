@@ -27,3 +27,5 @@ Schema: eventCode, stormCode, eventLength, County, ohLine, sumAFWA_TOTPRECIP, pe
 - **peakWSPD10:** wind speed peak hours
 
 - **sumAFWA_TOTPRECIP:** precipitation during storm (mm)
+
+![WISER Database Info](WISER%20Database%20Info.png)
