@@ -28,4 +28,4 @@ Schema: eventCode, stormCode, eventLength, County, ohLine, sumAFWA_TOTPRECIP, pe
 
 - **sumAFWA_TOTPRECIP:** precipitation during storm (mm)
 
-![WISER Database Info](WISER%20Database%20Info.png)
+![WISER Database Info](database/schema_design/WISER%20Database%20Info.png)
