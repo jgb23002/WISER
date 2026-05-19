@@ -13,6 +13,7 @@ if str(SRC_DIR) not in sys.path:
 
 from wiser.agents.data_retrieval_processing_agent import DataRetrievalProcessingAgent
 from wiser.agents.storm_weather_analytics_agent import StormWeatherAnalyticsAgent
+from wiser.database import get_table_counts
 
 
 def main() -> None:
@@ -27,6 +28,11 @@ def main() -> None:
         default="data/normalized",
         help="Directory for normalized CSV outputs.",
     )
+    parser.add_argument(
+        "--db",
+        default="data/wiser.db",
+        help="SQLite database file to build from normalized data.",
+    )
     args = parser.parse_args()
 
     data_agent = DataRetrievalProcessingAgent(args.input)
@@ -34,6 +40,9 @@ def main() -> None:
 
     analytics_agent = StormWeatherAnalyticsAgent(data_agent)
     summary = analytics_agent.county_outage_summary()[:5]
+    conn = data_agent.build_database(args.db)
+    table_counts = get_table_counts(conn)
+    conn.close()
 
     print("Normalized files written:")
     print(f"  - {storm_path}")
@@ -47,6 +56,11 @@ def main() -> None:
             f"avg={row['avg_outage']}, peak={row['peak_outage']}, "
             f"storms={row['storms_observed']}"
         )
+    print()
+    print(f"SQLite database built: {args.db}")
+    print("Table counts:")
+    for table_name, count in table_counts.items():
+        print(f"  - {table_name}: {count}")
 
 
 if __name__ == "__main__":

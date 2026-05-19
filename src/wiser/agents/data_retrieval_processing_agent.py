@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import sqlite3
 
+from wiser.database import connect, initialize_schema, load_normalized_rows
 from wiser.data_pipeline import (
     load_raw_csv,
     normalize_rows,
@@ -32,3 +34,10 @@ class DataRetrievalProcessingAgent:
             output_path / "county.csv",
             output_path / "storm_county.csv",
         )
+
+    def build_database(self, db_path: str | Path) -> sqlite3.Connection:
+        storm_rows, county_rows, storm_county_rows = self.normalize()
+        conn = connect(db_path)
+        initialize_schema(conn)
+        load_normalized_rows(conn, storm_rows, county_rows, storm_county_rows)
+        return conn

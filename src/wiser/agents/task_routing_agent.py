@@ -25,6 +25,10 @@ class TaskRoutingAgent:
         "schema",
         "table",
         "database",
+        "db",
+        "sqlite",
+        "ingest",
+        "normalize",
     }
     ANALYTICS_KEYWORDS = {
         "analyze",
@@ -35,6 +39,9 @@ class TaskRoutingAgent:
         "weather",
         "compare",
         "trend",
+        "top",
+        "county",
+        "counties",
     }
 
     def route(self, query: str) -> RouteDecision:

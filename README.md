@@ -10,7 +10,7 @@ This repo contains your professor-provided WISER material plus an initial starte
 
 ## Current Branch
 
-Initial development branch: `jiyabh_initial_setup`
+Initial development branch: `jiya`
 
 ## Project Structure
 
@@ -18,10 +18,13 @@ Initial development branch: `jiyabh_initial_setup`
 .
 ├── scripts/
 │   └── bootstrap_wiser.py
+│   └── wiser_cli.py
 ├── sql/
 │   └── schema.sql
 ├── src/
 │   └── wiser/
+│       ├── database.py
+│       ├── query_engine.py
 │       ├── agents/
 │       │   ├── data_retrieval_processing_agent.py
 │       │   ├── storm_weather_analytics_agent.py
@@ -51,6 +54,21 @@ This generates normalized files:
 - `data/normalized/storm.csv`
 - `data/normalized/county.csv`
 - `data/normalized/storm_county.csv`
+
+And also builds:
+
+- `data/wiser.db` (SQLite)
+
+## Query CLI (Agent Routing Demo)
+
+Run natural-language queries through task routing + analytics:
+
+```bash
+python scripts/wiser_cli.py "top counties by outage" --limit 5
+python scripts/wiser_cli.py "top storms by outage" --limit 5
+python scripts/wiser_cli.py "history for county Hartford" --limit 5
+python scripts/wiser_cli.py "build sqlite database from csv"
+```
 
 ## Database Design
 
