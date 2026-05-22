@@ -5,7 +5,6 @@ import argparse
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
@@ -20,8 +19,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Bootstrap WISER starter artifacts.")
     parser.add_argument(
         "--input",
-        default="testdata.csv",
-        help="Path to raw WISER CSV (default: testdata.csv).",
+        default="data/testdata.csv",
+        help="Path to raw WISER CSV (default: data/testdata.csv).",
     )
     parser.add_argument(
         "--output-dir",
@@ -36,23 +35,27 @@ def main() -> None:
     args = parser.parse_args()
 
     data_agent = DataRetrievalProcessingAgent(args.input)
-    storm_path, county_path, storm_county_path = data_agent.save_normalized(args.output_dir)
-
-    analytics_agent = StormWeatherAnalyticsAgent(data_agent)
-    summary = analytics_agent.county_outage_summary()[:5]
-    conn = data_agent.build_database(args.db)
-    table_counts = get_table_counts(conn)
-    conn.close()
+    storm_path, county_path, weather_data_path = data_agent.save_normalized(
+        args.output_dir
+    )
 
     print("Normalized files written:")
     print(f"  - {storm_path}")
     print(f"  - {county_path}")
-    print(f"  - {storm_county_path}")
+    print(f"  - {weather_data_path}")
     print()
+
+    conn = data_agent.build_database(args.db)
+    table_counts = get_table_counts(conn)
+
+    analytics_agent = StormWeatherAnalyticsAgent(data_agent)
+    summary = analytics_agent.county_outage_summary_from_db(conn, limit=5)
+    conn.close()
+
     print("Top 5 counties by total outages:")
     for row in summary:
         print(
-            f"  - {row['County']}: total={row['total_outage']}, "
+            f"  - {row['county']}: total={row['total_outage']}, "
             f"avg={row['avg_outage']}, peak={row['peak_outage']}, "
             f"storms={row['storms_observed']}"
         )

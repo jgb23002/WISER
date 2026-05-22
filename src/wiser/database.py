@@ -15,25 +15,27 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         """
         PRAGMA foreign_keys = ON;
 
-        DROP TABLE IF EXISTS StormCounty;
+        DROP TABLE IF EXISTS WeatherData;
         DROP TABLE IF EXISTS County;
         DROP TABLE IF EXISTS Storm;
 
         CREATE TABLE Storm (
-            stormCode INTEGER PRIMARY KEY,
-            state TEXT NOT NULL,
-            eventDateTime TEXT NOT NULL,
-            eventLength INTEGER NOT NULL
+            stormCode BIGINT PRIMARY KEY,
+            eventDateTime TIMESTAMP NOT NULL,
+            eventLength INTEGER NOT NULL,
+            UNIQUE (eventDateTime),
+            CHECK (eventLength > 0)
         );
 
         CREATE TABLE County (
-            County TEXT PRIMARY KEY,
-            ohLine INTEGER NOT NULL
+            county VARCHAR(64) PRIMARY KEY,
+            ohLine BIGINT NOT NULL,
+            CHECK (ohLine > 0)
         );
 
-        CREATE TABLE StormCounty (
-            stormCode INTEGER NOT NULL,
-            County TEXT NOT NULL,
+        CREATE TABLE WeatherData (
+            stormCode BIGINT NOT NULL,
+            county VARCHAR(64) NOT NULL,
             sumAFWA_TOTPRECIP REAL NOT NULL,
             peakWSPD10 REAL NOT NULL,
             wgt5 INTEGER NOT NULL,
@@ -41,13 +43,21 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             wgt13 INTEGER NOT NULL,
             wgt18 INTEGER NOT NULL,
             outage INTEGER NOT NULL,
-            PRIMARY KEY (stormCode, County),
-            FOREIGN KEY (stormCode) REFERENCES Storm (stormCode),
-            FOREIGN KEY (County) REFERENCES County (County)
+            PRIMARY KEY (stormCode, county),
+            FOREIGN KEY (stormCode) REFERENCES Storm(stormCode),
+            FOREIGN KEY (county) REFERENCES County(county),
+            CHECK (sumAFWA_TOTPRECIP >= 0),
+            CHECK (peakWSPD10 > 0),
+            CHECK (wgt5 >= 0),
+            CHECK (wgt9 >= 0),
+            CHECK (wgt13 >= 0),
+            CHECK (wgt18 >= 0),
+            CHECK (outage >= 0)
         );
 
-        CREATE INDEX idx_storm_county_outage ON StormCounty(outage);
-        CREATE INDEX idx_storm_county_county ON StormCounty(County);
+        CREATE INDEX idx_weatherdata_outage ON WeatherData(outage DESC);
+        CREATE INDEX idx_weatherdata_county ON WeatherData(county);
+        CREATE INDEX idx_storm_datetime ON Storm(eventDateTime);
         """
     )
     conn.commit()
@@ -57,27 +67,27 @@ def load_normalized_rows(
     conn: sqlite3.Connection,
     storm_rows: list[dict[str, object]],
     county_rows: list[dict[str, object]],
-    storm_county_rows: list[dict[str, object]],
+    weather_data_rows: list[dict[str, object]],
 ) -> None:
     conn.executemany(
         """
-        INSERT INTO Storm(stormCode, state, eventDateTime, eventLength)
-        VALUES(:stormCode, :state, :eventDateTime, :eventLength)
+        INSERT INTO Storm(stormCode, eventDateTime, eventLength)
+        VALUES(:stormCode, :eventDateTime, :eventLength)
         """,
         storm_rows,
     )
     conn.executemany(
         """
-        INSERT INTO County(County, ohLine)
+        INSERT INTO County(county, ohLine)
         VALUES(:County, :ohLine)
         """,
         county_rows,
     )
     conn.executemany(
         """
-        INSERT INTO StormCounty(
+        INSERT INTO WeatherData(
             stormCode,
-            County,
+            county,
             sumAFWA_TOTPRECIP,
             peakWSPD10,
             wgt5,
@@ -97,14 +107,14 @@ def load_normalized_rows(
             :outage
         )
         """,
-        storm_county_rows,
+        weather_data_rows,
     )
     conn.commit()
 
 
 def get_table_counts(conn: sqlite3.Connection) -> dict[str, int]:
     result: dict[str, int] = {}
-    for table_name in ("Storm", "County", "StormCounty"):
+    for table_name in ("Storm", "County", "WeatherData"):
         count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
         result[table_name] = int(count)
     return result

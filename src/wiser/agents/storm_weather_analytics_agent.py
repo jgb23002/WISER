@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
-import sqlite3
 
 from wiser.agents.data_retrieval_processing_agent import DataRetrievalProcessingAgent
-from wiser.query_engine import county_storm_history, top_counties_by_outage, top_storms_by_outage
+from wiser.query_engine import (
+    county_storm_history,
+    top_counties_by_outage,
+    top_storms_by_outage,
+)
 
 
 @dataclass
@@ -13,7 +17,7 @@ class StormWeatherAnalyticsAgent:
     data_agent: DataRetrievalProcessingAgent
 
     def county_outage_summary(self) -> list[dict[str, object]]:
-        _, _, storm_county_rows = self.data_agent.normalize()
+        _, _, weather_data_rows = self.data_agent.normalize()
 
         stats: dict[str, dict[str, float]] = defaultdict(
             lambda: {
@@ -23,7 +27,7 @@ class StormWeatherAnalyticsAgent:
             }
         )
 
-        for row in storm_county_rows:
+        for row in weather_data_rows:
             county = str(row["County"])
             outage = float(row["outage"])
             stats[county]["storms_observed"] += 1
@@ -38,7 +42,7 @@ class StormWeatherAnalyticsAgent:
             peak_outage = int(values["peak_outage"])
             summary.append(
                 {
-                    "County": county,
+                    "county": county,
                     "storms_observed": storms_observed,
                     "total_outage": total_outage,
                     "avg_outage": avg_outage,
@@ -50,17 +54,17 @@ class StormWeatherAnalyticsAgent:
         return summary
 
     def top_storms_by_outage(self, limit: int = 10) -> list[dict[str, object]]:
-        storm_rows, _, storm_county_rows = self.data_agent.normalize()
+        storm_rows, _, weather_data_rows = self.data_agent.normalize()
 
         outage_by_storm: dict[int, int] = defaultdict(int)
-        for row in storm_county_rows:
+        for row in weather_data_rows:
             storm_code = int(row["stormCode"])
             outage_by_storm[storm_code] += int(row["outage"])
 
-        storm_lookup = {
-            int(row["stormCode"]): row for row in storm_rows
-        }
-        sorted_storms = sorted(outage_by_storm.items(), key=lambda item: item[1], reverse=True)[:limit]
+        storm_lookup = {int(row["stormCode"]): row for row in storm_rows}
+        sorted_storms = sorted(
+            outage_by_storm.items(), key=lambda item: item[1], reverse=True
+        )[:limit]
 
         results: list[dict[str, object]] = []
         for storm_code, total_outage in sorted_storms:
@@ -69,7 +73,6 @@ class StormWeatherAnalyticsAgent:
                 {
                     "stormCode": storm_code,
                     "total_outage": total_outage,
-                    "state": storm.get("state"),
                     "eventDateTime": storm.get("eventDateTime"),
                     "eventLength": storm.get("eventLength"),
                 }

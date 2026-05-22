@@ -20,12 +20,16 @@ EXPECTED_COLUMNS = [
 ]
 
 
-def parse_event_code(event_code: str) -> tuple[str, int, datetime]:
-    """Parse eventCode formatted like 'CT-YYYYMMDDHH'."""
-    state, raw_storm_code = event_code.split("-", maxsplit=1)
+def parse_event_code(event_code: str) -> tuple[int, datetime]:
+    """Parse eventCode formatted like 'CT-YYYYMMDDHH'.
+
+    Returns:
+        tuple: (storm_code, event_datetime)
+    """
+    _, raw_storm_code = event_code.split("-", maxsplit=1)
     storm_code = int(raw_storm_code)
     event_datetime = datetime.strptime(raw_storm_code, "%Y%m%d%H")
-    return state, storm_code, event_datetime
+    return storm_code, event_datetime
 
 
 def load_raw_csv(path: str | Path) -> list[dict[str, str]]:
@@ -44,15 +48,14 @@ def normalize_rows(
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
     storm_by_code: dict[int, dict[str, object]] = {}
     county_by_name: dict[str, dict[str, object]] = {}
-    storm_county_rows: list[dict[str, object]] = []
+    weather_data_rows: list[dict[str, object]] = []
 
     for row in rows:
-        state, storm_code, event_datetime = parse_event_code(row["eventCode"])
+        storm_code, event_datetime = parse_event_code(row["eventCode"])
         county = row["County"]
 
         storm_by_code[storm_code] = {
             "stormCode": storm_code,
-            "state": state,
             "eventDateTime": event_datetime.strftime("%Y-%m-%d %H:%M:%S"),
             "eventLength": int(row["eventLength"]),
         }
@@ -62,7 +65,7 @@ def normalize_rows(
             "ohLine": int(float(row["ohLine"])),
         }
 
-        storm_county_rows.append(
+        weather_data_rows.append(
             {
                 "stormCode": storm_code,
                 "County": county,
@@ -78,14 +81,16 @@ def normalize_rows(
 
     storm_rows = sorted(storm_by_code.values(), key=lambda item: int(item["stormCode"]))
     county_rows = sorted(county_by_name.values(), key=lambda item: str(item["County"]))
-    storm_county_rows.sort(key=lambda item: (int(item["stormCode"]), str(item["County"])))
-    return storm_rows, county_rows, storm_county_rows
+    weather_data_rows.sort(
+        key=lambda item: (int(item["stormCode"]), str(item["County"]))
+    )
+    return storm_rows, county_rows, weather_data_rows
 
 
 def write_normalized_csvs(
     storm_rows: list[dict[str, object]],
     county_rows: list[dict[str, object]],
-    storm_county_rows: list[dict[str, object]],
+    weather_data_rows: list[dict[str, object]],
     output_dir: str | Path,
 ) -> None:
     output_path = Path(output_dir)
@@ -93,7 +98,7 @@ def write_normalized_csvs(
 
     write_rows(output_path / "storm.csv", storm_rows)
     write_rows(output_path / "county.csv", county_rows)
-    write_rows(output_path / "storm_county.csv", storm_county_rows)
+    write_rows(output_path / "weather_data.csv", weather_data_rows)
 
 
 def write_rows(path: Path, rows: list[dict[str, object]]) -> None:

@@ -7,7 +7,6 @@ import sqlite3
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
@@ -26,7 +25,7 @@ def has_required_tables(conn: sqlite3.Connection) -> bool:
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         ).fetchall()
     }
-    return {"Storm", "County", "StormCounty"}.issubset(table_names)
+    return {"Storm", "County", "WeatherData"}.issubset(table_names)
 
 
 def ensure_database(
@@ -107,7 +106,9 @@ def main() -> None:
 
             if "top storm" in text:
                 print(f"Top {args.limit} storms by outage:")
-                print_rows(analytics_agent.top_storms_by_outage_from_db(conn, limit=args.limit))
+                print_rows(
+                    analytics_agent.top_storms_by_outage_from_db(conn, limit=args.limit)
+                )
                 return
 
             if county:
@@ -122,7 +123,9 @@ def main() -> None:
                 return
 
             print(f"Top {args.limit} counties by outage:")
-            print_rows(analytics_agent.county_outage_summary_from_db(conn, limit=args.limit))
+            print_rows(
+                analytics_agent.county_outage_summary_from_db(conn, limit=args.limit)
+            )
             return
 
         print("Unknown route. Try queries like:")

@@ -1,98 +1,227 @@
-# WISER Starter Repo
+# WISER
 
-![WISER Image](WISER%20Image.png)
+![WISER Image](docs/WISER%20Image.png)
 
-This repo contains your professor-provided WISER material plus an initial starter implementation for:
+**W**eather **I**ntegrated **S**torm **E**vent **R**esponse — a Connecticut storm outage analytics system built on a multi-agent architecture. It ingests raw storm CSV data, normalizes it into a relational SQLite database, and answers natural-language queries through a task routing + analytics pipeline.
 
-1. Task Routing Agent
-2. Data Retrieval and Processing Agent
-3. Storm Weather Analytics Agent
+> See the live system at [wisermaci.engr.uconn.edu](http://wisermaci.engr.uconn.edu/)
 
-## Current Branch
+---
 
-Initial development branch: `jiya`
+## Prerequisites
+
+- Python **3.9+**
+- No external dependencies — everything uses the Python standard library (`sqlite3`, `csv`, `datetime`, `argparse`, `unittest`)
+
+---
+
+## Setup
+
+**1. Clone the repo and navigate into it**
+```bash
+git clone <repo-url>
+cd WISER
+```
+
+**2. (Optional but recommended) Create and activate a virtual environment**
+```bash
+# macOS / Linux
+python -m venv .venv
+source .venv/bin/activate
+
+# Windows
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+**3. Install dependencies**
+```bash
+pip install -r requirements.txt
+```
+> No packages are installed at this stage — the file is a placeholder for future additions.
+
+---
+
+## Running the Project
+
+### Step 1 — Bootstrap the database
+
+Parses `data/testdata.csv`, normalizes it into three tables, writes normalized CSVs, and builds `data/wiser.db`:
+
+```bash
+python scripts/bootstrap_wiser.py
+```
+
+Expected output:
+```
+Normalized files written:
+  - data/normalized/storm.csv
+  - data/normalized/county.csv
+  - data/normalized/weather_data.csv
+
+Top 5 counties by total outages:
+  - Fairfield: total=..., avg=..., peak=..., storms=...
+  ...
+
+SQLite database built: data/wiser.db
+Table counts:
+  - Storm: 294
+  - County: 8
+  - WeatherData: 2352
+```
+
+Override defaults with flags:
+```bash
+python scripts/bootstrap_wiser.py \
+  --input data/testdata.csv \
+  --output-dir data/normalized \
+  --db data/wiser.db
+```
+
+---
+
+### Step 2 — Query with the CLI
+
+`wiser_cli.py` routes natural-language queries through the agent system. The **TaskRoutingAgent** classifies your query by keyword and dispatches it to the appropriate agent:
+
+| Query type | Keywords detected | Agent called |
+|---|---|---|
+| Data / DB management | `load`, `csv`, `database`, `schema`, `ingest` … | `DataRetrievalProcessingAgent` |
+| Weather analytics | `outage`, `storm`, `county`, `top`, `trend` … | `StormWeatherAnalyticsAgent` |
+
+```bash
+# Top counties by total outage
+python scripts/wiser_cli.py "top counties by outage" --limit 5
+
+# Top storms by total outage
+python scripts/wiser_cli.py "top storms by outage" --limit 5
+
+# Full storm history for a specific county
+python scripts/wiser_cli.py "history for county Hartford" --limit 10
+
+# Rebuild the database from CSV
+python scripts/wiser_cli.py "build sqlite database from csv"
+```
+
+The `--limit` flag controls how many rows are returned for top-N queries (default: 10).
+
+---
+
+## Running the Tests
+
+```bash
+python -m unittest tests.test_schema -v
+```
+
+Expected output:
+```
+test_county_columns ... ok
+test_county_primary_key ... ok
+...
+----------------------------------------------------------------------
+Ran 27 tests in 0.012s
+
+OK
+```
+
+The test suite validates the database schema in an isolated in-memory SQLite instance — no files are created. Tests cover:
+
+| Class | Tests | What's validated |
+|---|---|---|
+| `TestSchemaStructure` | 11 | Tables exist, column names, data types, PKs, indexes |
+| `TestConstraints` | 13 | CHECK, UNIQUE, FK, composite PK enforcement |
+| `TestDataIntegrity` | 3 | Realistic inserts, zero-value edge cases |
+
+---
 
 ## Project Structure
 
 ```text
-.
+WISER/
+├── data/
+│   └── testdata.csv              # Raw input — 2,352 storm-county rows
+├── docs/
+│   ├── ARCHITECTURE.md           # System design & data flow diagrams
+│   └── WISER Database Info.png   # Schema diagram
 ├── scripts/
-│   └── bootstrap_wiser.py
-│   └── wiser_cli.py
+│   ├── bootstrap_wiser.py        # Parses CSV → normalizes → builds DB
+│   └── wiser_cli.py              # Natural-language query entry point
 ├── sql/
-│   └── schema.sql
+│   └── schema.sql                # DDL — source of truth for all three tables
 ├── src/
 │   └── wiser/
-│       ├── database.py
-│       ├── query_engine.py
-│       ├── agents/
-│       │   ├── data_retrieval_processing_agent.py
-│       │   ├── storm_weather_analytics_agent.py
-│       │   └── task_routing_agent.py
-│       └── data_pipeline.py
-├── testdata.csv
+│       ├── data_pipeline.py      # CSV parsing & row normalization
+│       ├── database.py           # Schema init, data loading, row counts
+│       ├── query_engine.py       # SQL queries (top counties, storms, history)
+│       └── agents/
+│           ├── task_routing_agent.py              # Keyword → route classifier
+│           ├── data_retrieval_processing_agent.py # Orchestrates pipeline + DB build
+│           └── storm_weather_analytics_agent.py   # Wraps query engine for analytics
+├── tests/
+│   ├── __init__.py
+│   └── test_schema.py            # 27 schema validation tests
+├── requirements.txt
 └── README.md
 ```
 
-## Quick Start
+---
 
-1. Create and activate a virtual environment (optional but recommended).
-2. Install dependencies (currently none external, command kept for future updates):
+## How It Works
 
-```bash
-pip install -r requirements.txt
+```
+data/testdata.csv
+       │
+       ▼
+data_pipeline.py          Parse eventCode → stormCode + eventDateTime
+                          Deduplicate into Storm (294), County (8), WeatherData (2,352)
+       │
+       ▼
+database.py               Create tables, enforce FK/CHECK constraints, insert rows
+       │
+       ▼
+data/wiser.db             SQLite database with 3 normalized tables + 3 indexes
+       │
+       ├── TaskRoutingAgent        Classifies query by keyword
+       │         │
+       │    DATA_RETRIEVAL ──────► DataRetrievalProcessingAgent  (rebuild DB)
+       │    WEATHER_ANALYTICS ───► StormWeatherAnalyticsAgent    (query DB)
+       │
+       ▼
+  Console output
 ```
 
-3. Run bootstrap script:
+---
 
-```bash
-python scripts/bootstrap_wiser.py --input testdata.csv --output-dir data/normalized
-```
+## Database Schema
 
-This generates normalized files:
+Schema defined in `sql/schema.sql`. Three normalized tables:
 
-- `data/normalized/storm.csv`
-- `data/normalized/county.csv`
-- `data/normalized/storm_county.csv`
+| Table | Primary Key | Rows |
+|---|---|---|
+| `Storm` | `stormCode BIGINT` | 294 |
+| `County` | `county VARCHAR(64)` | 8 |
+| `WeatherData` | `(stormCode, county)` | 2,352 |
 
-And also builds:
+![Schema Diagram](docs/WISER%20Database%20Info.png)
 
-- `data/wiser.db` (SQLite)
+Key decisions:
+- **BIGINT** for `stormCode` and `ohLine` — 10-digit codes require more than 32-bit int
+- **TIMESTAMP** for `eventDateTime` — proper temporal type, not plain text
+- **VARCHAR(64)** for `county` — bounded, not unbounded TEXT
+- **`state` column dropped** — always `CT`, storing it would be redundant
+- **CHECK constraints** on all numeric fields — invalid data rejected at DB level
+- **3 indexes** — `outage DESC`, `county`, `eventDateTime` for common query patterns
 
-## Query CLI (Agent Routing Demo)
+## Data Field Reference
 
-Run natural-language queries through task routing + analytics:
-
-```bash
-python scripts/wiser_cli.py "top counties by outage" --limit 5
-python scripts/wiser_cli.py "top storms by outage" --limit 5
-python scripts/wiser_cli.py "history for county Hartford" --limit 5
-python scripts/wiser_cli.py "build sqlite database from csv"
-```
-
-## Database Design
-
-Based on the normalization from your professor’s notes/image, schema is split into:
-
-1. `Storm(stormCode, state, eventDateTime, eventLength)`
-2. `County(County, ohLine)`
-3. `StormCounty(stormCode, County, sumAFWA_TOTPRECIP, peakWSPD10, wgt5, wgt9, wgt13, wgt18, outage)`
-
-SQL DDL is in `sql/schema.sql`.
-
-![WISER Database Info](WISER%20Database%20Info.png)
-
-## Data Notes
-
-Source schema columns:
-`eventCode, stormCode, eventLength, County, ohLine, sumAFWA_TOTPRECIP, peakWSPD10, wgt5, wgt9, wgt13, wgt18, outage`
-
-- `outage`: trouble spots where crews were sent
-- `ohLine`: overhead line length per county
-- `wgtX`: hours where wind speed exceeded threshold
-- `peakWSPD10`: peak wind speed
-- `sumAFWA_TOTPRECIP`: storm precipitation (mm)
-
-## Reference
-
-[wisermaci.engr.uconn.edu](http://wisermaci.engr.uconn.edu/)
+| Field | Type | Description |
+|---|---|---|
+| `stormCode` | BIGINT | 10-digit code formatted YYYYMMDDHH (e.g. `2005100800`) |
+| `eventDateTime` | TIMESTAMP | Parsed from stormCode — event start time |
+| `eventLength` | INTEGER | Storm duration in hours (always 48) |
+| `county` | VARCHAR(64) | One of 8 Connecticut counties |
+| `ohLine` | BIGINT | Overhead power line length in county |
+| `sumAFWA_TOTPRECIP` | REAL | Total precipitation during storm (mm) |
+| `peakWSPD10` | REAL | Peak wind speed at 10 m height (m/s) |
+| `wgt5 / wgt9 / wgt13 / wgt18` | INTEGER | Hours where wind exceeded 5/9/13/18 m/s |
+| `outage` | INTEGER | Trouble spots where crews were dispatched |
