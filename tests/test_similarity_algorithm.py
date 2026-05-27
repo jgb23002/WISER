@@ -203,12 +203,9 @@ class TestSimilarityMathematicalProperties(unittest.TestCase):
         sim_a_to_b, _, _ = calculate_similarity(a, b, mean, std_dev)
         sim_b_to_a, _, _ = calculate_similarity(b, a, mean, std_dev)
 
-        # They should NOT be equal due to the asymmetric distance function
-        # BUT we verify both are valid similarities
+        self.assertAlmostEqual(sim_a_to_b, sim_b_to_a, places=10)
         self.assertGreater(sim_a_to_b, 0)
-        self.assertGreater(sim_b_to_a, 0)
         self.assertLessEqual(sim_a_to_b, 1.0)
-        self.assertLessEqual(sim_b_to_a, 1.0)
 
     def test_similarity_monotonic_decrease(self):
         """As distance increases, similarity should decrease."""

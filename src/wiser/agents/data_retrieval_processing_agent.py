@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from wiser.data_pipeline import (
@@ -15,6 +15,14 @@ from wiser.database import connect, initialize_schema, load_normalized_rows
 @dataclass
 class DataRetrievalProcessingAgent:
     raw_csv_path: str | Path
+    _normalized: (
+        tuple[
+            list[dict[str, object]],
+            list[dict[str, object]],
+            list[dict[str, object]],
+        ]
+        | None
+    ) = field(default=None, init=False, repr=False, compare=False)
 
     def load_raw_data(self) -> list[dict[str, str]]:
         return load_raw_csv(self.raw_csv_path)
@@ -24,8 +32,10 @@ class DataRetrievalProcessingAgent:
     ) -> tuple[
         list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]
     ]:
-        raw_rows = self.load_raw_data()
-        return normalize_rows(raw_rows)
+        if self._normalized is None:
+            raw_rows = self.load_raw_data()
+            self._normalized = normalize_rows(raw_rows)
+        return self._normalized
 
     def save_normalized(self, output_dir: str | Path) -> tuple[Path, Path, Path]:
         storm_rows, county_rows, weather_data_rows = self.normalize()

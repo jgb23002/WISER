@@ -23,7 +23,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from wiser.database import connect
+from wiser.database import open_weather_db
 
 
 def fetch_historical_storms(
@@ -40,7 +40,8 @@ def fetch_historical_storms(
         limit_fetch: Max number of historical records to fetch
 
     Returns:
-        List of dicts with stormCode, peakWSPD10, sumAFWA_TOTPRECIP, outage
+        List of dicts with stormCode, peakWSPD10, sumAFWA_TOTPRECIP, outage,
+        eventDateTime, and eventLength
     """
     cursor = conn.execute(
         """
@@ -159,7 +160,7 @@ def find_similar_storms(
     Returns:
         List of similar storms ranked by similarity score
     """
-    conn = connect(db_path)
+    conn = open_weather_db(db_path)
 
     try:
         # Fetch historical data
@@ -228,7 +229,7 @@ def print_results(
         return
 
     # Extract and print statistics
-    stats = results[0].pop("_statistics", {})
+    stats = dict(results[0].get("_statistics", {}))
 
     print("\n" + "=" * 90)
     print(f"Storm Similarity Analysis for {county}")
@@ -316,6 +317,9 @@ def main() -> None:
     except FileNotFoundError:
         print(f"\nError: Database not found at {args.db}")
         print("Please run: python scripts/bootstrap_wiser.py")
+        sys.exit(1)
+    except sqlite3.OperationalError as e:
+        print(f"\nError: {e}")
         sys.exit(1)
     except Exception as e:
         print(f"\nError: {e}")

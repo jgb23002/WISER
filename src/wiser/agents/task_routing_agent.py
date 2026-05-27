@@ -46,15 +46,17 @@ class TaskRoutingAgent:
 
     def route(self, query: str) -> RouteDecision:
         text = query.lower()
-        if any(keyword in text for keyword in self.DATA_KEYWORDS):
-            return RouteDecision(
-                route=Route.DATA_RETRIEVAL,
-                reason="Matched data/database-oriented keywords.",
-            )
+        # Analytics before data keywords so queries like "top counties from database"
+        # are not misrouted by incidental words such as "database".
         if any(keyword in text for keyword in self.ANALYTICS_KEYWORDS):
             return RouteDecision(
                 route=Route.WEATHER_ANALYTICS,
                 reason="Matched weather/outage analytics keywords.",
+            )
+        if any(keyword in text for keyword in self.DATA_KEYWORDS):
+            return RouteDecision(
+                route=Route.DATA_RETRIEVAL,
+                reason="Matched data/database-oriented keywords.",
             )
         return RouteDecision(
             route=Route.UNKNOWN,

@@ -15,17 +15,7 @@ if str(SRC_DIR) not in sys.path:
 from wiser.agents.data_retrieval_processing_agent import DataRetrievalProcessingAgent
 from wiser.agents.storm_weather_analytics_agent import StormWeatherAnalyticsAgent
 from wiser.agents.task_routing_agent import Route, TaskRoutingAgent
-from wiser.database import connect, get_table_counts
-
-
-def has_required_tables(conn: sqlite3.Connection) -> bool:
-    table_names = {
-        row[0]
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        ).fetchall()
-    }
-    return {"Storm", "County", "WeatherData"}.issubset(table_names)
+from wiser.database import connect, get_table_counts, has_required_tables
 
 
 def ensure_database(
@@ -43,7 +33,11 @@ def parse_county_name(query: str) -> str | None:
     # Accept patterns like:
     # - "show county Hartford"
     # - "history for county New Haven"
-    match = re.search(r"\bcounty\s+([a-zA-Z\s]+)", query)
+    match = re.search(
+        r"\bcounty\s+((?:[a-zA-Z]+(?:\s+[a-zA-Z]+)*))(?:\s+limit\b|\s*$)",
+        query,
+        flags=re.IGNORECASE,
+    )
     if not match:
         return None
     county = match.group(1).strip()
@@ -66,7 +60,7 @@ def main() -> None:
     parser.add_argument("query", help="Natural language query for the routing agent.")
     parser.add_argument(
         "--input",
-        default="testdata.csv",
+        default="data/testdata.csv",
         help="Path to the source CSV file.",
     )
     parser.add_argument(

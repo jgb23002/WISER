@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -52,7 +53,23 @@ def normalize_rows(
 
     for row in rows:
         storm_code, event_datetime = parse_event_code(row["eventCode"])
+        csv_storm_code = int(row["stormCode"])
+        if csv_storm_code != storm_code:
+            warnings.warn(
+                f"stormCode {csv_storm_code} does not match eventCode-derived "
+                f"stormCode {storm_code}; using eventCode value.",
+                stacklevel=2,
+            )
+
         county = row["County"]
+        oh_line = int(float(row["ohLine"]))
+        existing_county = county_by_name.get(county)
+        if existing_county is not None and existing_county["ohLine"] != oh_line:
+            warnings.warn(
+                f"Inconsistent ohLine for county {county}: "
+                f"{existing_county['ohLine']} vs {oh_line}; using latest value.",
+                stacklevel=2,
+            )
 
         storm_by_code[storm_code] = {
             "stormCode": storm_code,
@@ -61,14 +78,14 @@ def normalize_rows(
         }
 
         county_by_name[county] = {
-            "County": county,
-            "ohLine": int(float(row["ohLine"])),
+            "county": county,
+            "ohLine": oh_line,
         }
 
         weather_data_rows.append(
             {
                 "stormCode": storm_code,
-                "County": county,
+                "county": county,
                 "sumAFWA_TOTPRECIP": float(row["sumAFWA_TOTPRECIP"]),
                 "peakWSPD10": float(row["peakWSPD10"]),
                 "wgt5": int(row["wgt5"]),
@@ -80,9 +97,9 @@ def normalize_rows(
         )
 
     storm_rows = sorted(storm_by_code.values(), key=lambda item: int(item["stormCode"]))
-    county_rows = sorted(county_by_name.values(), key=lambda item: str(item["County"]))
+    county_rows = sorted(county_by_name.values(), key=lambda item: str(item["county"]))
     weather_data_rows.sort(
-        key=lambda item: (int(item["stormCode"]), str(item["County"]))
+        key=lambda item: (int(item["stormCode"]), str(item["county"]))
     )
     return storm_rows, county_rows, weather_data_rows
 

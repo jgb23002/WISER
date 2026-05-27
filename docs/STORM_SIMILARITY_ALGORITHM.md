@@ -205,9 +205,12 @@ This accounts for estimation bias when working with samples rather than full pop
 ### File Structure
 
 ```
-scripts/find_similar_storms.py    # Main CLI script
-tests/test_similarity_algorithm.py # Unit tests (13 tests, 100% passing)
+scripts/find_similar_storms.py     # Main CLI script
+tests/test_similarity_algorithm.py # Core algorithm unit tests
 ```
+
+Canonical algorithm write-up: this file (`docs/STORM_SIMILARITY_ALGORITHM.md`).
+`scripts/STORM_SIMILARITY_ALG.md` is a short pointer here for backward-compatible links.
 
 ### Core Functions
 
@@ -226,14 +229,15 @@ def find_similar_storms(county, current_wind_speed, limit=5)
 
 ### Test Coverage
 
-13 unit tests covering:
-- ✓ Statistics computation (empty, single, multiple values)
-- ✓ Similarity calculation (identical, 1-2 SDs away)
-- ✓ Edge cases (zero std dev)
-- ✓ Mathematical properties (range, monotonicity)
-- ✓ Real-world scenarios (Fairfield County data)
+Run the similarity unit tests:
 
-**All tests passing:** ✅ 13/13
+```bash
+python -m unittest tests.test_similarity_algorithm -v
+```
+
+`tests/test_similarity_algorithm.py` covers statistics computation, similarity scoring,
+edge cases (zero standard deviation), mathematical properties (range, symmetry,
+monotonic decrease), and Fairfield-style scenarios.
 
 ---
 

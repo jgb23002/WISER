@@ -7,7 +7,7 @@
 │                         DATA SOURCES & INPUT                             │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                           │
-│  database/csvs/testdata.csv  (2,352 rows of raw weather data)           │
+│  data/testdata.csv  (2,352 rows of raw weather data)                   │
 │  Columns: eventCode, stormCode, eventLength, County, ohLine,            │
 │           sumAFWA_TOTPRECIP, peakWSPD10, wgt5-18, outage                │
 │                                                                           │
@@ -78,9 +78,9 @@
 │  └─ build_database()     │
 │                          │
 │  Analytics Agent         │
-│  ├─ county_outage_...()  │
-│  ├─ top_storms_by...()   │
-│  └─ county_storm_...()   │
+│  ├─ county_outage_..._from_db() │
+│  ├─ top_storms_by..._from_db()  │
+│  └─ county_storm_..._from_db()   │
 │                          │
 └────────┬─────────────────┘
          │
@@ -369,9 +369,7 @@ data_pipeline.py (CSV → Normalized dicts)
                │
                └─ StormWeatherAnalyticsAgent
                   │
-                  ├─ county_outage_summary()
-                  ├─ top_storms_by_outage()
-                  └─ *_from_db() variants
+                  └─ *_from_db() query wrappers
                       │
                       ▼
                   query_engine.py
@@ -405,12 +403,12 @@ User Interfaces
 ```
 Required Files
 ├─ sql/schema.sql          ← Source of truth for DDL
-├─ database/csvs/testdata.csv  ← Raw input data
+├─ data/testdata.csv           ← Raw input data
 └─ src/wiser/*.py          ← Core library
 
 Configuration
 ├─ DEFAULT VALUES (hardcoded in scripts)
-│  ├─ input: "testdata.csv"
+│  ├─ input: "data/testdata.csv"
 │  ├─ output-dir: "data/normalized"
 │  └─ db: "data/wiser.db"
 │
