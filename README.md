@@ -107,6 +107,54 @@ The `--limit` flag controls how many rows are returned for top-N queries (defaul
 
 ---
 
+### Step 3 — Storm similarity (your county & wind speed)
+
+After bootstrap, use `find_similar_storms.py` to rank historical storms in a county by how close their peak wind speed (`peakWSPD10`) is to a **current** value you choose. Pass any county and any positive wind speed in m/s.
+
+**Valid counties** (case-insensitive; use quotes for two-word names):
+
+`Fairfield`, `Hartford`, `Litchfield`, `Middlesex`, `New Haven`, `New London`, `Tolland`, `Windham`
+
+```bash
+# Your county + your wind speed (m/s) — change both freely
+python scripts/find_similar_storms.py --county Fairfield --wind-speed 9.2
+
+# Different county and speed
+python scripts/find_similar_storms.py --county Hartford --wind-speed 6.5
+
+# Two-word county (quote the name on all shells)
+python scripts/find_similar_storms.py --county "New Haven" --wind-speed 10.5
+
+# Return more or fewer matches (default: 5)
+python scripts/find_similar_storms.py --county Litchfield --wind-speed 8.0 --limit 10
+
+# Use a different database file
+python scripts/find_similar_storms.py --county Windham --wind-speed 7.25 --db data/wiser.db
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--county` | Yes | Connecticut county name |
+| `--wind-speed` | Yes | Current storm peak wind at 10 m, in **m/s** (must be > 0) |
+| `--limit` | No | Number of similar storms to show (default: `5`) |
+| `--db` | No | SQLite path (default: `data/wiser.db`) |
+
+Example output (values depend on your inputs):
+
+```
+Storm Similarity Analysis for Fairfield
+  Peak Wind Speed (peakWSPD10): 9.20 m/s
+  Mean Wind Speed: 7.41 m/s  |  Std Dev: 1.69 m/s
+
+Rank   Storm Code      Wind (m/s)   Similarity   Outages    Event Date
+1      2020022700      9.20         99.9%        51         2020-02-27 00:00:00
+...
+```
+
+Use the ranked historical **outages** as a rough guide for what a current event with similar wind might look like in that county. Algorithm details: [docs/STORM_SIMILARITY_ALGORITHM.md](docs/STORM_SIMILARITY_ALGORITHM.md).
+
+---
+
 ## Running the Tests
 
 ### Schema tests
@@ -138,44 +186,15 @@ The test suite validates the database schema in an isolated in-memory SQLite ins
 
 ### Storm similarity algorithm tests
 
-Run from the `scripts/` directory so the relative import of `find_similar_storms` resolves correctly:
+```bash
+python -m unittest tests.test_similarity_algorithm -v
+```
+
+Covers statistics (`compute_statistics`), Z-score similarity (`calculate_similarity`), symmetry, edge cases (zero std dev), and Fairfield-style scenarios. Schema and similarity tests together:
 
 ```bash
-cd scripts
-python -m unittest test_find_similar_storms -v
+python -m unittest discover -s tests -v
 ```
-
-Or run a single named test class:
-
-```bash
-cd scripts
-python -m unittest test_find_similar_storms.TestComputeStatistics -v
-python -m unittest test_find_similar_storms.TestCalculateSimilarity -v
-python -m unittest test_find_similar_storms.TestFindSimilarStorms -v
-```
-
-Expected output:
-```
-test_all_identical_historical_winds_matching_current ... ok
-test_all_identical_historical_winds_non_matching_current ... ok
-...
-----------------------------------------------------------------------
-Ran 53 tests in 0.05s
-
-OK
-```
-
-All tests create and destroy their own temporary SQLite database — no existing data files are touched.
-
-#### What the tests cover
-
-| Class | Tests | What's validated |
-|---|---|---|
-| `TestComputeStatistics` | 13 | Mean, Bessel-corrected std dev, min/max, empty list, single value, negative and large speeds |
-| `TestCalculateSimilarity` | 12 | Similarity formula `1/(1+\|Δz\|)`, Z-score correctness, symmetry, zero std-dev branch, [0,1] range, MD spec example (91.7%) |
-| `TestFetchHistoricalStorms` | 8 | Empty DB, county filtering, case-insensitivity, `limit_fetch`, field presence and types |
-| `TestFindSimilarStorms` | 18 | Descending sort order, `limit` (cap / over-fetch / zero), exact-match rank, `_statistics` metadata, county isolation, field preservation |
-| `TestIntegration` | 7 | Realistic distributions, outlier storms, determinism, metadata vs manual calculation, two-county independence, rank ordering |
 
 ---
 
@@ -190,8 +209,7 @@ WISER/
 │   └── WISER Database Info.png   # Schema diagram
 ├── scripts/
 │   ├── bootstrap_wiser.py           # Parses CSV → normalizes → builds DB
-│   ├── find_similar_storms.py       # Statistical storm similarity (Z-score ranking)
-│   ├── test_find_similar_storms.py  # 53 unit + integration tests for the above
+│   ├── find_similar_storms.py       # Storm similarity CLI (--county, --wind-speed)
 │   └── wiser_cli.py                 # Natural-language query entry point
 ├── sql/
 │   └── schema.sql                # DDL — source of truth for all three tables
@@ -206,7 +224,8 @@ WISER/
 │           └── storm_weather_analytics_agent.py   # Wraps query engine for analytics
 ├── tests/
 │   ├── __init__.py
-│   └── test_schema.py            # 27 schema validation tests
+│   ├── test_schema.py            # 27 schema validation tests
+│   └── test_similarity_algorithm.py  # Similarity algorithm unit tests
 ├── requirements.txt
 └── README.md
 ```
@@ -232,6 +251,8 @@ data/wiser.db             SQLite database with 3 normalized tables + 3 indexes
        │         │
        │    DATA_RETRIEVAL ──────► DataRetrievalProcessingAgent  (rebuild DB)
        │    WEATHER_ANALYTICS ───► StormWeatherAnalyticsAgent    (query DB)
+       │
+       ├── find_similar_storms.py  --county + --wind-speed → ranked historical matches
        │
        ▼
   Console output
