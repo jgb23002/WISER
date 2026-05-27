@@ -109,6 +109,8 @@ The `--limit` flag controls how many rows are returned for top-N queries (defaul
 
 ## Running the Tests
 
+### Schema tests
+
 ```bash
 python -m unittest tests.test_schema -v
 ```
@@ -134,6 +136,49 @@ The test suite validates the database schema in an isolated in-memory SQLite ins
 
 ---
 
+### Storm similarity algorithm tests
+
+Run from the `scripts/` directory so the relative import of `find_similar_storms` resolves correctly:
+
+```bash
+cd scripts
+python -m unittest test_find_similar_storms -v
+```
+
+Or run a single named test class:
+
+```bash
+cd scripts
+python -m unittest test_find_similar_storms.TestComputeStatistics -v
+python -m unittest test_find_similar_storms.TestCalculateSimilarity -v
+python -m unittest test_find_similar_storms.TestFindSimilarStorms -v
+```
+
+Expected output:
+```
+test_all_identical_historical_winds_matching_current ... ok
+test_all_identical_historical_winds_non_matching_current ... ok
+...
+----------------------------------------------------------------------
+Ran 53 tests in 0.05s
+
+OK
+```
+
+All tests create and destroy their own temporary SQLite database — no existing data files are touched.
+
+#### What the tests cover
+
+| Class | Tests | What's validated |
+|---|---|---|
+| `TestComputeStatistics` | 13 | Mean, Bessel-corrected std dev, min/max, empty list, single value, negative and large speeds |
+| `TestCalculateSimilarity` | 12 | Similarity formula `1/(1+\|Δz\|)`, Z-score correctness, symmetry, zero std-dev branch, [0,1] range, MD spec example (91.7%) |
+| `TestFetchHistoricalStorms` | 8 | Empty DB, county filtering, case-insensitivity, `limit_fetch`, field presence and types |
+| `TestFindSimilarStorms` | 18 | Descending sort order, `limit` (cap / over-fetch / zero), exact-match rank, `_statistics` metadata, county isolation, field preservation |
+| `TestIntegration` | 7 | Realistic distributions, outlier storms, determinism, metadata vs manual calculation, two-county independence, rank ordering |
+
+---
+
 ## Project Structure
 
 ```text
@@ -144,8 +189,10 @@ WISER/
 │   ├── ARCHITECTURE.md           # System design & data flow diagrams
 │   └── WISER Database Info.png   # Schema diagram
 ├── scripts/
-│   ├── bootstrap_wiser.py        # Parses CSV → normalizes → builds DB
-│   └── wiser_cli.py              # Natural-language query entry point
+│   ├── bootstrap_wiser.py           # Parses CSV → normalizes → builds DB
+│   ├── find_similar_storms.py       # Statistical storm similarity (Z-score ranking)
+│   ├── test_find_similar_storms.py  # 53 unit + integration tests for the above
+│   └── wiser_cli.py                 # Natural-language query entry point
 ├── sql/
 │   └── schema.sql                # DDL — source of truth for all three tables
 ├── src/
