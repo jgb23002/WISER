@@ -13,9 +13,11 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from wiser.agents.data_retrieval_processing_agent import DataRetrievalProcessingAgent
+from wiser.agents.rag_knowledge_agent import RAGKnowledgeAgent
 from wiser.agents.storm_weather_analytics_agent import StormWeatherAnalyticsAgent
 from wiser.agents.task_routing_agent import Route, TaskRoutingAgent
 from wiser.database import connect, get_table_counts, has_required_tables
+from wiser.rag import DEFAULT_RAG_SOURCES, format_excerpt
 
 
 def ensure_database(
@@ -74,11 +76,32 @@ def main() -> None:
         default=10,
         help="Limit for top-N queries.",
     )
+    parser.add_argument(
+        "--rag-source",
+        action="append",
+        default=[],
+        help=(
+            "File or directory to include in the RAG index. "
+            "Repeat this flag to add multiple sources."
+        ),
+    )
+    parser.add_argument(
+        "--rebuild-rag",
+        action="store_true",
+        help="Rebuild the local RAG index before retrieving context.",
+    )
+    parser.add_argument(
+        "--show-rag-context",
+        action="store_true",
+        help="Print the full augmented context after the grounded RAG answer.",
+    )
     args = parser.parse_args()
 
     routing_agent = TaskRoutingAgent()
     data_agent = DataRetrievalProcessingAgent(args.input)
     analytics_agent = StormWeatherAnalyticsAgent(data_agent)
+    rag_sources = tuple(args.rag_source) if args.rag_source else DEFAULT_RAG_SOURCES
+    rag_agent = RAGKnowledgeAgent(rag_sources)
 
     decision = routing_agent.route(args.query)
     print(f"Route: {decision.route.value} ({decision.reason})")
@@ -122,11 +145,41 @@ def main() -> None:
             )
             return
 
+        if decision.route == Route.RAG_KNOWLEDGE:
+            summary = rag_agent.ensure_index(conn, rebuild=args.rebuild_rag)
+            print(
+                "RAG index ready: "
+                f"{summary.total_documents} documents, {summary.total_chunks} chunks "
+                f"({summary.documents_indexed} refreshed)."
+            )
+            rag_answer = rag_agent.answer(conn, args.query, limit=args.limit)
+            if not rag_answer.results:
+                print("No RAG context found for this query.")
+                return
+
+            print("Grounded answer:")
+            print(rag_answer.answer)
+            print()
+            print("Sources:")
+            for position, result in enumerate(rag_answer.results, start=1):
+                print(
+                    f"{position}. {result.source_path}#chunk-{result.chunk_index} "
+                    f"(score={result.score:.2f})"
+                )
+                print(f"   {format_excerpt(result.content, max_chars=420)}")
+
+            if args.show_rag_context:
+                print()
+                print("Augmented prompt/context:")
+                print(rag_answer.context)
+            return
+
         print("Unknown route. Try queries like:")
         print("  - build database from csv")
         print("  - top counties by outage")
         print("  - top storms by outage")
         print("  - history for county Hartford")
+        print("  - explain the storm similarity algorithm")
     finally:
         if conn is not None:
             conn.close()

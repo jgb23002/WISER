@@ -2,7 +2,7 @@
 
 ![WISER Image](docs/WISER%20Image.png)
 
-**W**eather **I**ntegrated **S**torm **E**vent **R**esponse — a Connecticut storm outage analytics system built on a multi-agent architecture. It ingests raw storm CSV data, normalizes it into a relational SQLite database, and answers natural-language queries through a task routing + analytics pipeline.
+**W**eather **I**ntegrated **S**torm **E**vent **R**esponse — a Connecticut storm outage analytics system built on a multi-agent architecture. It ingests raw storm CSV data, normalizes it into a relational SQLite database, answers natural-language analytics queries, and retrieves grounded RAG context from project docs/code.
 
 > See the live system at [wisermaci.engr.uconn.edu](http://wisermaci.engr.uconn.edu/)
 
@@ -87,6 +87,7 @@ python scripts/bootstrap_wiser.py \
 | Query type | Keywords detected | Agent called |
 |---|---|---|
 | Data / DB management | `load`, `csv`, `database`, `schema`, `ingest` … | `DataRetrievalProcessingAgent` |
+| RAG / knowledge retrieval | `rag`, `docs`, `explain`, `algorithm`, `reference` … | `RAGKnowledgeAgent` |
 | Weather analytics | `outage`, `storm`, `county`, `top`, `trend` … | `StormWeatherAnalyticsAgent` |
 
 ```bash
@@ -101,9 +102,13 @@ python scripts/wiser_cli.py "history for county Hartford" --limit 10
 
 # Rebuild the database from CSV
 python scripts/wiser_cli.py "build sqlite database from csv"
+
+# Ask a RAG question and receive a grounded answer with sources
+python scripts/wiser_cli.py "explain the storm similarity algorithm" --limit 3
 ```
 
 The `--limit` flag controls how many rows are returned for top-N queries (default: 10).
+For RAG queries, `--limit` controls retrieved context chunks. Use `--rebuild-rag` to refresh the local index, `--show-rag-context` to print the full augmented prompt, and repeat `--rag-source <path>` to index a custom file or directory.
 
 ---
 
@@ -190,7 +195,7 @@ The test suite validates the database schema in an isolated in-memory SQLite ins
 python -m unittest tests.test_similarity_algorithm -v
 ```
 
-Covers statistics (`compute_statistics`), Z-score similarity (`calculate_similarity`), symmetry, edge cases (zero std dev), and Fairfield-style scenarios. Schema and similarity tests together:
+Covers statistics (`compute_statistics`), Z-score similarity (`calculate_similarity`), symmetry, edge cases (zero std dev), and Fairfield-style scenarios. The full suite also covers RAG chunking/indexing/search, task routing, and database initialization compatibility:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -218,13 +223,18 @@ WISER/
 │       ├── data_pipeline.py      # CSV parsing & row normalization
 │       ├── database.py           # Schema init, data loading, row counts
 │       ├── query_engine.py       # SQL queries (top counties, storms, history)
+│       ├── rag.py                # RAG document indexing + lexical retrieval
 │       └── agents/
 │           ├── task_routing_agent.py              # Keyword → route classifier
 │           ├── data_retrieval_processing_agent.py # Orchestrates pipeline + DB build
+│           ├── rag_knowledge_agent.py             # Builds/searches local RAG index
 │           └── storm_weather_analytics_agent.py   # Wraps query engine for analytics
 ├── tests/
 │   ├── __init__.py
+│   ├── test_database.py          # Database initialization compatibility tests
+│   ├── test_rag.py               # RAG indexing/retrieval tests
 │   ├── test_schema.py            # 27 schema validation tests
+│   ├── test_task_routing.py      # Route classification tests
 │   └── test_similarity_algorithm.py  # Similarity algorithm unit tests
 ├── requirements.txt
 └── README.md
@@ -250,6 +260,7 @@ data/wiser.db             SQLite database with 3 normalized tables + 3 indexes
        ├── TaskRoutingAgent        Classifies query by keyword
        │         │
        │    DATA_RETRIEVAL ──────► DataRetrievalProcessingAgent  (rebuild DB)
+       │    RAG_KNOWLEDGE ───────► RAGKnowledgeAgent             (retrieve sourced context)
        │    WEATHER_ANALYTICS ───► StormWeatherAnalyticsAgent    (query DB)
        │
        ├── find_similar_storms.py  --county + --wind-speed → ranked historical matches

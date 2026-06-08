@@ -3,14 +3,17 @@
 -- Connecticut Storm & Weather Analytics
 -- ============================================================================
 
-PRAGMA foreign_keys = ON;
+PRAGMA foreign_keys = OFF;
 
 -- ============================================================================
 -- Drop existing tables (reverse dependency order)
 -- ============================================================================
 DROP TABLE IF EXISTS WeatherData;
+DROP TABLE IF EXISTS StormCounty;
 DROP TABLE IF EXISTS County;
 DROP TABLE IF EXISTS Storm;
+
+PRAGMA foreign_keys = ON;
 
 -- ============================================================================
 -- Storm Table: Contains information about weather events

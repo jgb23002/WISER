@@ -6,6 +6,7 @@ from enum import Enum
 
 class Route(str, Enum):
     DATA_RETRIEVAL = "data_retrieval"
+    RAG_KNOWLEDGE = "rag_knowledge"
     WEATHER_ANALYTICS = "weather_analytics"
     UNKNOWN = "unknown"
 
@@ -43,9 +44,31 @@ class TaskRoutingAgent:
         "county",
         "counties",
     }
+    RAG_KEYWORDS = {
+        "algorithm",
+        "context",
+        "describe",
+        "docs",
+        "document",
+        "documentation",
+        "explain",
+        "knowledge",
+        "method",
+        "prompt",
+        "rag",
+        "reference",
+        "similarity",
+        "steps",
+        "summarize",
+    }
 
     def route(self, query: str) -> RouteDecision:
         text = query.lower()
+        if any(keyword in text for keyword in self.RAG_KEYWORDS):
+            return RouteDecision(
+                route=Route.RAG_KNOWLEDGE,
+                reason="Matched documentation/RAG knowledge keywords.",
+            )
         # Analytics before data keywords so queries like "top counties from database"
         # are not misrouted by incidental words such as "database".
         if any(keyword in text for keyword in self.ANALYTICS_KEYWORDS):

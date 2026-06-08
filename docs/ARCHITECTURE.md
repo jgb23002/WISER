@@ -11,6 +11,9 @@
 │  Columns: eventCode, stormCode, eventLength, County, ohLine,            │
 │           sumAFWA_TOTPRECIP, peakWSPD10, wgt5-18, outage                │
 │                                                                           │
+│  README.md, docs/, scripts/, sql/, src/wiser/                             │
+│  Project knowledge sources for local RAG retrieval                         │
+│                                                                           │
 └────────────────────────────┬────────────────────────────────────────────┘
                              │
                              ▼
@@ -82,6 +85,12 @@
 │  ├─ top_storms_by..._from_db()  │
 │  └─ county_storm_..._from_db()   │
 │                          │
+│  RAG Knowledge Agent     │
+│  ├─ ensure_index()       │
+│  ├─ retrieve()           │
+│  ├─ build_context()      │
+│  └─ answer()             │
+│                          │
 └────────┬─────────────────┘
          │
          ▼
@@ -100,6 +109,7 @@
 │        "top storms by outage"                                            │
 │        "history for county Hartford"                                     │
 │        "build sqlite database from csv"                                  │
+│        "explain the storm similarity algorithm"                          │
 │                                                                           │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -214,6 +224,20 @@ Normalized Data
 ---
 
 ## Query Examples
+
+### RAG Knowledge Retrieval
+
+```python
+# Agent Call
+rag_agent.ensure_index(conn)
+answer = rag_agent.answer(conn, "explain storm similarity algorithm", limit=3)
+
+# Tables Created
+RagDocument(path, title, checksum, indexedAt)
+RagChunk(documentId, chunkIndex, content, tokenCount)
+```
+
+RAG currently uses dependency-free lexical retrieval over project docs/code/schema, then builds an extractive grounded answer with citation markers tied to retrieved chunks. The `build_context()` method still formats those chunks into an augmented prompt for a later LLM generation step.
 
 ### Top 5 Counties by Total Outage
 
@@ -386,6 +410,18 @@ User Interfaces
     │  │
     │  ├─ TaskRoutingAgent (route)
     │  ├─ DataRetrievalProcessingAgent
+    │  ├─ RAGKnowledgeAgent
+    │  │  │
+    │  │  ▼
+    │  │  rag.py
+    │  │  ├─ index_sources()
+    │  │  ├─ search_rag()
+    │  │  ├─ answer_rag()
+    │  │  └─ build_augmented_context()
+    │  │      │
+    │  │      ▼
+    │  │  data/wiser.db (RagDocument + RagChunk)
+    │  │
     │  └─ StormWeatherAnalyticsAgent
     │      │
     │      ▼
