@@ -161,7 +161,7 @@ def main() -> None:
             print(rag_answer.answer)
             print()
             print("Sources:")
-            for position, result in enumerate(rag_answer.results, start=1):
+            for position, result in enumerate(rag_answer.cited_results, start=1):
                 print(
                     f"{position}. {result.source_path}#chunk-{result.chunk_index} "
                     f"(score={result.score:.2f})"

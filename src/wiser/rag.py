@@ -96,6 +96,7 @@ class RagAnswer:
     answer: str
     context: str
     results: tuple[RagResult, ...]
+    cited_results: tuple[RagResult, ...]
 
 
 def tokenize(text: str) -> list[str]:
@@ -503,6 +504,7 @@ def synthesize_grounded_answer(
             ),
             context=context,
             results=tuple(),
+            cited_results=tuple(),
         )
 
     query_counter = Counter(expand_query_terms(query))
@@ -536,21 +538,32 @@ def synthesize_grounded_answer(
     if not ranked_statements:
         fallback = format_excerpt(results[0].content, max_chars=450)
         answer = f"{fallback} [1]"
+        cited_positions = [1]
     else:
         ranked_statements.sort(key=lambda item: (-item[0], item[1], item[2]))
         selected = ranked_statements[:max(1, max_statements)]
         selected.sort(key=lambda item: item[1])
+        cited_positions: list[int] = []
+        for _, source_position, _ in selected:
+            if source_position not in cited_positions:
+                cited_positions.append(source_position)
+        citation_number_by_position = {
+            source_position: citation_number
+            for citation_number, source_position in enumerate(cited_positions, start=1)
+        }
         answer_lines = [
-            f"- {statement} [{source_position}]"
+            f"- {statement} [{citation_number_by_position[source_position]}]"
             for _, source_position, statement in selected
         ]
         answer = "\n".join(answer_lines)
 
+    cited_results = tuple(results[source_position - 1] for source_position in cited_positions)
     return RagAnswer(
         question=query,
         answer=answer,
         context=context,
         results=tuple(results),
+        cited_results=cited_results,
     )
 
 

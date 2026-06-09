@@ -130,6 +130,7 @@ class TestRagIndexAndSearch(unittest.TestCase):
         self.assertIn("peak wind speed", answer.answer)
         self.assertIn("[1]", answer.answer)
         self.assertEqual(answer.results[0].source_path, "docs/storm.md")
+        self.assertEqual(answer.cited_results[0].source_path, "docs/storm.md")
         self.assertIn("Retrieved context:", answer.context)
 
     def test_answer_rag_handles_empty_query(self):
@@ -138,6 +139,7 @@ class TestRagIndexAndSearch(unittest.TestCase):
         answer = answer_rag(self.conn, "", limit=2)
 
         self.assertEqual(answer.results, ())
+        self.assertEqual(answer.cited_results, ())
         self.assertIn("not have enough indexed context", answer.answer)
 
     def test_explanation_queries_prefer_docs_over_rag_code(self):
@@ -162,7 +164,30 @@ class TestRagIndexAndSearch(unittest.TestCase):
 
         self.assertEqual(results[0].source_path, "docs/storm.md")
         self.assertNotIn("src/wiser/rag.py", [result.source_path for result in results])
+        self.assertNotIn(
+            "src/wiser/rag.py",
+            [result.source_path for result in answer.cited_results],
+        )
         self.assertNotIn("expand_query_terms", answer.answer)
+
+    def test_cited_results_match_answer_citation_numbers(self):
+        (self.root / "docs" / "use_cases.md").write_text(
+            "# Similarity Use Cases\n\n"
+            "When a current storm has wind speed data, WISER estimates "
+            "outages by comparing similar historical storm scores.",
+            encoding="utf-8",
+        )
+        index_sources(self.conn, ["docs"], root=self.root, rebuild=True)
+
+        answer = answer_rag(
+            self.conn,
+            "how does storm similarity estimate outages",
+            limit=3,
+        )
+
+        for citation_number, _ in enumerate(answer.cited_results, start=1):
+            self.assertIn(f"[{citation_number}]", answer.answer)
+        self.assertNotIn(f"[{len(answer.cited_results) + 1}]", answer.answer)
 
 
 if __name__ == "__main__":
