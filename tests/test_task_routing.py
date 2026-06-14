@@ -33,6 +33,25 @@ class TestTaskRoutingAgent(unittest.TestCase):
 
         self.assertEqual(decision.route, Route.DATA_RETRIEVAL)
 
+    def test_routes_numeric_similarity_queries_before_analytics(self):
+        """Queries with both 'storm' and 'similar' must hit SIMILARITY_SEARCH."""
+        decision = self.agent.route(
+            "find storms similar to wind=9.2, precip=45"
+        )
+
+        self.assertEqual(decision.route, Route.SIMILARITY_SEARCH)
+
+    def test_routes_rank_storms_keyword_to_similarity_search(self):
+        decision = self.agent.route("rank storms similar to wind=6.5")
+
+        self.assertEqual(decision.route, Route.SIMILARITY_SEARCH)
+
+    def test_routes_similarity_word_with_numeric_params_to_search(self):
+        """'similarity' + wind= must not be swallowed by RAG."""
+        decision = self.agent.route("find storm similarity wind=9.2")
+
+        self.assertEqual(decision.route, Route.SIMILARITY_SEARCH)
+
 
 if __name__ == "__main__":
     unittest.main()

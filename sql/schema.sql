@@ -29,12 +29,19 @@ CREATE TABLE Storm (
 );
 
 -- ============================================================================
--- County Table: Contains information about Connecticut counties
+-- County Table: Contains information about counties
+-- state:  Two-letter US state abbreviation (e.g. 'CT').
+--         Defaults to 'CT' so existing data needs no migration.
+--         Future multi-state expansion should promote (state, county)
+--         to a composite primary key and update WeatherData's FK
+--         accordingly.
 -- ohLine: Overhead line length in county (in specified units)
 -- ============================================================================
 CREATE TABLE County (
     county VARCHAR(64) PRIMARY KEY,
+    state  VARCHAR(2)  NOT NULL DEFAULT 'CT',
     ohLine BIGINT NOT NULL,
+    CHECK (LENGTH(state) = 2),
     CHECK (ohLine > 0)
 );
 

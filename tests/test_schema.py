@@ -80,10 +80,12 @@ class TestSchemaStructure(unittest.TestCase):
         columns = {row[1]: row[2] for row in cursor.fetchall()}
 
         self.assertIn("county", columns)
+        self.assertIn("state", columns)
         self.assertIn("ohLine", columns)
 
         # Verify data types
         self.assertEqual(columns["county"], "VARCHAR(64)")
+        self.assertEqual(columns["state"], "VARCHAR(2)")
         self.assertEqual(columns["ohLine"], "BIGINT")
 
     def test_weatherdata_columns(self):

@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
-Find similar historical storms based on peak wind speed (peakWSPD10).
+Find similar historical storms using multi-dimensional L2 Z-score similarity.
 
-Uses 1D statistical distance (Z-score) to rank historical storms by similarity
-to a current storm event in a specific county.
+Supports any combination of the 6 weather features:
+  peakWSPD10, sumAFWA_TOTPRECIP, wgt5, wgt9, wgt13, wgt18
+
+Passing only --wind-speed produces identical results to the original
+1-D wind-only algorithm.
 
 Usage:
     python scripts/find_similar_storms.py --county Fairfield --wind-speed 9.2
-    python scripts/find_similar_storms.py --county Hartford --wind-speed 6.5 --limit 10
+    python scripts/find_similar_storms.py --county Hartford \\
+        --wind-speed 6.5 --precip 30.0 --limit 10
 """
 
 from __future__ import annotations
@@ -23,7 +27,12 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from wiser.agents.similarity_query_agent import SimilarityQueryAgent
 from wiser.database import open_weather_db
+
+# ---------------------------------------------------------------------------
+# Legacy 1-D functions — kept unchanged for test_similarity_algorithm.py
+# ---------------------------------------------------------------------------
 
 
 def fetch_historical_storms(
@@ -142,135 +151,97 @@ def calculate_similarity(
     return similarity, z_historical, z_current
 
 
-def find_similar_storms(
-    county: str,
-    current_wind_speed: float,
-    db_path: str | Path = "data/wiser.db",
-    limit: int = 5,
-) -> list[dict[str, object]]:
-    """
-    Find top N historical storms in a county with similar wind speeds.
+# ---------------------------------------------------------------------------
+# Multi-dimensional entry point
+# ---------------------------------------------------------------------------
 
-    Args:
-        county: County name
-        current_wind_speed: Current storm peakWSPD10 (m/s)
-        db_path: Path to SQLite database
-        limit: Number of top matches to return
+# Maps CLI dest name → WeatherData column name (aliasing lives only here).
+_FLAG_TO_FEATURE: list[tuple[str, str]] = [
+    ("wind_speed", "peakWSPD10"),
+    ("precip", "sumAFWA_TOTPRECIP"),
+    ("wgt5", "wgt5"),
+    ("wgt9", "wgt9"),
+    ("wgt13", "wgt13"),
+    ("wgt18", "wgt18"),
+]
 
-    Returns:
-        List of similar storms ranked by similarity score
-    """
-    conn = open_weather_db(db_path)
 
-    try:
-        # Fetch historical data
-        historical = fetch_historical_storms(conn, county)
+# ---------------------------------------------------------------------------
+# Display helpers
+# ---------------------------------------------------------------------------
 
-        if not historical:
-            return []
-
-        # Compute statistics
-        wind_speeds = [row["peakWSPD10"] for row in historical]
-        mean, std_dev, min_wind, max_wind = compute_statistics(wind_speeds)
-
-        # Calculate similarity for each historical storm
-        results = []
-        z_current = (current_wind_speed - mean) / std_dev if std_dev > 0 else 0.0
-
-        for row in historical:
-            similarity, z_historical, _ = calculate_similarity(
-                row["peakWSPD10"],
-                current_wind_speed,
-                mean,
-                std_dev,
-            )
-
-            results.append(
-                {
-                    "stormCode": row["stormCode"],
-                    "peakWSPD10": row["peakWSPD10"],
-                    "eventDateTime": row["eventDateTime"],
-                    "sumAFWA_TOTPRECIP": row["sumAFWA_TOTPRECIP"],
-                    "outage": row["outage"],
-                    "similarity": similarity,
-                    "z_score": z_historical,
-                    "eventLength": row["eventLength"],
-                }
-            )
-
-        # Sort by similarity (descending) and return top N
-        results.sort(key=lambda x: x["similarity"], reverse=True)
-
-        # Add statistics to the first result dict as metadata
-        if results:
-            results[0]["_statistics"] = {
-                "mean": mean,
-                "std_dev": std_dev,
-                "min_wind": min_wind,
-                "max_wind": max_wind,
-                "z_current": z_current,
-                "total_historical": len(historical),
-            }
-
-        return results[:limit]
-
-    finally:
-        conn.close()
+# Human-readable labels for each feature column.
+_FEATURE_LABELS: dict[str, str] = {
+    "peakWSPD10": "Wind (m/s)",
+    "sumAFWA_TOTPRECIP": "Precip (mm)",
+    "wgt5": "Wgt5 (h)",
+    "wgt9": "Wgt9 (h)",
+    "wgt13": "Wgt13 (h)",
+    "wgt18": "Wgt18 (h)",
+}
 
 
 def print_results(
     county: str,
-    current_wind: float,
+    query_params: dict[str, float],
     results: list[dict[str, object]],
+    total_historical: int = 0,
 ) -> None:
-    """Pretty-print the similarity results."""
+    """Pretty-print the multi-dimensional similarity results."""
     if not results:
         print(f"\nNo historical data found for county: {county}\n")
         return
 
-    # Extract and print statistics
-    stats = dict(results[0].get("_statistics", {}))
+    active_features = list(query_params.keys())
 
-    print("\n" + "=" * 90)
+    print("\n" + "=" * 100)
     print(f"Storm Similarity Analysis for {county}")
-    print("=" * 90)
-    print(f"\nCurrent Storm:")
-    print(f"  Peak Wind Speed (peakWSPD10): {current_wind:.2f} m/s")
-    print(
-        f"  Z-Score: {stats.get('z_current', 0):.2f} (standardized distance from mean)"
-    )
+    print("=" * 100)
 
-    print(f"\nHistorical Data Summary ({county}):")
-    print(f"  Total Historical Storms: {stats.get('total_historical', 0)}")
-    print(f"  Mean Wind Speed: {stats.get('mean', 0):.2f} m/s")
-    print(f"  Std Dev: {stats.get('std_dev', 0):.2f} m/s")
-    print(
-        f"  Range: {stats.get('min_wind', 0):.2f} - {stats.get('max_wind', 0):.2f} m/s"
-    )
+    print("\nQuery Parameters:")
+    for feat in active_features:
+        label = _FEATURE_LABELS.get(feat, feat)
+        print(f"  {label}: {query_params[feat]:.4g}")
 
-    print(
-        f"\n{'Rank':<6} {'Storm Code':<15} {'Wind (m/s)':<12} {'Z-Score':<10} {'Similarity':<12} {'Outages':<10} {'Precip (mm)':<12} {'Event Date':<19}"
+    if total_historical:
+        print(f"\nHistorical storms in {county}: {total_historical}")
+
+    # Build dynamic column headers
+    feat_headers = "  ".join(
+        f"{_FEATURE_LABELS.get(f, f):<12}" for f in active_features
     )
-    print("-" * 90)
+    header = (
+        f"{'Rank':<6} {'Storm Code':<15} {'Similarity':<12} "
+        f"{'Outages':<10} {feat_headers} {'Event Date':<19}"
+    )
+    print(f"\n{header}")
+    print("-" * len(header))
 
     for rank, result in enumerate(results, 1):
+        feat_vals = "  ".join(f"{result.get(f, 0):<12.4g}" for f in active_features)
         print(
             f"{rank:<6} "
             f"{result['stormCode']:<15} "
-            f"{result['peakWSPD10']:<12.2f} "
-            f"{result['z_score']:<10.2f} "
             f"{result['similarity']:<12.1%} "
             f"{result['outage']:<10} "
-            f"{result['sumAFWA_TOTPRECIP']:<12.2f} "
+            f"{feat_vals} "
             f"{result['eventDateTime']:<19}"
         )
 
-    print("\n" + "=" * 90 + "\n")
+    print("\n" + "=" * 100 + "\n")
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Find historical storms similar to a current event based on peak wind speed."
+        description=(
+            "Find historical storms similar to a current event. "
+            "At least one feature flag is required."
+        )
     )
     parser.add_argument(
         "--county",
@@ -280,8 +251,39 @@ def main() -> None:
     parser.add_argument(
         "--wind-speed",
         type=float,
-        required=True,
-        help="Current storm peak wind speed in m/s (e.g., 9.2)",
+        default=None,
+        dest="wind_speed",
+        help="Current storm peak wind speed in m/s (peakWSPD10)",
+    )
+    parser.add_argument(
+        "--precip",
+        type=float,
+        default=None,
+        help="Total precipitation in mm (sumAFWA_TOTPRECIP)",
+    )
+    parser.add_argument(
+        "--wgt5",
+        type=float,
+        default=None,
+        help="Hours with wind speed > 5 m/s threshold (wgt5)",
+    )
+    parser.add_argument(
+        "--wgt9",
+        type=float,
+        default=None,
+        help="Hours with wind speed > 9 m/s threshold (wgt9)",
+    )
+    parser.add_argument(
+        "--wgt13",
+        type=float,
+        default=None,
+        help="Hours with wind speed > 13 m/s threshold (wgt13)",
+    )
+    parser.add_argument(
+        "--wgt18",
+        type=float,
+        default=None,
+        help="Hours with wind speed > 18 m/s threshold (wgt18)",
     )
     parser.add_argument(
         "--limit",
@@ -297,22 +299,40 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.wind_speed <= 0:
-        print("Error: wind-speed must be positive (> 0)")
-        sys.exit(1)
+    # Build query_params from whichever feature flags were supplied.
+    query_params: dict[str, float] = {}
+    for flag_dest, feature_name in _FLAG_TO_FEATURE:
+        val = getattr(args, flag_dest, None)
+        if val is not None:
+            query_params[feature_name] = float(val)
+
+    if not query_params:
+        parser.error(
+            "At least one feature flag is required "
+            "(e.g. --wind-speed 9.2  or  --precip 45.0)"
+        )
+
+    if "peakWSPD10" in query_params and query_params["peakWSPD10"] <= 0:
+        parser.error("--wind-speed must be positive (> 0)")
 
     if args.limit < 1:
-        print("Error: limit must be at least 1")
-        sys.exit(1)
+        parser.error("--limit must be at least 1")
 
     try:
-        results = find_similar_storms(
-            county=args.county,
-            current_wind_speed=args.wind_speed,
-            db_path=args.db,
-            limit=args.limit,
-        )
-        print_results(args.county, args.wind_speed, results)
+        conn = open_weather_db(args.db)
+        try:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM WeatherData WHERE LOWER(county) = LOWER(?)",
+                (args.county,),
+            ).fetchone()[0]
+            agent = SimilarityQueryAgent()
+            results = agent.find_similar(
+                conn, args.county, query_params, limit=args.limit
+            )
+        finally:
+            conn.close()
+
+        print_results(args.county, query_params, results, total_historical=total)
 
     except FileNotFoundError:
         print(f"\nError: Database not found at {args.db}")

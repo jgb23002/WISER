@@ -33,8 +33,7 @@ def open_weather_db(db_path: str | Path) -> sqlite3.Connection:
     if not has_required_tables(conn):
         conn.close()
         raise sqlite3.OperationalError(
-            "Database schema is incomplete. "
-            "Run: python scripts/bootstrap_wiser.py"
+            "Database schema is incomplete. Run: python scripts/bootstrap_wiser.py"
         )
     return conn
 
@@ -60,8 +59,8 @@ def load_normalized_rows(
     )
     conn.executemany(
         """
-        INSERT INTO County(county, ohLine)
-        VALUES(:county, :ohLine)
+        INSERT INTO County(county, state, ohLine)
+        VALUES(:county, :state, :ohLine)
         """,
         county_rows,
     )

@@ -1,0 +1,93 @@
+"""Tests for wiser_cli similarity query parsing and route registry."""
+
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+
+SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
+SRC_DIR = Path(__file__).parent.parent / "src"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from wiser.agents.task_routing_agent import Route  # noqa: E402
+from wiser_cli import (  # noqa: E402
+    ROUTE_HANDLERS,
+    parse_similarity_county,
+    parse_similarity_params,
+)
+
+
+class TestParseSimilarityParams(unittest.TestCase):
+    def test_parses_comma_separated_pairs(self):
+        params = parse_similarity_params(
+            "find storms similar to wind=9.2, precip=45"
+        )
+        self.assertEqual(params["peakWSPD10"], 9.2)
+        self.assertEqual(params["sumAFWA_TOTPRECIP"], 45.0)
+
+    def test_parses_multiline_query(self):
+        query = "Find storms similar to:\nwind=9.2\nprecip=45"
+        params = parse_similarity_params(query)
+        self.assertEqual(params["peakWSPD10"], 9.2)
+        self.assertEqual(params["sumAFWA_TOTPRECIP"], 45.0)
+
+    def test_parses_wgt_aliases(self):
+        params = parse_similarity_params("similar to wgt5=10, wgt9=3")
+        self.assertEqual(params["wgt5"], 10.0)
+        self.assertEqual(params["wgt9"], 3.0)
+
+    def test_ignores_unknown_aliases(self):
+        params = parse_similarity_params("similar to temp=72, wind=9.0")
+        self.assertEqual(params, {"peakWSPD10": 9.0})
+
+    def test_empty_when_no_params(self):
+        self.assertEqual(parse_similarity_params("find similar storms"), {})
+
+
+class TestParseSimilarityCounty(unittest.TestCase):
+    def test_explicit_county_flag(self):
+        county = parse_similarity_county(
+            "find storms similar to wind=9.2", explicit_county="fairfield"
+        )
+        self.assertEqual(county, "Fairfield")
+
+    def test_detects_known_county_in_query(self):
+        county = parse_similarity_county(
+            "find storms similar to wind=9.2 in Hartford"
+        )
+        self.assertEqual(county, "Hartford")
+
+    def test_detects_two_word_county(self):
+        county = parse_similarity_county(
+            "storms similar to wind=6.5 for New Haven"
+        )
+        self.assertEqual(county, "New Haven")
+
+    def test_county_keyword_pattern(self):
+        county = parse_similarity_county(
+            "similar to wind=8.0 for county Litchfield"
+        )
+        self.assertEqual(county, "Litchfield")
+
+
+class TestRouteRegistry(unittest.TestCase):
+    def test_all_routes_have_handlers_except_unknown(self):
+        expected = {
+            Route.DATA_RETRIEVAL,
+            Route.WEATHER_ANALYTICS,
+            Route.SIMILARITY_SEARCH,
+            Route.RAG_KNOWLEDGE,
+        }
+        self.assertEqual(set(ROUTE_HANDLERS.keys()), expected)
+
+    def test_similarity_search_handler_registered(self):
+        self.assertIn(Route.SIMILARITY_SEARCH, ROUTE_HANDLERS)
+        self.assertTrue(callable(ROUTE_HANDLERS[Route.SIMILARITY_SEARCH]))
+
+
+if __name__ == "__main__":
+    unittest.main()

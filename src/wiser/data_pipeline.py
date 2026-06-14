@@ -21,16 +21,16 @@ EXPECTED_COLUMNS = [
 ]
 
 
-def parse_event_code(event_code: str) -> tuple[int, datetime]:
+def parse_event_code(event_code: str) -> tuple[int, datetime, str]:
     """Parse eventCode formatted like 'CT-YYYYMMDDHH'.
 
     Returns:
-        tuple: (storm_code, event_datetime)
+        tuple: (storm_code, event_datetime, state)
     """
-    _, raw_storm_code = event_code.split("-", maxsplit=1)
+    state, raw_storm_code = event_code.split("-", maxsplit=1)
     storm_code = int(raw_storm_code)
     event_datetime = datetime.strptime(raw_storm_code, "%Y%m%d%H")
-    return storm_code, event_datetime
+    return storm_code, event_datetime, state
 
 
 def load_raw_csv(path: str | Path) -> list[dict[str, str]]:
@@ -52,7 +52,7 @@ def normalize_rows(
     weather_data_rows: list[dict[str, object]] = []
 
     for row in rows:
-        storm_code, event_datetime = parse_event_code(row["eventCode"])
+        storm_code, event_datetime, state = parse_event_code(row["eventCode"])
         csv_storm_code = int(row["stormCode"])
         if csv_storm_code != storm_code:
             warnings.warn(
@@ -79,6 +79,7 @@ def normalize_rows(
 
         county_by_name[county] = {
             "county": county,
+            "state": state,
             "ohLine": oh_line,
         }
 
