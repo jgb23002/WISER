@@ -1,1 +1,6 @@
-# No external dependencies are required for the initial scaffold.
+# Core WISER workflows do not require third-party packages.
+#
+# Optional external-context accelerators:
+# faiss-cpu
+# numpy
+# pypdf

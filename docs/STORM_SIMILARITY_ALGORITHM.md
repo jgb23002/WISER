@@ -259,7 +259,17 @@ python scripts/find_similar_storms.py --county Hartford --wind-speed 10.5 --limi
 # → Review top 3 most similar storms to understand typical impact
 ```
 
-### 3. Risk Assessment
+### 3. Narrative Impact Context
+
+For user questions like "impact of the new storm", WISER can also retrieve narrative context from NOAA/NHC/NCEI pages and linked National Hurricane Center Tropical Cyclone Report PDFs:
+
+```bash
+python scripts/wiser_cli.py "impact of the new storm in Connecticut" --limit 5
+```
+
+This is a separate text-similarity workflow from the county wind-speed comparison above. External paragraphs are stored in the RAG tables, then ranked with optional Meta/Facebook FAISS vector search when `faiss-cpu` and `numpy` are installed. Without FAISS, WISER uses a dependency-free exact text-vector fallback. See [EXTERNAL_STORM_CONTEXT.md](EXTERNAL_STORM_CONTEXT.md).
+
+### 4. Risk Assessment
 Identify whether current conditions are "unusual" for the county:
 
 ```bash
