@@ -89,6 +89,7 @@ python scripts/bootstrap_wiser.py \
 | Data / DB management | `load`, `csv`, `database`, `schema`, `ingest` … | `DataRetrievalProcessingAgent` |
 | RAG / knowledge retrieval | `rag`, `docs`, `explain`, `algorithm`, `reference` … | `RAGKnowledgeAgent` |
 | Weather analytics | `outage`, `storm`, `county`, `top`, `trend` … | `StormWeatherAnalyticsAgent` |
+| Similarity search | `similar`, `find similar`, `rank storms`, or parameter patterns (e.g., `wind=`) … | `SimilarityQueryAgent` |
 
 ```bash
 # Top counties by total outage
@@ -105,33 +106,34 @@ python scripts/wiser_cli.py "build sqlite database from csv"
 
 # Ask a RAG question and receive a grounded answer with sources
 python scripts/wiser_cli.py "explain the storm similarity algorithm" --limit 3
+
+# Run a similarity search using natural language
+python scripts/wiser_cli.py "find storms similar to wind=9.2 precip=45 in Fairfield" --limit 5
 ```
 
 The `--limit` flag controls how many rows are returned for top-N queries (default: 10).
 For RAG queries, `--limit` controls retrieved context chunks. Use `--rebuild-rag` to refresh the local index, `--show-rag-context` to print the full augmented prompt, and repeat `--rag-source <path>` to index a custom file or directory.
+For similarity searches, `--county` overrides county auto-detection from query text.
 
 ---
 
-### Step 3 — Storm similarity (your county & wind speed)
+### Step 3 — Storm similarity (multi-dimensional parameters)
 
-After bootstrap, use `find_similar_storms.py` to rank historical storms in a county by how close their peak wind speed (`peakWSPD10`) is to a **current** value you choose. Pass any county and any positive wind speed in m/s.
+After bootstrap, use `find_similar_storms.py` to rank historical storms in a county by how close they are to a current event across up to 6 weather features. Similarity is calculated using a multi-dimensional Z-score Euclidean (L2) distance in a standardized, unit-free space.
 
 **Valid counties** (case-insensitive; use quotes for two-word names):
 
 `Fairfield`, `Hartford`, `Litchfield`, `Middlesex`, `New Haven`, `New London`, `Tolland`, `Windham`
 
 ```bash
-# Your county + your wind speed (m/s) — change both freely
-python scripts/find_similar_storms.py --county Fairfield --wind-speed 9.2
+# Direct multi-dimensional similarity search using wind and precipitation
+python scripts/find_similar_storms.py --county Fairfield --wind-speed 9.2 --precip 45.0 --limit 5
 
-# Different county and speed
+# Search using only peak wind speed (produces identical output to the legacy 1-D algorithm)
 python scripts/find_similar_storms.py --county Hartford --wind-speed 6.5
 
-# Two-word county (quote the name on all shells)
-python scripts/find_similar_storms.py --county "New Haven" --wind-speed 10.5
-
-# Return more or fewer matches (default: 5)
-python scripts/find_similar_storms.py --county Litchfield --wind-speed 8.0 --limit 10
+# Search using other duration threshold weather features
+python scripts/find_similar_storms.py --county "New Haven" --wind-speed 10.5 --wgt5 12 --wgt9 4 --limit 5
 
 # Use a different database file
 python scripts/find_similar_storms.py --county Windham --wind-speed 7.25 --db data/wiser.db
@@ -140,66 +142,64 @@ python scripts/find_similar_storms.py --county Windham --wind-speed 7.25 --db da
 | Flag | Required | Description |
 |---|---|---|
 | `--county` | Yes | Connecticut county name |
-| `--wind-speed` | Yes | Current storm peak wind at 10 m, in **m/s** (must be > 0) |
+| `--wind-speed` | No | Current storm peak wind speed at 10 m, in **m/s** (must be > 0) |
+| `--precip` | No | Total precipitation during storm, in **mm** |
+| `--wgt5 / --wgt9 / --wgt13 / --wgt18` | No | Hours where wind exceeded 5/9/13/18 m/s |
 | `--limit` | No | Number of similar storms to show (default: `5`) |
 | `--db` | No | SQLite path (default: `data/wiser.db`) |
 
 Example output (values depend on your inputs):
 
 ```
+====================================================================================================
 Storm Similarity Analysis for Fairfield
-  Peak Wind Speed (peakWSPD10): 9.20 m/s
-  Mean Wind Speed: 7.41 m/s  |  Std Dev: 1.69 m/s
+====================================================================================================
 
-Rank   Storm Code      Wind (m/s)   Similarity   Outages    Event Date
-1      2020022700      9.20         99.9%        51         2020-02-27 00:00:00
+Query Parameters:
+  Wind (m/s): 9.2
+  Precip (mm): 45
+
+Historical storms in Fairfield: 294
+
+Rank   Storm Code      Similarity   Outages    Wind (m/s)   Precip (mm)  Event Date         
+--------------------------------------------------------------------------------
+1      2019101618      82.4%        132        9.202        35.4         2019-10-16 18:00:00
 ...
 ```
 
-Use the ranked historical **outages** as a rough guide for what a current event with similar wind might look like in that county. Algorithm details: [docs/STORM_SIMILARITY_ALGORITHM.md](docs/STORM_SIMILARITY_ALGORITHM.md).
+Use the ranked historical **outages** as a rough guide for what a current event with similar weather conditions might look like in that county. Algorithm details: [docs/STORM_SIMILARITY_ALGORITHM.md](docs/STORM_SIMILARITY_ALGORITHM.md).
 
 ---
 
 ## Running the Tests
 
-### Schema tests
-
-```bash
-python -m unittest tests.test_schema -v
-```
-
-Expected output:
-```
-test_county_columns ... ok
-test_county_primary_key ... ok
-...
-----------------------------------------------------------------------
-Ran 27 tests in 0.012s
-
-OK
-```
-
-The test suite validates the database schema in an isolated in-memory SQLite instance — no files are created. Tests cover:
-
-| Class | Tests | What's validated |
-|---|---|---|
-| `TestSchemaStructure` | 11 | Tables exist, column names, data types, PKs, indexes |
-| `TestConstraints` | 13 | CHECK, UNIQUE, FK, composite PK enforcement |
-| `TestDataIntegrity` | 3 | Realistic inserts, zero-value edge cases |
-
----
-
-### Storm similarity algorithm tests
-
-```bash
-python -m unittest tests.test_similarity_algorithm -v
-```
-
-Covers statistics (`compute_statistics`), Z-score similarity (`calculate_similarity`), symmetry, edge cases (zero std dev), and Fairfield-style scenarios. The full suite also covers RAG chunking/indexing/search, task routing, and database initialization compatibility:
+To run the entire test suite (104 tests) covering database schema, RAG indexing/retrieval, task routing, query parsing, and similarity algorithms:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+Expected output:
+```
+...
+----------------------------------------------------------------------
+Ran 104 tests in 0.120s
+
+OK
+```
+
+The test files cover the following functionality:
+
+| Test File | Description |
+|---|---|
+| `tests/test_schema.py` | Validates database constraints (CHECK, UNIQUE, FK), composite primary keys, table structures, and column datatypes. |
+| `tests/test_database.py` | Verifies database schema initialization and backwards compatibility with legacy structures. |
+| `tests/test_rag.py` | Tests grounding, chunking, indexing, and answers retrieval inside the RAG engine. |
+| `tests/test_similarity_algorithm.py` | Validates Z-score calculations, statistics, symmetry, and legacy single-dimension mathematical correctness. |
+| `tests/test_similarity_engine.py` | Verifies multi-dimensional Z-score calculations (parity, weights overrides, zero std dev, partial features). |
+| `tests/test_task_routing.py` | Tests keyword and pattern matching routing decisions (avoiding RAG collisions). |
+| `tests/test_wiser_cli.py` | Verifies CLI query parsing, county auto-detection, and dispatch registry handlers. |
+| `tests/test_data_pipeline.py` | Validates parsing of CSV columns and correct extraction of state codes from event codes. |
 
 ---
 
@@ -213,9 +213,9 @@ WISER/
 │   ├── ARCHITECTURE.md           # System design & data flow diagrams
 │   └── WISER Database Info.png   # Schema diagram
 ├── scripts/
-│   ├── bootstrap_wiser.py           # Parses CSV → normalizes → builds DB
-│   ├── find_similar_storms.py       # Storm similarity CLI (--county, --wind-speed)
-│   └── wiser_cli.py                 # Natural-language query entry point
+│   ├── bootstrap_wiser.py        # Parses CSV → normalizes → builds DB
+│   ├── find_similar_storms.py    # Storm similarity CLI (supports up to 6 weather features)
+│   └── wiser_cli.py              # Natural-language query entry point
 ├── sql/
 │   └── schema.sql                # DDL — source of truth for all three tables
 ├── src/
@@ -224,18 +224,23 @@ WISER/
 │       ├── database.py           # Schema init, data loading, row counts
 │       ├── query_engine.py       # SQL queries (top counties, storms, history)
 │       ├── rag.py                # RAG document indexing + lexical retrieval
+│       ├── similarity_engine.py  # Multi-dimensional L2 Z-score similarity calculations
 │       └── agents/
 │           ├── task_routing_agent.py              # Keyword → route classifier
 │           ├── data_retrieval_processing_agent.py # Orchestrates pipeline + DB build
 │           ├── rag_knowledge_agent.py             # Builds/searches local RAG index
+│           ├── similarity_query_agent.py          # Performs similarity query & ranking
 │           └── storm_weather_analytics_agent.py   # Wraps query engine for analytics
 ├── tests/
 │   ├── __init__.py
+│   ├── test_data_pipeline.py     # Data pipeline and state extraction tests
 │   ├── test_database.py          # Database initialization compatibility tests
 │   ├── test_rag.py               # RAG indexing/retrieval tests
 │   ├── test_schema.py            # 27 schema validation tests
 │   ├── test_task_routing.py      # Route classification tests
-│   └── test_similarity_algorithm.py  # Similarity algorithm unit tests
+│   ├── test_similarity_algorithm.py  # Legacy similarity algorithm correctness tests
+│   ├── test_similarity_engine.py # Multi-dimensional similarity engine tests
+│   └── test_wiser_cli.py         # CLI parsing and dispatcher handler registry tests
 ├── requirements.txt
 └── README.md
 ```
@@ -248,7 +253,7 @@ WISER/
 data/testdata.csv
        │
        ▼
-data_pipeline.py          Parse eventCode → stormCode + eventDateTime
+data_pipeline.py          Parse eventCode → stormCode + eventDateTime + state
                           Deduplicate into Storm (294), County (8), WeatherData (2,352)
        │
        ▼
@@ -257,13 +262,14 @@ database.py               Create tables, enforce FK/CHECK constraints, insert ro
        ▼
 data/wiser.db             SQLite database with 3 normalized tables + 3 indexes
        │
-       ├── TaskRoutingAgent        Classifies query by keyword
+       ├── TaskRoutingAgent        Classifies query by keyword/parameters
        │         │
        │    DATA_RETRIEVAL ──────► DataRetrievalProcessingAgent  (rebuild DB)
        │    RAG_KNOWLEDGE ───────► RAGKnowledgeAgent             (retrieve sourced context)
        │    WEATHER_ANALYTICS ───► StormWeatherAnalyticsAgent    (query DB)
+       │    SIMILARITY_SEARCH ───► SimilarityQueryAgent          (rank storms via Z-score)
        │
-       ├── find_similar_storms.py  --county + --wind-speed → ranked historical matches
+       ├── find_similar_storms.py  --county + weather flags → ranked historical matches
        │
        ▼
   Console output
@@ -287,7 +293,7 @@ Key decisions:
 - **BIGINT** for `stormCode` and `ohLine` — 10-digit codes require more than 32-bit int
 - **TIMESTAMP** for `eventDateTime` — proper temporal type, not plain text
 - **VARCHAR(64)** for `county` — bounded, not unbounded TEXT
-- **`state` column dropped** — always `CT`, storing it would be redundant
+- **`state` column in County** — state abbreviation (e.g. `'CT'`) parsed from `eventCode` to support potential multi-state expansion, defaults to `'CT'` for backwards compatibility
 - **CHECK constraints** on all numeric fields — invalid data rejected at DB level
 - **3 indexes** — `outage DESC`, `county`, `eventDateTime` for common query patterns
 

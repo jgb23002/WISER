@@ -2,9 +2,17 @@
 
 ## Overview
 
-The storm similarity algorithm finds historical storms in a specific county that are most similar to a current storm event based on **peak wind speed (peakWSPD10)**.
+The storm similarity algorithm finds historical storms in a specific county that are most similar to a current storm event based on weather conditions. 
 
-It uses **1D statistical distance** with Z-score normalization—no machine learning required. This provides full interpretability while maintaining real-time performance (<10ms).
+Unlike the legacy 1-D univariate wind-only model, the new system supports **multi-dimensional Z-score similarity matching** using any combination of the 6 weather features available in the database:
+- `peakWSPD10` (Peak wind speed)
+- `sumAFWA_TOTPRECIP` (Total precipitation)
+- `wgt5` (Hours wind speed > 5 m/s)
+- `wgt9` (Hours wind speed > 9 m/s)
+- `wgt13` (Hours wind speed > 13 m/s)
+- `wgt18` (Hours wind speed > 18 m/s)
+
+It standardises each feature to Z-scores (mean=0, std=1) across the historical dataset for that county, so all features live in the same unit-free space. Distance is measured as the weighted Euclidean (L2) norm in Z-score space. It is fully interpretable, pure Python with no external dependencies, and resolves queries in `<10ms`.
 
 ---
 
@@ -12,191 +20,91 @@ It uses **1D statistical distance** with Z-score normalization—no machine lear
 
 ### Step 1: Fetch Historical Data
 
+For a given county, retrieve historical weather observations:
+
 ```sql
-SELECT peakWSPD10 FROM WeatherData WHERE county = ?
+SELECT
+    w.stormCode,
+    w.peakWSPD10,
+    w.sumAFWA_TOTPRECIP,
+    w.wgt5,
+    w.wgt9,
+    w.wgt13,
+    w.wgt18,
+    w.outage,
+    s.eventDateTime,
+    s.eventLength
+FROM WeatherData w
+JOIN Storm s ON s.stormCode = w.stormCode
+WHERE LOWER(w.county) = LOWER(?);
 ```
-
-For a given county, retrieve all historical wind speed observations.
-
-**Example (Fairfield County):**
-- 294 historical storms
-- Wind speeds: [5.8, 6.4, 5.7, 10.6, ..., 6.2] m/s
 
 ### Step 2: Compute Population Statistics
 
-Given: W = {w₁, w₂, ..., wₙ} (historical wind speeds)
+For each selected feature $f$, compute the sample mean ($\mu_f$) and sample standard deviation ($\sigma_f$) across the historical dataset for that county:
 
-**Mean (μ):**
-```
-μ = (1/n) × Σ wᵢ
-```
+**Mean ($\mu_f$):**
+$$\mu_f = \frac{1}{n} \sum_{i=1}^n x_{i, f}$$
 
-**Standard Deviation (σ) - with Bessel's correction:**
-```
-σ = √[(1/(n-1)) × Σ(wᵢ - μ)²]
-```
-
-**Example:**
-```
-μ = 7.41 m/s
-σ = 1.69 m/s
-Range: 3.51 - 11.61 m/s
-```
+**Standard Deviation ($\sigma_f$) - with Bessel's correction:**
+$$\sigma_f = \sqrt{\frac{1}{n-1} \sum_{i=1}^n (x_{i, f} - \mu_f)^2}$$
 
 ### Step 3: Standardize Values to Z-Scores
 
-Convert absolute wind speeds to standardized units (# of SDs from mean).
+Convert absolute weather feature values to standardized units (number of standard deviations from the mean) to eliminate unit discrepancies (e.g. comparing wind speed in m/s with precipitation in mm):
 
-**For any wind speed w:**
-```
-z = (w - μ) / σ
-```
+$$z_{i, f} = \frac{x_{i, f} - \mu_f}{\sigma_f}$$
+$$z_{\text{query}, f} = \frac{x_{\text{query}, f} - \mu_f}{\sigma_f}$$
 
-**Example (Fairfield, current storm = 9.2 m/s):**
-```
-z_current = (9.2 - 7.41) / 1.69 = 1.06 SDs above mean
-```
+### Step 4: Calculate Multi-Dimensional Z-Score Distance
 
-### Step 4: Calculate Similarity (1D Distance)
+Compute the weighted L2 (Euclidean) distance in Z-score space between the historical vector and the query vector over the set of active query features $F$:
 
-For each historical storm with wind speed wᵢ:
+$$\text{distance} = \sqrt{\sum_{f \in F} w_f \cdot (z_{i, f} - z_{\text{query}, f})^2}$$
 
-**Z-score distance:**
-```
-distance = |z_i - z_current|
-         = |(wᵢ - μ)/σ - (w_current - μ)/σ|
-```
+*Note: Default weight $w_f = 1.0$ for all features. If all historical values for a feature are identical ($\sigma_f = 0.0$):*
+*   *If the query matches the historical value, its distance contribution is $0.0$.*
+*   *If the query differs from the historical value, the distance is treated as $\infty$, resulting in a similarity score of $0.0$ (exact matches are required for constant features).*
 
-**Similarity score (inverse distance):**
-```
-similarity = 1 / (1 + distance)
-           ∈ [0, 1]
-```
+### Step 5: Convert Distance to Similarity Score
+
+Convert the non-negative distance metric to a normalized similarity score in $(0, 1]$:
+
+$$\text{similarity} = \frac{1}{1 + \text{distance}}$$
 
 **Interpretation:**
-- `similarity = 1.0` → identical wind speed
-- `similarity = 0.5` → 1 SD away
-- `similarity ≈ 0.33` → 2 SDs away
-- `similarity → 0` → many SDs away
+- $\text{similarity} = 1.0$ $\rightarrow$ exact match on all active query parameters
+- $\text{similarity} = 0.5$ $\rightarrow$ cumulative Z-score distance of 1.0
+- $\text{similarity} \rightarrow 0$ $\rightarrow$ cumulative Z-score distance approaches infinity
 
-### Step 5: Rank and Return Top N
+### Step 6: Rank and Return Top N
 
-Sort all historical storms by similarity (descending).
-
-Return top N results with:
-- Original wind speed
-- Z-score
-- Similarity score
-- Historical outage count (for decision support)
+Sort all historical storms by similarity score (descending) and return the top N matches, including historical outage counts as a guide for decision support.
 
 ---
 
 ## Usage
 
-### Basic Query
+### Direct CLI Search
 
-Find top 5 similar storms in Fairfield County for a 9.2 m/s wind event:
-
-```bash
-python scripts/find_similar_storms.py --county Fairfield --wind-speed 9.2
-```
-
-### With Custom Limit
+Find the top 5 similar storms in Fairfield County for an event with peak wind speed of 9.2 m/s and 45.0 mm of precipitation:
 
 ```bash
-python scripts/find_similar_storms.py --county Hartford --wind-speed 6.5 --limit 10
+python scripts/find_similar_storms.py --county Fairfield --wind-speed 9.2 --precip 45.0 --limit 5
 ```
 
-### With Custom Database Path
+### Natural-Language routing CLI
 
 ```bash
-python scripts/find_similar_storms.py \
-  --county "New Haven" \
-  --wind-speed 5.0 \
-  --db path/to/custom.db
+python scripts/wiser_cli.py "find storms similar to wind=9.2 precip=45 in Fairfield" --limit 5
 ```
 
----
+### Parity with Legacy 1-D wind-only algorithm
+Querying with only a single feature (e.g., wind speed) yields the exact same ranking and similarity scores as the legacy 1-D algorithm:
 
-## Example Output
-
+```bash
+python scripts/find_similar_storms.py --county Hartford --wind-speed 6.5
 ```
-==========================================================================================
-Storm Similarity Analysis for Fairfield
-==========================================================================================
-
-Current Storm:
-  Peak Wind Speed (peakWSPD10): 9.20 m/s
-  Z-Score: 1.06 (standardized distance from mean)
-
-Historical Data Summary (Fairfield):
-  Total Historical Storms: 294
-  Mean Wind Speed: 7.41 m/s
-  Std Dev: 1.69 m/s
-  Range: 3.51 - 11.61 m/s
-
-Rank   Storm Code      Wind (m/s)   Z-Score    Similarity   Outages    Precip (mm)  Event Date        
-------------------------------------------------------------------------------------------
-1      2020022700      9.20         1.06       99.9%        51         15.41        2020-02-27 00:00:00
-2      2016032818      9.21         1.06       99.7%        124        0.02         2016-03-28 18:00:00
-3      2023033118      9.22         1.07       99.0%        15         12.82        2023-03-31 18:00:00
-4      2016030100      9.16         1.03       97.5%        24         16.98        2016-03-01 00:00:00
-5      2020042112      9.16         1.03       97.4%        30         9.62         2020-04-21 12:00:00
-
-==========================================================================================
-```
-
-**What the results mean:**
-- Rank 1 has identical wind speed (99.9% similar) with 51 historical outages
-- Rank 2 is almost identical (99.7% similar) with 124 historical outages
-- Even Rank 5 is 97.4% similar (only 0.03 SD away)
-
----
-
-## Algorithm Properties
-
-### Advantages
-
-✅ **Fully interpretable:** Z-scores explain exactly how far each match is from the mean
-✅ **Real-time:** O(n) calculation for n historical storms (~10ms for 300 storms)
-✅ **No training required:** Works immediately with historical data
-✅ **Robust:** Handles edge cases (zero std dev, empty datasets)
-✅ **Domain-appropriate:** Wind speed is directly relevant to outage prediction
-
-### Why Not Machine Learning?
-
-- ❌ Black-box: Can't explain "why" a storm is similar
-- ❌ Requires labeled training data we don't have
-- ❌ Overfitting risk: Only 294 storms × 8 counties = 2,352 observations
-- ❌ Training overhead: Can't retrain in real-time
-- ❌ Regulatory issues: Utilities need explainability
-
----
-
-## Mathematical Properties
-
-### Similarity Score Range
-
-For any pairing, similarity ∈ (0, 1]:
-
-| Distance (SDs) | Similarity | Example |
-|---|---|---|
-| 0 | 1.00 | Identical wind |
-| 0.5 | 0.67 | Half SD away |
-| 1.0 | 0.50 | 1 SD away |
-| 2.0 | 0.33 | 2 SDs away |
-| 3.0 | 0.25 | 3 SDs away |
-| ∞ | 0 | Very different |
-
-### Statistical Validity
-
-Uses **Bessel's correction** (n-1 denominator) for unbiased sample standard deviation:
-
-```
-σ_sample = √[Σ(wᵢ - μ)² / (n-1)]
-```
-
-This accounts for estimation bias when working with samples rather than full populations.
 
 ---
 
@@ -204,88 +112,47 @@ This accounts for estimation bias when working with samples rather than full pop
 
 ### File Structure
 
-```
-scripts/find_similar_storms.py     # Main CLI script
-tests/test_similarity_algorithm.py # Core algorithm unit tests
-```
-
-Canonical algorithm write-up: this file (`docs/STORM_SIMILARITY_ALGORITHM.md`).
-`scripts/STORM_SIMILARITY_ALG.md` is a short pointer here for backward-compatible links.
+*   `src/wiser/similarity_engine.py`: Contains the multi-dimensional L2 Z-score math, population statistics computation, and ranking logic.
+*   `src/wiser/agents/similarity_query_agent.py`: Database agent fetching historical records and invoking the similarity engine.
+*   `scripts/find_similar_storms.py`: User-facing CLI tool displaying ranked similar storms and historical outages.
+*   `tests/test_similarity_engine.py`: Unit tests verifying Z-score calculations, feature overrides, zero standard deviations, and single-parity checks.
+*   `tests/test_similarity_algorithm.py`: Unit tests verifying legacy 1-D mathematical calculations (now defined locally in the tests suite).
 
 ### Core Functions
 
+Inside `src/wiser/similarity_engine.py`:
 ```python
-def compute_statistics(wind_speeds) -> (mean, std_dev, min_val, max_val)
-    # Compute μ, σ, and range
+def compute_feature_stats(records, features) -> dict[str, tuple[float, float]]
+    # Compute mean and standard deviation per feature
 
-def calculate_similarity(hist_wind, current_wind, mean, std_dev) 
-    -> (similarity, z_historical, z_current)
-    # Calculate 1D Z-score distance
+def compute_l2_zscore_distance(hist_values, query_values, stats, weights) -> float
+    # Calculate weighted Euclidean distance in Z-score space
 
-def find_similar_storms(county, current_wind_speed, limit=5) 
-    -> list[storm_dict]
-    # Query DB, compute stats, rank results
+def distance_to_similarity(distance) -> float
+    # Convert distance to score in (0, 1]
+
+def rank_by_similarity(historical, query_params, feature_weights=None) -> list[tuple[dict, float]]
+    # Orchestrates stats computation, distance calculation, and ranks results
+```
+
+Inside `src/wiser/agents/similarity_query_agent.py`:
+```python
+class SimilarityQueryAgent:
+    def find_similar(self, conn, county, query_params, limit=5) -> list[dict]
+        # Query database, invoke similarity_engine, and return top similar records
 ```
 
 ### Test Coverage
 
-Run the similarity unit tests:
+Run the multi-dimensional similarity unit tests:
 
 ```bash
-python -m unittest tests.test_similarity_algorithm -v
+python -m unittest tests.test_similarity_engine -v
 ```
 
-`tests/test_similarity_algorithm.py` covers statistics computation, similarity scoring,
-edge cases (zero standard deviation), mathematical properties (range, symmetry,
-monotonic decrease), and Fairfield-style scenarios.
-
----
-
-## Use Cases
-
-### 1. Outage Prediction
-When a current storm has wind speed 9.2 m/s, find historical storms with similar wind to estimate expected outages:
-
-```bash
-python scripts/find_similar_storms.py --county Fairfield --wind-speed 9.2
-# → Top match had 51 outages → expect ~51 outages for current storm
-```
-
-### 2. Emergency Response Planning
-Before a forecasted storm, prepare resources based on similar historical events:
-
-```bash
-python scripts/find_similar_storms.py --county Hartford --wind-speed 10.5 --limit 3
-# → Review top 3 most similar storms to understand typical impact
-```
-
-### 3. Risk Assessment
-Identify whether current conditions are "unusual" for the county:
-
-```bash
-python scripts/find_similar_storms.py --county "New Haven" --wind-speed 3.5
-# → If similarity < 0.5, this is unusual (< 1 SD from mean)
-```
-
----
-
-## Performance Notes
-
-- **Query time:** <10ms for 294 historical storms
-- **Memory:** Minimal (just wind speed array + statistics)
-- **Scalability:** O(n) where n = number of historical storms
-- **Database:** Reads only `peakWSPD10` column per query
-
-For millions of historical records, consider adding:
-- Database indexes on `county` and `peakWSPD10`
-- Cached statistics updated periodically
-- Parallel queries across counties
-
----
-
-## References
-
-- **Z-Score Formula:** (x - μ) / σ
-- **Similarity Function:** 1 / (1 + |z_i - z_current|)
-- **Bessel's Correction:** n-1 for sample std dev
-- **Statistical Basis:** Standard univariate distance in normalized space
+This test suite covers:
+1.  **Single-feature parity** – ensuring wind-only query matches the legacy 1-D Z-score math.
+2.  **Two-feature ranking** – verifying that adding precipitation alters rankings appropriately.
+3.  **Zero standard deviation safety** – ensuring constant features do not crash the engine.
+4.  **Feature weight overrides** – testing that boosting specific feature weights modifies similarity and rankings.
+5.  **Partial query parameters** – ensuring queries can run on any subset of the 6 weather features.

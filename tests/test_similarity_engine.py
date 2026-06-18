@@ -4,7 +4,7 @@ Tests for the multi-dimensional L2 Z-score similarity engine.
 Five test categories required by the deliverables:
   1. Single-feature parity  – rank_by_similarity with only peakWSPD10 must
                               produce the same scores as the legacy
-                              calculate_similarity() function.
+                              calculate_similarity() function (now in tests/test_similarity_algorithm.py).
   2. Two-feature ranking    – adding precipitation changes which storm ranks
                               first when wind is close but precip is far.
   3. Zero std-dev safety    – constant historical feature handled without crash.
@@ -24,12 +24,8 @@ SRC_DIR = Path(__file__).parent.parent / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-# Add scripts to path so the legacy functions are importable
-SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-from find_similar_storms import calculate_similarity, compute_statistics
+# Add tests to path to import legacy math functions from test_similarity_algorithm
+from tests.test_similarity_algorithm import calculate_similarity, compute_statistics
 
 from wiser.similarity_engine import (
     compute_feature_stats,

@@ -26,9 +26,9 @@
 │                                                                           │
 │  2. Normalize Data                                                       │
 │     └─ src/wiser/data_pipeline.py::normalize_rows()                     │
-│        ├─ Parse eventCode → (stormCode, eventDateTime)                  │
+│        ├─ Parse eventCode → (stormCode, eventDateTime, state)           │
 │        ├─ Extract unique Storm records (294 unique)                     │
-│        ├─ Extract unique County records (8 unique)                      │
+│        ├─ Extract unique County records with state (8 unique)           │
 │        └─ Create WeatherData records (2,352 records)                    │
 │                                                                           │
 │  3. Write Normalized CSVs                                                │
@@ -55,46 +55,49 @@
 │  2. Load Normalized Data                                                 │
 │     └─ src/wiser/database.py::load_normalized_rows()                    │
 │        ├─ INSERT INTO Storm (294 rows)                                   │
-│        ├─ INSERT INTO County (8 rows)                                    │
+│        ├─ INSERT INTO County with state (8 rows)                         │
 │        └─ INSERT INTO WeatherData (2,352 rows)                           │
 │                                                                           │
 │  Result: data/wiser.db (SQLite database)                                 │
 │                                                                           │
 └────────────────────────────┬────────────────────────────────────────────┘
                              │
-         ┌───────────────────┴───────────────────┐
-         │                                       │
-         ▼                                       ▼
-┌──────────────────────────┐        ┌───────────────────────┐
-│   AGENT LAYER            │        │   QUERY LAYER         │
-├──────────────────────────┤        ├───────────────────────┤
-│                          │        │                       │
-│  Task Routing Agent      │        │  Query Engine         │
-│  ├─ Routes NL queries    │        │  ├─ top_counties...() │
-│  │  by keyword           │        │  ├─ top_storms...()   │
-│  │                       │        │  └─ county_history()  │
-│  └─ Output: Route enum   │        │                       │
-│                          │        │  data/wiser.db ◄──────┘
-│  Data Retrieval Agent    │
-│  ├─ normalize()          │
-│  ├─ save_normalized()    │
-│  └─ build_database()     │
+         ┌───────────────────┼───────────────────┐
+         │                   │                   │
+         ▼                   ▼                   ▼
+┌──────────────────────────┐ │ ┌───────────────────────┐
+│   AGENT LAYER            │ │ │   QUERY LAYER         │
+├──────────────────────────┤ │ ├───────────────────────┤
+│                          │ │ │                       │
+│  Task Routing Agent      │ │ │  Query Engine         │
+│  ├─ Routes NL queries    │ │ │  ├─ top_counties...() │
+│  │  by keyword/params    │ │ │  ├─ top_storms...()   │
+│  │                       │ │ │  └─ county_history()  │
+│  └─ Output: Route enum   │ │ │                       │
+│                          │ │ │  data/wiser.db ◄──────┘
+│  Data Retrieval Agent    │ │ └───────────────────────┘
+│  ├─ normalize()          │ │
+│  ├─ save_normalized()    │ │
+│  └─ build_database()     │ ├─────────────────┐
+│                          │                   │
+│  Analytics Agent         │                   ▼
+│  ├─ county_outage_...()  │        ┌───────────────────────┐
+│  ├─ top_storms_by...()   │        │  SIMILARITY ENGINE    │
+│  ├─ county_storm_...()   │        ├───────────────────────┤
+│  │                       │        │                       │
+│  RAG Knowledge Agent     │        │  Similarity Engine    │
+│  ├─ ensure_index()       │        │  ├─ rank_by_sim...()  │
+│  ├─ retrieve()           │        │  └─ compute_stats()   │
+│  ├─ build_context()      │        │                       │
+│  └─ answer()             │        └───────────────────────┘
 │                          │
-│  Analytics Agent         │
-│  ├─ county_outage_..._from_db() │
-│  ├─ top_storms_by..._from_db()  │
-│  └─ county_storm_..._from_db()   │
-│                          │
-│  RAG Knowledge Agent     │
-│  ├─ ensure_index()       │
-│  ├─ retrieve()           │
-│  ├─ build_context()      │
-│  └─ answer()             │
-│                          │
-└────────┬─────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────────────────────────────┐
+│  Similarity Query Agent  │
+│  ├─ find_similar() ──────┼───────────────▲
+│                          │               │
+└────────┬─────────────────┘               │
+         │                                 │
+         ▼                                 │
+┌──────────────────────────────────────────┴──────────────────────────────┐
 │                     USER INTERFACES                                      │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                           │
@@ -104,12 +107,16 @@
 │                                                                           │
 │  2. CLI Interface                                                        │
 │     scripts/wiser_cli.py                                                 │
-│     └─ Accepts natural language queries:                                 │
+│     └─ Accepts natural language queries and parses key=value parameters: │
 │        "top counties by outage"                                          │
-│        "top storms by outage"                                            │
-│        "history for county Hartford"                                     │
-│        "build sqlite database from csv"                                  │
+│        "find storms similar to wind=9.2 precip=45 in Fairfield"          │
 │        "explain the storm similarity algorithm"                          │
+│                                                                           │
+│  3. Similarity Search CLI                                                │
+│     scripts/find_similar_storms.py                                       │
+│     └─ Directly queries multidimensional storm similarity:               │
+│        python scripts/find_similar_storms.py --county Hartford \         │
+│               --wind-speed 6.5 --precip 30.0                             │
 │                                                                           │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -133,20 +140,21 @@ STORM TABLE
   Check: eventLength > 0
 
 COUNTY TABLE
-┌──────────────┬──────────────┐
-│ county       │ ohLine       │
-│ (VARCHAR64)  │ (BIGINT)     │
-├──────────────┼──────────────┤
-│ Fairfield    │ 4887830      │
-│ Hartford     │ 5869550      │
-│ Litchfield   │ 3975201      │
-│ Middlesex    │ 2302299      │
-│ New Haven    │ 3233197      │
-│ New London   │ 2761047      │
-│ Tolland      │ 2028414      │
-│ Windham      │ 2400780      │
-└──────────────┴──────────────┘
+┌──────────────┬──────────────┬──────────────┐
+│ county       │ state        │ ohLine       │
+│ (VARCHAR64)  │ (VARCHAR2)   │ (BIGINT)     │
+├──────────────┼──────────────┼──────────────┤
+│ Fairfield    │ CT           │ 4887830      │
+│ Hartford     │ CT           │ 5869550      │
+│ Litchfield   │ CT           │ 3975201      │
+│ Middlesex    │ CT           │ 2302299      │
+│ New Haven    │ CT           │ 3233197      │
+│ New London   │ CT           │ 2761047      │
+│ Tolland      │ CT           │ 2028414      │
+│ Windham      │ CT           │ 2400780      │
+└──────────────┴──────────────┴──────────────┘
   Primary Key: county
+  Check: LENGTH(state) = 2
   Check: ohLine > 0
 
 WEATHERDATA TABLE
@@ -154,10 +162,10 @@ WEATHERDATA TABLE
 │stormCode │ county    │ precip  │ windspd  │ wgt5 │ wgt9 │wgt13 │wgt18 │ outage │
 │(BIGINT)  │(VARCHAR64)│ (REAL)  │ (REAL)   │(INT) │(INT) │(INT) │(INT) │ (INT)  │
 ├──────────┼───────────┼─────────┼──────────┼──────┼──────┼──────┼──────┼────────┤
-│2005100800│Fairfield │ 231.98  │ 5.79     │  9   │  0   │  0   │  0   │  186   │
+│2005100800│Fairfield  │ 231.98  │ 5.79     │  9   │  0   │  0   │  0   │  186   │
 │2005100800│ Hartford  │ 209.49  │ 6.36     │  15  │  1   │  0   │  0   │  86    │
-│2005100800│Litchfield│ 228.15  │ 5.69     │  8   │  1   │  0   │  0   │  55    │
-│...       │...       │...      │...       │...   │...   │...   │...   │...     │
+│2005100800│Litchfield │ 228.15  │ 5.69     │  8   │  1   │  0   │  0   │  55    │
+│...       │...        │...      │...       │...   │...   │...   │...   │...     │
 └──────────┴───────────┴─────────┴──────────┴──────┴──────┴──────┴──────┴────────┘
   Composite Primary Key: (stormCode, county)
   Foreign Keys: stormCode→Storm, county→County
@@ -180,12 +188,12 @@ Input:   "CT-2005100800"
            ▼
 Split by '-'
            ▼
-State:   "CT"  (always Connecticut, not stored)
+State:   "CT"  (extracted and stored in County)
 Code:    "2005100800"
            ▼
 Parse as YYYYMMDDHH
            ▼
-stormCode:    2005100800 (BIGINT)
+stormCode:     2005100800 (BIGINT)
 eventDateTime: 2005-10-08 00:00:00 (TIMESTAMP)
 ```
 
@@ -196,7 +204,7 @@ Raw CSV (2,352 rows)
       ▼
 Extract Unique Storms: 294
 Extract Unique Counties: 8 (Fairfield, Hartford, Litchfield, Middlesex,
-                           New Haven, New London, Tolland, Windham)
+                           New Haven, New London, Tolland, Windham) with state abbreviation
 Extract WeatherData: 2,352 (one per CSV row, each storm-county pair)
       ▼
 Normalized Data
@@ -212,6 +220,7 @@ Normalized Data
 
 2. INSERT INTO County (8 rows)
    ✓ All county names valid
+   ✓ state abbreviation present
    ✓ All ohLine values > 0
 
 3. INSERT INTO WeatherData (2,352 rows)
@@ -224,6 +233,24 @@ Normalized Data
 ---
 
 ## Query Examples
+
+### Multi-Dimensional Storm Similarity
+
+```python
+# Agent Call
+similarity_agent = SimilarityQueryAgent()
+results = similarity_agent.find_similar(
+    conn,
+    county="Fairfield",
+    query_params={"peakWSPD10": 9.2, "sumAFWA_TOTPRECIP": 45.0},
+    limit=5
+)
+
+# Internally utilizes similarity_engine.py to compute L2 Z-score distances:
+# stats = compute_feature_stats(historical, ["peakWSPD10", "sumAFWA_TOTPRECIP"])
+# distance = compute_l2_zscore_distance(hist_values, query_values, stats, weights)
+# similarity = distance_to_similarity(distance)
+```
 
 ### RAG Knowledge Retrieval
 
@@ -259,81 +286,54 @@ LIMIT 5;
 # Uses Index: idx_weatherdata_outage (DESC on outage)
 ```
 
-### Top 5 Storms by Total Outage
-
-```python
-# Agent Call
-analytics_agent.top_storms_by_outage_from_db(conn, limit=5)
-
-# SQL Executed
-SELECT s.stormCode,
-       s.eventDateTime,
-       s.eventLength,
-       SUM(w.outage) AS total_outage
-FROM Storm s
-JOIN WeatherData w ON w.stormCode = s.stormCode
-GROUP BY s.stormCode, s.eventDateTime, s.eventLength
-ORDER BY total_outage DESC
-LIMIT 5;
-
-# Uses Indexes: idx_storm_datetime (JOIN), idx_weatherdata_outage (ORDER)
-```
-
-### County Storm History
-
-```python
-# Agent Call
-analytics_agent.county_storm_history_from_db(conn, county="Fairfield", limit=5)
-
-# SQL Executed
-SELECT s.stormCode,
-       s.eventDateTime,
-       w.sumAFWA_TOTPRECIP,
-       w.peakWSPD10,
-       w.outage
-FROM WeatherData w
-JOIN Storm s ON s.stormCode = w.stormCode
-WHERE lower(w.county) = lower('Fairfield')
-ORDER BY w.outage DESC, s.eventDateTime DESC
-LIMIT 5;
-
-# Uses Indexes: idx_weatherdata_county (WHERE), idx_weatherdata_outage (ORDER)
-```
-
 ---
 
 ## Testing Architecture
 
 ```
-test_schema.py (27 comprehensive tests)
+test_schema.py (27 schema-integrity tests)
 ├─ TestSchemaStructure (11 tests)
 │  ├─ Table existence
-│  ├─ Column definitions and types
-│  ├─ Primary key structure
-│  ├─ Composite keys
+│  ├─ Column definitions (including state in County)
+│  ├─ Primary key structures
 │  └─ Index presence
 │
 ├─ TestConstraints (13 tests)
-│  ├─ CHECK constraints (8 tests)
-│  │  ├─ eventLength > 0
-│  │  ├─ ohLine > 0
-│  │  ├─ sumAFWA_TOTPRECIP >= 0
-│  │  ├─ peakWSPD10 > 0
-│  │  ├─ wgt5-18 >= 0
-│  │  └─ outage >= 0
+│  ├─ CHECK constraints (9 tests)
+│  │  ├─ eventLength > 0, ohLine > 0, LENGTH(state) = 2
+│  │  └─ sumAFWA_TOTPRECIP >= 0, peakWSPD10 > 0, wgt* >= 0, outage >= 0
 │  ├─ UNIQUE constraint (eventDateTime)
-│  ├─ Primary key uniqueness (2 tests)
-│  ├─ Foreign key integrity (2 tests)
-│  │  ├─ stormCode must exist
-│  │  └─ county must exist
-│  └─ Composite primary key enforcement
+│  ├─ Primary key uniqueness
+│  └─ Foreign key integrity
 │
 └─ TestDataIntegrity (3 tests)
-   ├─ Realistic data insertion
-   ├─ Zero value handling
-   └─ Transaction atomicity
 
-Result: 27/27 ✓ PASSING
+test_similarity_engine.py (27 tests for multi-dimensional L2 algorithm properties)
+├─ TestComputeFeatureStats (mean, standard deviation, Bessel's correction)
+├─ TestComputeL2ZscoreDistance (weighted Euclidean norm, constant features safety)
+├─ TestDistanceToSimilarity (normalization mapping to (0, 1])
+├─ TestSingleFeatureParity (parities validation against legacy 1-D math)
+├─ TestTwoFeatureRankingDifference (multi-feature rankings updates validation)
+├─ TestZeroStdDevSafety (handles constant historical fields without crashes)
+└─ TestFeatureWeightOverride (validates custom weight configuration)
+
+test_task_routing.py (7 routing classifier tests)
+├─ Validates Route.DATA_RETRIEVAL, Route.WEATHER_ANALYTICS, Route.RAG_KNOWLEDGE
+└─ Validates Route.SIMILARITY_SEARCH classification and ignores RAG collisions
+
+test_wiser_cli.py (10 CLI registry and parsing tests)
+├─ Validates natural language parameter extractor (wind=9.2, wgt5=12)
+├─ Validates county detection and auto-resolution from text query strings
+└─ Validates dispatcher handlers registry (ROUTE_HANDLERS) mapping
+
+test_data_pipeline.py (1 pipeline test)
+└─ Test eventCode parsing and state abbreviation extraction logic
+
+test_database.py (1 initialization test)
+test_similarity_algorithm.py (9 tests)
+test_rag.py (22 tests)
+
+Result: 106/106 ✓ PASSING
 ```
 
 ---
@@ -391,15 +391,19 @@ data_pipeline.py (CSV → Normalized dicts)
                │      ▼
                │  data/wiser.db
                │
-               └─ StormWeatherAnalyticsAgent
+               ├─ StormWeatherAnalyticsAgent
+               │  │
+               │  └─ *_from_db() query wrappers
+               │      │
+               │      ▼
+               │  query_engine.py
+               │
+               └─ SimilarityQueryAgent
                   │
-                  └─ *_from_db() query wrappers
+                  └─ find_similar()
                       │
                       ▼
-                  query_engine.py
-                  ├─ top_counties_by_outage()
-                  ├─ top_storms_by_outage()
-                  └─ county_storm_history()
+                  similarity_engine.py (Z-score math)
                       │
                       ▼
                   data/wiser.db (READ)
@@ -408,24 +412,18 @@ User Interfaces
     │
     ├─ wiser_cli.py
     │  │
-    │  ├─ TaskRoutingAgent (route)
+    │  ├─ TaskRoutingAgent (route classification)
     │  ├─ DataRetrievalProcessingAgent
-    │  ├─ RAGKnowledgeAgent
-    │  │  │
-    │  │  ▼
-    │  │  rag.py
-    │  │  ├─ index_sources()
-    │  │  ├─ search_rag()
-    │  │  ├─ answer_rag()
-    │  │  └─ build_augmented_context()
-    │  │      │
-    │  │      ▼
-    │  │  data/wiser.db (RagDocument + RagChunk)
-    │  │
+    │  ├─ RAGKnowledgeAgent (rag.py index & search)
+    │  ├─ SimilarityQueryAgent (find_similar)
     │  └─ StormWeatherAnalyticsAgent
     │      │
     │      ▼
     │  Console output
+    │
+    ├─ find_similar_storms.py
+    │  │
+    │  └─ SimilarityQueryAgent (find_similar)
     │
     └─ bootstrap_wiser.py
        │
@@ -439,7 +437,7 @@ User Interfaces
 ```
 Required Files
 ├─ sql/schema.sql          ← Source of truth for DDL
-├─ data/testdata.csv           ← Raw input data
+├─ data/testdata.csv       ← Raw input data
 └─ src/wiser/*.py          ← Core library
 
 Configuration
@@ -453,66 +451,4 @@ Configuration
    ├─ --output-dir <path>
    ├─ --db <path>
    └─ --limit <n>
-
-Future Enhancements
-├─ Environment variables for paths
-├─ Configuration file (YAML/TOML)
-├─ Database connection pooling
-├─ Logging configuration
-└─ Performance monitoring
 ```
-
----
-
-## Error Handling Strategy
-
-```
-CSV Parse Errors
-├─ Missing expected columns
-├─ Invalid eventCode format
-├─ Invalid numeric values
-└─ Malformed dates
-
-Schema Violations
-├─ NOT NULL constraint violations
-├─ PRIMARY KEY uniqueness violations
-├─ FOREIGN KEY reference violations
-├─ CHECK constraint violations
-├─ UNIQUE constraint violations
-└─ Type mismatches
-
-Handled By
-├─ try/except in data_pipeline.py
-├─ Database constraints (preferred)
-├─ Validation tests (test_schema.py)
-└─ CLI error messages
-```
-
----
-
-## Performance Characteristics
-
-### Data Loading (testdata.csv)
-- **CSV parsing**: ~10-50ms for 2,352 rows
-- **Normalization**: ~5-20ms (Python dicts)
-- **Database insert**: ~50-100ms (batched executemany)
-- **Total**: <300ms end-to-end
-
-### Queries (in-memory SQLite)
-- **Top counties**: <1ms (uses idx_weatherdata_outage)
-- **Top storms**: <2ms (uses indexes on join)
-- **County history**: <1ms (uses idx_weatherdata_county)
-- **Full table scans**: <5ms
-
-### Storage
-- **testdata.csv**: ~250KB (raw)
-- **Normalized CSVs**: ~180KB (3 files)
-- **SQLite DB**: ~100KB (compressed, with indexes)
-
-### Scalability
-- Current: 294 storms × 8 counties = 2,352 records
-- Tested up to: 2,352 records (all tests pass)
-- Expected scaling:
-  - 100K records: <100ms queries
-  - 1M records: <500ms queries (SQLite acceptable)
-  - 10M+ records: Switch to PostgreSQL recommended

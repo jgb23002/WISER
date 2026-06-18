@@ -14,14 +14,75 @@ SRC_DIR = Path(__file__).parent.parent / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-# Import from the script
-SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
+import math
 
-from find_similar_storms import (
-    calculate_similarity,
-    compute_statistics,
-)
+# Legacy 1-D functions defined locally for testing and parity verification
+def compute_statistics(wind_speeds: list[float]) -> tuple[float, float, float, float]:
+    """
+    Compute mean, standard deviation, min, and max for wind speeds.
+
+    Uses Bessel's correction (n-1) for sample standard deviation.
+
+    Args:
+        wind_speeds: List of peakWSPD10 values
+
+    Returns:
+        Tuple of (mean, std_dev, min_val, max_val)
+    """
+    if not wind_speeds:
+        return 0.0, 0.0, 0.0, 0.0
+
+    n = len(wind_speeds)
+    mean = sum(wind_speeds) / n
+
+    if n < 2:
+        return mean, 0.0, min(wind_speeds), max(wind_speeds)
+
+    variance = sum((x - mean) ** 2 for x in wind_speeds) / (n - 1)
+    std_dev = math.sqrt(variance)
+
+    return mean, std_dev, min(wind_speeds), max(wind_speeds)
+
+
+def calculate_similarity(
+    historical_wind: float,
+    current_wind: float,
+    mean: float,
+    std_dev: float,
+) -> tuple[float, float, float]:
+    """
+    Calculate similarity between current and historical storm.
+
+    Uses Z-score (standardized distance) to measure similarity.
+
+    Similarity = 1 / (1 + normalized_distance)
+    - 1.0 = identical wind speed
+    - 0.5 = 1 standard deviation away
+    - 0.33 = 2 standard deviations away
+
+    Args:
+        historical_wind: Historical peakWSPD10
+        current_wind: Current peakWSPD10
+        mean: Mean of historical wind speeds
+        std_dev: Standard deviation of historical wind speeds
+
+    Returns:
+        Tuple of (similarity_score, z_historical, z_current)
+    """
+    if std_dev == 0:
+        # All historical values are identical
+        if historical_wind == current_wind:
+            return 1.0, 0.0, 0.0
+        else:
+            return 0.0, 0.0, 0.0
+
+    z_historical = (historical_wind - mean) / std_dev
+    z_current = (current_wind - mean) / std_dev
+    distance = abs(z_historical - z_current)
+    similarity = 1.0 / (1.0 + distance)
+
+    return similarity, z_historical, z_current
+
 
 
 class TestComputeStatistics(unittest.TestCase):
