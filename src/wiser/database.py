@@ -6,15 +6,25 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "sql" / "schema.sql"
 REQUIRED_TABLES = frozenset({"Storm", "County", "WeatherData"})
+DEFAULT_SQLITE_TIMEOUT_SECONDS = 30.0
+DEFAULT_SQLITE_BUSY_TIMEOUT_MS = int(DEFAULT_SQLITE_TIMEOUT_SECONDS * 1000)
 
 
-def connect(db_path: str | Path, *, create: bool = True) -> sqlite3.Connection:
+def connect(
+    db_path: str | Path,
+    *,
+    create: bool = True,
+    timeout: float = DEFAULT_SQLITE_TIMEOUT_SECONDS,
+) -> sqlite3.Connection:
     path = Path(db_path)
     if create:
         path.parent.mkdir(parents=True, exist_ok=True)
     elif not path.is_file():
         raise FileNotFoundError(f"Database not found at {path}")
-    return sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=timeout)
+    conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)}")
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
 
 
 def has_required_tables(conn: sqlite3.Connection) -> bool:

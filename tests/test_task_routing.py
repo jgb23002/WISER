@@ -23,6 +23,11 @@ class TestTaskRoutingAgent(unittest.TestCase):
 
         self.assertEqual(decision.route, Route.RAG_KNOWLEDGE)
 
+    def test_routes_storm_impact_queries_to_rag(self):
+        decision = self.agent.route("impact of the new storm")
+
+        self.assertEqual(decision.route, Route.RAG_KNOWLEDGE)
+
     def test_keeps_top_counties_as_weather_analytics(self):
         decision = self.agent.route("top counties by outage")
 

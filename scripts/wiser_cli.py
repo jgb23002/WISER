@@ -25,6 +25,14 @@ from wiser.agents.similarity_query_agent import SimilarityQueryAgent
 from wiser.agents.storm_weather_analytics_agent import StormWeatherAnalyticsAgent
 from wiser.agents.task_routing_agent import Route, TaskRoutingAgent
 from wiser.database import connect, get_table_counts, has_required_tables
+from wiser.external_sources import (
+    DEFAULT_STORM_CONTEXT_URLS,
+    answer_storm_impact,
+    index_external_sources,
+    should_use_external_storm_context,
+    similarity_backend_status,
+)
+from wiser.openai_summarizer import openai_config
 from wiser.rag import DEFAULT_RAG_SOURCES, format_excerpt
 
 # ---------------------------------------------------------------------------
@@ -152,6 +160,13 @@ class CliContext:
     similarity_agent: SimilarityQueryAgent
     rebuild_rag: bool
     show_rag_context: bool
+    web_sources: tuple[str, ...]
+    crawl_web_sources: bool
+    include_linked_pdfs: bool
+    max_linked_pdfs: int
+    similarity_backend: str
+    openai_model: str | None
+    use_openai_summary: bool
 
 
 def handle_data_retrieval(ctx: CliContext) -> None:
@@ -232,6 +247,70 @@ def handle_rag_knowledge(ctx: CliContext) -> None:
         f"{summary.total_documents} documents, {summary.total_chunks} chunks "
         f"({summary.documents_indexed} refreshed)."
     )
+
+    use_external_context = should_use_external_storm_context(ctx.query)
+    crawl_external_context = ctx.crawl_web_sources or use_external_context
+    if crawl_external_context:
+        web_summary = index_external_sources(
+            ctx.conn,
+            ctx.web_sources,
+            rebuild=ctx.rebuild_rag,
+            include_linked_pdfs=ctx.include_linked_pdfs,
+            max_linked_pdfs=ctx.max_linked_pdfs,
+        )
+        print(
+            "External storm context ready: "
+            f"{web_summary.total_documents} documents, "
+            f"{web_summary.total_chunks} chunks "
+            f"({web_summary.documents_indexed} refreshed, "
+            f"{len(web_summary.failures)} failed)."
+        )
+        print(f"Similarity backend: {similarity_backend_status()}")
+        for failure in web_summary.failures[:3]:
+            print(f"  - Web source failed: {failure}")
+
+    if use_external_context:
+        impact_answer = answer_storm_impact(
+            ctx.conn,
+            ctx.query,
+            limit=ctx.limit,
+            backend=ctx.similarity_backend,
+            use_openai=ctx.use_openai_summary,
+            openai_model=ctx.openai_model,
+            source_urls=ctx.web_sources,
+        )
+        if impact_answer.results:
+            llm_config = openai_config(ctx.openai_model)
+            if impact_answer.used_openai:
+                print(f"Summary mode: OpenAI Responses API ({llm_config.model})")
+            elif impact_answer.openai_error:
+                print(
+                    "Summary mode: local extractive "
+                    f"(OpenAI fallback: {impact_answer.openai_error})"
+                )
+            elif not ctx.use_openai_summary:
+                print("Summary mode: local extractive")
+            elif not llm_config.api_key_present:
+                print("Summary mode: local extractive (OPENAI_API_KEY not set)")
+            else:
+                print("Summary mode: local extractive")
+            print("Storm impact summary:")
+            print(impact_answer.answer)
+            print()
+            print("Sources:")
+            for position, result in enumerate(impact_answer.cited_results, start=1):
+                print(
+                    f"{position}. {result.source_path}#chunk-{result.chunk_index} "
+                    f"(score={result.score:.2f})"
+                )
+                print(f"   {format_excerpt(result.content, max_chars=420)}")
+
+            if ctx.show_rag_context:
+                print()
+                print("Augmented prompt/context:")
+                print(impact_answer.context)
+            return
+
     rag_answer = ctx.rag_agent.answer(ctx.conn, ctx.query, limit=ctx.limit)
     if not rag_answer.results:
         print("No RAG context found for this query.")
@@ -262,6 +341,7 @@ def handle_unknown(ctx: CliContext) -> None:
     print("  - history for county Hartford")
     print("  - find storms similar to wind=9.2, precip=45 in Fairfield")
     print("  - explain the storm similarity algorithm")
+    print("  - impact of the new storm in Connecticut")
 
 
 RouteHandler = Callable[[CliContext], None]
@@ -325,6 +405,50 @@ def main() -> None:
         action="store_true",
         help="Print the full augmented context after the grounded RAG answer.",
     )
+    parser.add_argument(
+        "--web-source",
+        action="append",
+        default=[],
+        help=(
+            "External NOAA/NHC/NCEI URL to crawl for storm-impact context. "
+            "Repeat this flag to add multiple sources."
+        ),
+    )
+    parser.add_argument(
+        "--crawl-web-sources",
+        action="store_true",
+        help="Crawl configured external web/PDF sources before RAG retrieval.",
+    )
+    parser.add_argument(
+        "--max-linked-pdfs",
+        type=int,
+        default=50,
+        help="Maximum linked PDFs to crawl from each source page (default: 50).",
+    )
+    parser.add_argument(
+        "--no-linked-pdfs",
+        action="store_true",
+        help="Index source pages only and skip PDFs linked from those pages.",
+    )
+    parser.add_argument(
+        "--similarity-backend",
+        choices=("auto", "faiss", "exact"),
+        default="auto",
+        help="Text similarity backend for external impact summaries.",
+    )
+    parser.add_argument(
+        "--openai-model",
+        default=None,
+        help=(
+            "OpenAI model for generated impact summaries "
+            "(default: WISER_OPENAI_MODEL or gpt-5.5)."
+        ),
+    )
+    parser.add_argument(
+        "--no-openai-summary",
+        action="store_true",
+        help="Use the local extractive impact summary even if OPENAI_API_KEY is set.",
+    )
     args = parser.parse_args()
 
     routing_agent = TaskRoutingAgent()
@@ -351,6 +475,15 @@ def main() -> None:
             similarity_agent=similarity_agent,
             rebuild_rag=args.rebuild_rag,
             show_rag_context=args.show_rag_context,
+            web_sources=(
+                tuple(args.web_source) if args.web_source else DEFAULT_STORM_CONTEXT_URLS
+            ),
+            crawl_web_sources=args.crawl_web_sources,
+            include_linked_pdfs=not args.no_linked_pdfs,
+            max_linked_pdfs=args.max_linked_pdfs,
+            similarity_backend=args.similarity_backend,
+            openai_model=args.openai_model,
+            use_openai_summary=not args.no_openai_summary,
         )
         dispatch_route(decision.route, ctx)
     finally:

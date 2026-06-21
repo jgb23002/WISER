@@ -156,3 +156,68 @@ This test suite covers:
 3.  **Zero standard deviation safety** – ensuring constant features do not crash the engine.
 4.  **Feature weight overrides** – testing that boosting specific feature weights modifies similarity and rankings.
 5.  **Partial query parameters** – ensuring queries can run on any subset of the 6 weather features.
+
+`tests/test_similarity_algorithm.py` covers statistics computation, similarity scoring,
+edge cases (zero standard deviation), mathematical properties (range, symmetry,
+monotonic decrease), and Fairfield-style scenarios.
+
+---
+
+## Use Cases
+
+### 1. Outage Prediction
+When a current storm has wind speed 9.2 m/s, find historical storms with similar wind to estimate expected outages:
+
+```bash
+python scripts/find_similar_storms.py --county Fairfield --wind-speed 9.2
+# → Top match had 51 outages → expect ~51 outages for current storm
+```
+
+### 2. Emergency Response Planning
+Before a forecasted storm, prepare resources based on similar historical events:
+
+```bash
+python scripts/find_similar_storms.py --county Hartford --wind-speed 10.5 --limit 3
+# → Review top 3 most similar storms to understand typical impact
+```
+
+### 3. Narrative Impact Context
+
+For user questions like "impact of the new storm", WISER can also retrieve narrative context from NOAA/NHC/NCEI pages and linked National Hurricane Center Tropical Cyclone Report PDFs:
+
+```bash
+python scripts/wiser_cli.py "impact of the new storm in Connecticut" --limit 5
+```
+
+This is a separate text-similarity workflow from the county wind-speed comparison above. External paragraphs are stored in the RAG tables, then ranked with optional Meta/Facebook FAISS vector search when `faiss-cpu` and `numpy` are installed. Without FAISS, WISER uses a dependency-free exact text-vector fallback. See [EXTERNAL_STORM_CONTEXT.md](EXTERNAL_STORM_CONTEXT.md).
+
+### 4. Risk Assessment
+Identify whether current conditions are "unusual" for the county:
+
+```bash
+python scripts/find_similar_storms.py --county "New Haven" --wind-speed 3.5
+# → If similarity < 0.5, this is unusual (< 1 SD from mean)
+```
+
+---
+
+## Performance Notes
+
+- **Query time:** <10ms for 294 historical storms
+- **Memory:** Minimal (just wind speed array + statistics)
+- **Scalability:** O(n) where n = number of historical storms
+- **Database:** Reads only `peakWSPD10` column per query
+
+For millions of historical records, consider adding:
+- Database indexes on `county` and `peakWSPD10`
+- Cached statistics updated periodically
+- Parallel queries across counties
+
+---
+
+## References
+
+- **Z-Score Formula:** (x - μ) / σ
+- **Similarity Function:** 1 / (1 + |z_i - z_current|)
+- **Bessel's Correction:** n-1 for sample std dev
+- **Statistical Basis:** Standard univariate distance in normalized space

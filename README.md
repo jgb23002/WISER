@@ -109,11 +109,18 @@ python scripts/wiser_cli.py "explain the storm similarity algorithm" --limit 3
 
 # Run a similarity search using natural language
 python scripts/wiser_cli.py "find storms similar to wind=9.2 precip=45 in Fairfield" --limit 5
+
+# Ask for a short storm-impact summary from NOAA/NHC/NCEI web/PDF context
+python scripts/wiser_cli.py "impact of the new storm in Connecticut" --limit 5
 ```
 
 The `--limit` flag controls how many rows are returned for top-N queries (default: 10).
 For RAG queries, `--limit` controls retrieved context chunks. Use `--rebuild-rag` to refresh the local index, `--show-rag-context` to print the full augmented prompt, and repeat `--rag-source <path>` to index a custom file or directory.
 For similarity searches, `--county` overrides county auto-detection from query text.
+
+Impact-style storm questions automatically crawl the default NOAA/NHC/NCEI context sources, including linked National Hurricane Center Tropical Cyclone Report PDFs. WISER stores extracted web/PDF paragraphs in the existing RAG tables, ranks them with optional Meta/Facebook FAISS similarity search when available, and falls back to a dependency-free exact text-vector ranking otherwise. See [docs/EXTERNAL_STORM_CONTEXT.md](docs/EXTERNAL_STORM_CONTEXT.md).
+
+If `OPENAI_API_KEY` is set in `.env` or the shell environment, WISER uses the OpenAI Responses API to generate short cited impact summaries from the retrieved paragraphs. Without a key, or with `--no-openai-summary`, it uses the local extractive summary.
 
 ---
 
