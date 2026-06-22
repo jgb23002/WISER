@@ -232,35 +232,95 @@ h3 {
   border-radius: 999px;
 }
 
+#route-pill.pill-teal  { color: var(--teal);   background: #e7f4f2; border-color: #bfe3de; }
+#route-pill.pill-blue  { color: var(--blue);   background: #e8f0fd; border-color: #b3c9f9; }
+#route-pill.pill-orange{ color: var(--orange); background: #fff3df; border-color: #ffd79d; }
+#route-pill.pill-green { color: var(--green);  background: #e7f6ee; border-color: #a8e0c1; }
+#route-pill.pill-red   { color: var(--red);    background: #fef3f2; border-color: #fecdca; }
+
 #mode-pill {
   color: var(--orange);
   background: #fff3df;
   border-color: #ffd79d;
 }
 
-.preset-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 9px;
-  margin-bottom: 18px;
+.dimmed {
+  opacity: 0.28;
+  pointer-events: none;
 }
 
-.preset,
+.source-first {
+  border-top: 0 !important;
+  padding-top: 0 !important;
+}
+
+.examples-section {
+  margin-top: 18px;
+}
+
+.examples-label {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.examples-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.example-chip {
+  min-height: 32px;
+  padding: 0 11px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 999px;
+  border: 1px solid;
+  transition: opacity 0.12s, box-shadow 0.12s;
+}
+
+.example-chip:hover {
+  opacity: 0.82;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+}
+
+.example-chip.active {
+  box-shadow: 0 0 0 2px white, 0 0 0 4px currentColor;
+}
+
+.chip-rag {
+  color: var(--teal);
+  background: #e7f4f2;
+  border-color: #9bd5ce;
+}
+
+.chip-sim {
+  color: var(--blue);
+  background: #e8f0fd;
+  border-color: #b3c9f9;
+}
+
+.chip-analytics {
+  color: var(--orange);
+  background: #fff3df;
+  border-color: #ffd79d;
+}
+
+.chip-data {
+  color: var(--green);
+  background: #e7f6ee;
+  border-color: #a8e0c1;
+}
+
 #query-form button {
   min-height: 38px;
   padding: 0 13px;
-  color: #344054;
   font-weight: 700;
-  background: #f4f7f9;
-  border: 1px solid var(--line);
   border-radius: 8px;
-}
-
-.preset:hover,
-.preset.active {
-  color: white;
-  background: var(--teal);
-  border-color: var(--teal);
 }
 
 #query-form {

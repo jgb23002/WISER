@@ -21,7 +21,7 @@
           <a class="active" href="#overview">Overview</a>
           <a href="#query">Query Demo</a>
           <a href="#router">Task Router</a>
-          <a href="#similarity">Similarity</a>
+          <a href="#similarity">Results</a>
           <a href="#evidence">Evidence</a>
           <a href="#commands">Commands</a>
         </nav>
@@ -55,17 +55,9 @@
           <div class="panel-title">
             <div>
               <p class="section-label">Natural language router</p>
-              <h3>Run a demo query</h3>
+              <h3>Run a query</h3>
             </div>
-            <span id="route-pill">rag_knowledge</span>
-          </div>
-
-          <div class="preset-row">
-            <button class="preset active" data-demo="impact">Storm impact</button>
-            <button class="preset" data-demo="rag">RAG explanation</button>
-            <button class="preset" data-demo="analytics">Outage analytics</button>
-            <button class="preset" data-demo="similarity">Similarity search</button>
-            <button class="preset" data-demo="data">Database build</button>
+            <span id="route-pill" class="pill-teal">rag_knowledge</span>
           </div>
 
           <form id="query-form">
@@ -74,12 +66,29 @@
               <input
                 id="query-input"
                 type="text"
-                value="impact of the new storm in Connecticut"
+                value="What happened during Hurricane Irene in Connecticut?"
                 autocomplete="off"
               />
               <button type="submit">Run</button>
             </div>
           </form>
+
+          <div class="examples-section">
+            <p class="examples-label">Example queries</p>
+            <div class="examples-grid">
+              <button class="example-chip chip-rag" data-query="What happened during Hurricane Irene in Connecticut?">Hurricane Irene impact</button>
+              <button class="example-chip chip-rag" data-query="Explain the storm similarity algorithm">Explain algorithm</button>
+              <button class="example-chip chip-rag" data-query="How does WISER summarize storm impact?">How does WISER work?</button>
+              <button class="example-chip chip-sim" data-query="Find storms similar to wind=9.2 precip=45 in Fairfield">wind=9.2 precip=45 · Fairfield</button>
+              <button class="example-chip chip-sim" data-query="Find storms similar to wind=12.5 in New Haven">wind=12.5 · New Haven</button>
+              <button class="example-chip chip-sim" data-query="Rank storms similar to wgt5=8 wgt9=3 in Hartford">wgt5=8 wgt9=3 · Hartford</button>
+              <button class="example-chip chip-analytics" data-query="Top counties by outage">Top counties by outage</button>
+              <button class="example-chip chip-analytics" data-query="Which storms had the most outages?">Worst storms by outage</button>
+              <button class="example-chip chip-analytics" data-query="Show storm history for Fairfield">Fairfield storm history</button>
+              <button class="example-chip chip-data" data-query="Build SQLite database from CSV">Build SQLite database</button>
+              <button class="example-chip chip-data" data-query="Normalize and ingest the raw storm CSV data">Normalize &amp; ingest CSV</button>
+            </div>
+          </div>
         </section>
 
         <section class="panel router-card" id="router">
@@ -94,7 +103,7 @@
           <div class="router-layout">
             <div class="router-query">
               <p class="section-label">Incoming query</p>
-              <strong id="router-query-text">impact of the new storm in Connecticut</strong>
+              <strong id="router-query-text">What happened during Hurricane Irene in Connecticut?</strong>
               <p id="router-reason">Matched documentation/RAG knowledge keywords.</p>
             </div>
 
@@ -133,13 +142,12 @@
               <p class="section-label">Selected route</p>
               <strong id="router-selected">rag_knowledge</strong>
               <div class="keyword-box">
-                <span>Detected signal</span>
-                <p id="router-keywords">impact, storm</p>
+                <span>Detected signals</span>
+                <p id="router-keywords">hurricane, impact</p>
               </div>
               <div class="priority-note">
-                RAG explanation and impact queries are checked first. Numeric
-                similarity parameters are allowed to bypass RAG and go to the
-                similarity agent.
+                RAG is checked first. Numeric params (wind=, precip=) bypass RAG
+                and go directly to the similarity agent.
               </div>
             </div>
           </div>
@@ -150,15 +158,16 @@
             <div class="panel-title">
               <div>
                 <p class="section-label">Response</p>
-                <h3 id="result-title">Storm impact summary</h3>
+                <h3 id="result-title">Hurricane impact summary</h3>
               </div>
-              <span id="mode-pill">External context</span>
+              <span id="mode-pill">External context + RAG</span>
             </div>
 
             <ul class="answer-list" id="answer-list">
-              <li>Retrieved NOAA/NHC/NCEI context for Connecticut storm-impact evidence. [1]</li>
-              <li>Linked National Hurricane Center PDFs are extracted and chunked into RAG tables. [2]</li>
-              <li>OpenAI summaries are optional; local extractive fallback keeps the workflow available. [1]</li>
+              <li>Hurricane Irene (Aug 2011) caused major flooding and power outages across all 8 Connecticut counties. [1]</li>
+              <li>NCEI records show Irene produced peak wind speeds above 15 m/s in Fairfield and New Haven counties. [2]</li>
+              <li>Superstorm Sandy (Oct 2012) drove the highest recorded outage counts with 27,834 statewide. [3]</li>
+              <li>NHC tropical cyclone reports are indexed as RAG sources and retrieved as supporting context. [1]</li>
             </ul>
           </article>
 
@@ -171,7 +180,7 @@
             </div>
             <div class="flow-step">
               <span>1</span>
-              <p><strong>Route</strong> classify the query as analytics, RAG, impact, or similarity.</p>
+              <p><strong>Route</strong> classify the query as RAG, similarity, analytics, or data retrieval.</p>
             </div>
             <div class="flow-step">
               <span>2</span>
@@ -188,85 +197,24 @@
           <article class="panel" id="similarity">
             <div class="panel-title">
               <div>
-                <p class="section-label">Similarity engine</p>
-                <h3>Fairfield, wind 9.2 m/s</h3>
+                <p class="section-label" id="sim-label">Similarity engine</p>
+                <h3 id="sim-title">Fairfield · wind=9.2 precip=45</h3>
               </div>
-              <span>Multi-dimensional Z-score</span>
+              <span id="sim-badge">Multi-dimensional Z-score</span>
             </div>
 
-            <div class="bar-list">
-              <div class="bar-row">
-                <b>2020022700</b>
-                <div><span style="width: 99.9%"></span></div>
-                <em>99.9%</em>
-              </div>
-              <div class="bar-row">
-                <b>2016032818</b>
-                <div><span style="width: 99.7%"></span></div>
-                <em>99.7%</em>
-              </div>
-              <div class="bar-row">
-                <b>2023033118</b>
-                <div><span style="width: 99%"></span></div>
-                <em>99.0%</em>
-              </div>
-            </div>
-
-            <table>
-              <thead>
-                <tr>
-                  <th>Rank</th>
-                  <th>Wind</th>
-                  <th>Outages</th>
-                  <th>Event Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>1</td>
-                  <td>9.202</td>
-                  <td>51</td>
-                  <td>2020-02-27</td>
-                </tr>
-                <tr>
-                  <td>2</td>
-                  <td>9.205</td>
-                  <td>124</td>
-                  <td>2016-03-28</td>
-                </tr>
-                <tr>
-                  <td>3</td>
-                  <td>9.217</td>
-                  <td>15</td>
-                  <td>2023-03-31</td>
-                </tr>
-              </tbody>
-            </table>
+            <div class="bar-list" id="bar-list"></div>
+            <table id="sim-table"></table>
           </article>
 
           <article class="panel evidence-card" id="evidence">
             <div class="panel-title">
               <div>
                 <p class="section-label">Cited evidence</p>
-                <h3>Retrieved sources</h3>
+                <h3 id="evidence-title">Retrieved sources</h3>
               </div>
             </div>
-
-            <div class="source-row">
-              <span>1</span>
-              <p>NCEI Connecticut Billion-Dollar Weather and Climate Disasters</p>
-              <b>0.91</b>
-            </div>
-            <div class="source-row">
-              <span>2</span>
-              <p>National Hurricane Center Tropical Cyclone Report PDF</p>
-              <b>0.84</b>
-            </div>
-            <div class="source-row">
-              <span>3</span>
-              <p>docs/STORM_SIMILARITY_ALGORITHM.md</p>
-              <b>0.79</b>
-            </div>
+            <div class="sources-list" id="sources-list"></div>
           </article>
         </section>
 
