@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import io
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 
 SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 SRC_DIR = Path(__file__).parent.parent / "src"
@@ -16,6 +19,7 @@ if str(SRC_DIR) not in sys.path:
 from wiser.agents.task_routing_agent import Route  # noqa: E402
 from wiser_cli import (  # noqa: E402
     ROUTE_HANDLERS,
+    handle_weather_analytics,
     parse_similarity_county,
     parse_similarity_params,
 )
@@ -39,6 +43,9 @@ class TestParseSimilarityParams(unittest.TestCase):
         params = parse_similarity_params("similar to wgt5=10, wgt9=3")
         self.assertEqual(params["wgt5"], 10.0)
         self.assertEqual(params["wgt9"], 3.0)
+
+    def test_ignores_unknown_wgt_aliases(self):
+        self.assertEqual(parse_similarity_params("similar to wgt99=3"), {})
 
     def test_ignores_unknown_aliases(self):
         params = parse_similarity_params("similar to temp=72, wind=9.0")
@@ -87,6 +94,30 @@ class TestRouteRegistry(unittest.TestCase):
     def test_similarity_search_handler_registered(self):
         self.assertIn(Route.SIMILARITY_SEARCH, ROUTE_HANDLERS)
         self.assertTrue(callable(ROUTE_HANDLERS[Route.SIMILARITY_SEARCH]))
+
+
+class TestWeatherAnalyticsHandler(unittest.TestCase):
+    def test_unknown_analytics_query_does_not_fall_back_to_top_counties(self):
+        class FailingAnalyticsAgent:
+            def county_outage_summary_from_db(self, conn, limit=10):
+                raise AssertionError("unexpected top-counties fallback")
+
+        ctx = SimpleNamespace(
+            query="How many storms had outage > 500 in 2020?",
+            conn=None,
+            limit=10,
+            analytics_agent=FailingAnalyticsAgent(),
+        )
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            handle_weather_analytics(ctx)
+
+        self.assertIn(
+            "I can't answer this with the current analytics agent yet",
+            output.getvalue(),
+        )
+        self.assertIn("top counties by outage", output.getvalue())
 
 
 if __name__ == "__main__":

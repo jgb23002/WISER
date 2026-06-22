@@ -3,7 +3,6 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
-from wiser.agents.data_retrieval_processing_agent import DataRetrievalProcessingAgent
 from wiser.query_engine import (
     county_storm_history,
     top_counties_by_outage,
@@ -13,8 +12,6 @@ from wiser.query_engine import (
 
 @dataclass
 class StormWeatherAnalyticsAgent:
-    data_agent: DataRetrievalProcessingAgent
-
     def county_outage_summary_from_db(
         self,
         conn: sqlite3.Connection,

@@ -51,6 +51,16 @@ class TestTaskRoutingAgent(unittest.TestCase):
 
         self.assertEqual(decision.route, Route.SIMILARITY_SEARCH)
 
+    def test_routes_known_wgt_parameter_to_similarity_search(self):
+        decision = self.agent.route("find storms with wgt18=4")
+
+        self.assertEqual(decision.route, Route.SIMILARITY_SEARCH)
+
+    def test_does_not_route_unknown_wgt_parameter_to_similarity_search(self):
+        decision = self.agent.route("find storms with wgt99=4")
+
+        self.assertNotEqual(decision.route, Route.SIMILARITY_SEARCH)
+
     def test_routes_similarity_word_with_numeric_params_to_search(self):
         """'similarity' + wind= must not be swallowed by RAG."""
         decision = self.agent.route("find storm similarity wind=9.2")

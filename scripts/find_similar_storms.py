@@ -17,7 +17,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import math
 import sqlite3
 import sys
 from pathlib import Path
@@ -28,23 +27,9 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from wiser.agents.similarity_query_agent import SimilarityQueryAgent
+from wiser.cli_helpers import FLAG_TO_FEATURE, validate_limit, validate_wind_positive
 from wiser.database import open_weather_db
-
-
-
-# ---------------------------------------------------------------------------
-# Multi-dimensional entry point
-# ---------------------------------------------------------------------------
-
-# Maps CLI dest name → WeatherData column name (aliasing lives only here).
-_FLAG_TO_FEATURE: list[tuple[str, str]] = [
-    ("wind_speed", "peakWSPD10"),
-    ("precip", "sumAFWA_TOTPRECIP"),
-    ("wgt5", "wgt5"),
-    ("wgt9", "wgt9"),
-    ("wgt13", "wgt13"),
-    ("wgt18", "wgt18"),
-]
+from wiser.query_engine import county_historical_count
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +167,7 @@ def main() -> None:
 
     # Build query_params from whichever feature flags were supplied.
     query_params: dict[str, float] = {}
-    for flag_dest, feature_name in _FLAG_TO_FEATURE:
+    for flag_dest, feature_name in FLAG_TO_FEATURE:
         val = getattr(args, flag_dest, None)
         if val is not None:
             query_params[feature_name] = float(val)
@@ -193,19 +178,16 @@ def main() -> None:
             "(e.g. --wind-speed 9.2  or  --precip 45.0)"
         )
 
-    if "peakWSPD10" in query_params and query_params["peakWSPD10"] <= 0:
-        parser.error("--wind-speed must be positive (> 0)")
+    if err := validate_wind_positive(query_params):
+        parser.error(err)
 
-    if args.limit < 1:
-        parser.error("--limit must be at least 1")
+    if err := validate_limit(args.limit):
+        parser.error(err)
 
     try:
         conn = open_weather_db(args.db)
         try:
-            total = conn.execute(
-                "SELECT COUNT(*) FROM WeatherData WHERE LOWER(county) = LOWER(?)",
-                (args.county,),
-            ).fetchone()[0]
+            total = county_historical_count(conn, args.county)
             agent = SimilarityQueryAgent()
             results = agent.find_similar(
                 conn, args.county, query_params, limit=args.limit

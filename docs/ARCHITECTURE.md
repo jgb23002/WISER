@@ -87,8 +87,8 @@
 │  │                       │        │                       │
 │  RAG Knowledge Agent     │        │  Similarity Engine    │
 │  ├─ ensure_index()       │        │  ├─ rank_by_sim...()  │
-│  ├─ retrieve()           │        │  └─ compute_stats()   │
-│  ├─ build_context()      │        │                       │
+│  └─ answer()             │        │  └─ compute_stats()   │
+│                          │        │                       │
 │  └─ answer()             │        └───────────────────────┘
 │                          │
 │  Similarity Query Agent  │
@@ -264,7 +264,7 @@ RagDocument(path, title, checksum, indexedAt)
 RagChunk(documentId, chunkIndex, content, tokenCount)
 ```
 
-RAG currently uses dependency-free lexical retrieval over project docs/code/schema, then builds an extractive grounded answer with citation markers tied to retrieved chunks. The `build_context()` method still formats those chunks into an augmented prompt for a later LLM generation step.
+RAG uses dependency-free lexical retrieval over project docs/code/schema, then builds an extractive grounded answer with citation markers tied to retrieved chunks. Impact-style queries can also crawl external NOAA/NHC/NCEI web pages and linked PDFs via `external_sources.py`, rank retrieved text with FAISS when available or an exact text-vector fallback otherwise, and generate cited summaries with the OpenAI Responses API when `OPENAI_API_KEY` is configured, falling back to a local extractive summary otherwise.
 
 ### Top 5 Counties by Total Outage
 
@@ -308,7 +308,7 @@ test_schema.py (27 schema-integrity tests)
 │
 └─ TestDataIntegrity (3 tests)
 
-test_similarity_engine.py (27 tests for multi-dimensional L2 algorithm properties)
+test_similarity_engine.py (36 tests for multi-dimensional L2 algorithm properties)
 ├─ TestComputeFeatureStats (mean, standard deviation, Bessel's correction)
 ├─ TestComputeL2ZscoreDistance (weighted Euclidean norm, constant features safety)
 ├─ TestDistanceToSimilarity (normalization mapping to (0, 1])
@@ -317,23 +317,32 @@ test_similarity_engine.py (27 tests for multi-dimensional L2 algorithm propertie
 ├─ TestZeroStdDevSafety (handles constant historical fields without crashes)
 └─ TestFeatureWeightOverride (validates custom weight configuration)
 
-test_task_routing.py (7 routing classifier tests)
+test_task_routing.py (10 routing classifier tests)
 ├─ Validates Route.DATA_RETRIEVAL, Route.WEATHER_ANALYTICS, Route.RAG_KNOWLEDGE
 └─ Validates Route.SIMILARITY_SEARCH classification and ignores RAG collisions
 
-test_wiser_cli.py (10 CLI registry and parsing tests)
+test_wiser_cli.py (13 CLI registry and parsing tests)
 ├─ Validates natural language parameter extractor (wind=9.2, wgt5=12)
 ├─ Validates county detection and auto-resolution from text query strings
-└─ Validates dispatcher handlers registry (ROUTE_HANDLERS) mapping
+├─ Validates dispatcher handlers registry (ROUTE_HANDLERS) mapping
+└─ Validates analytics handler returns explicit message for unsupported queries
+
+test_external_sources.py (13 tests)
+├─ TestExternalSourceIndexAndSummary (indexing, OpenAI/local summarization)
+├─ TestExternalSourceParsing (URL normalisation, HTML/PDF extraction, link discovery)
+└─ TestSimilarityRanking (exact text-vector ranking)
+
+test_openai_summarizer.py (6 tests)
+└─ Validates OpenAI Responses API request construction, response parsing, dotenv loading
 
 test_data_pipeline.py (1 pipeline test)
 └─ Test eventCode parsing and state abbreviation extraction logic
 
-test_database.py (1 initialization test)
-test_similarity_algorithm.py (9 tests)
-test_rag.py (22 tests)
+test_database.py (2 initialization tests)
+test_similarity_algorithm.py (13 tests)
+test_rag.py (10 tests)
 
-Result: 106/106 ✓ PASSING
+Result: 131/131 ✓ PASSING
 ```
 
 ---
@@ -409,25 +418,33 @@ data_pipeline.py (CSV → Normalized dicts)
                   data/wiser.db (READ)
 
 User Interfaces
-    │
-    ├─ wiser_cli.py
-    │  │
-    │  ├─ TaskRoutingAgent (route classification)
-    │  ├─ DataRetrievalProcessingAgent
-    │  ├─ RAGKnowledgeAgent (rag.py index & search)
-    │  ├─ SimilarityQueryAgent (find_similar)
-    │  └─ StormWeatherAnalyticsAgent
-    │      │
-    │      ▼
-    │  Console output
-    │
-    ├─ find_similar_storms.py
-    │  │
-    │  └─ SimilarityQueryAgent (find_similar)
-    │
-    └─ bootstrap_wiser.py
-       │
-       └─ File outputs + console summary
+    |
+    |-- wiser_cli.py
+    |   |
+    |   `-- TaskRoutingAgent
+    |       |
+    |       |-- DATA_RETRIEVAL
+    |       |   `-- DataRetrievalProcessingAgent
+    |       |
+    |       |-- WEATHER_ANALYTICS
+    |       |   `-- StormWeatherAnalyticsAgent -> query_engine.py fixed SQL wrappers
+    |       |       No dynamic SQL AI agent is implemented yet.
+    |       |
+    |       |-- SIMILARITY_SEARCH
+    |       |   `-- SimilarityQueryAgent -> similarity_engine.py weighted L2 Z-score
+    |       |
+    |       `-- RAG_KNOWLEDGE
+    |           `-- RAGKnowledgeAgent -> rag.py local source retrieval
+    |               Optional external_sources.py path crawls NOAA/NHC/NCEI pages
+    |               and linked PDFs, ranks with FAISS when installed or exact
+    |               text-vector fallback, then summarizes with OpenAI or local
+    |               extractive fallback.
+    |
+    |-- find_similar_storms.py
+    |   `-- SimilarityQueryAgent (direct similarity CLI)
+    |
+    `-- bootstrap_wiser.py
+        `-- File outputs + console summary
 ```
 
 ---
@@ -446,9 +463,20 @@ Configuration
 │  ├─ output-dir: "data/normalized"
 │  └─ db: "data/wiser.db"
 │
-└─ COMMAND-LINE OVERRIDES
-   ├─ --input <path>
-   ├─ --output-dir <path>
-   ├─ --db <path>
-   └─ --limit <n>
+└─ COMMAND-LINE OVERRIDES (wiser_cli.py)
+   ├─ --input <path>           CSV source file
+   ├─ --output-dir <path>      Normalised CSV output directory
+   ├─ --db <path>              SQLite database path
+   ├─ --limit <n>              Top-N / chunk limit (default: 10)
+   ├─ --county <name>          Override county auto-detection for similarity
+   ├─ --rag-source <path>      Extra file/directory to include in RAG index
+   ├─ --rebuild-rag            Force full RAG index rebuild
+   ├─ --show-rag-context       Print full augmented prompt after RAG answer
+   ├─ --web-source <url>       External URL to crawl for storm-impact context
+   ├─ --crawl-web-sources      Always crawl external sources before retrieval
+   ├─ --max-linked-pdfs <n>    Max PDFs to follow from each source page (default: 50)
+   ├─ --no-linked-pdfs         Index source pages only; skip linked PDFs
+   ├─ --similarity-backend     Text ranking: auto | faiss | exact (default: auto)
+   ├─ --openai-model <id>      OpenAI model for impact summaries
+   └─ --no-openai-summary      Force local extractive summary even if API key is set
 ```

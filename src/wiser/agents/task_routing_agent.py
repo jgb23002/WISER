@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from wiser.cli_helpers import FEATURE_ALIASES
+
 
 class Route(str, Enum):
     DATA_RETRIEVAL = "data_retrieval"
@@ -78,8 +80,7 @@ class TaskRoutingAgent:
     }
     # Matches wind=, precip=, wgt5=, etc. — same aliases the CLI parser accepts.
     _NUMERIC_PARAM_PATTERN = re.compile(
-        r"\b(?:wind|windspeed|wind_speed|peakwspd10|precip|precipitation|"
-        r"sumafwa_totprecip|wgt\d{1,2})\s*=",
+        rf"\b(?:{'|'.join(re.escape(alias) for alias in FEATURE_ALIASES)})\s*=",
         re.IGNORECASE,
     )
 

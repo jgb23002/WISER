@@ -204,9 +204,9 @@ python scripts/find_similar_storms.py --county "New Haven" --wind-speed 3.5
 ## Performance Notes
 
 - **Query time:** <10ms for 294 historical storms
-- **Memory:** Minimal (just wind speed array + statistics)
+- **Memory:** Minimal — one dict per historical row containing all six weather features plus metadata
 - **Scalability:** O(n) where n = number of historical storms
-- **Database:** Reads only `peakWSPD10` column per query
+- **Database:** Reads all six weather feature columns (`peakWSPD10`, `sumAFWA_TOTPRECIP`, `wgt5`, `wgt9`, `wgt13`, `wgt18`) per county query; scoring only uses the subset specified in `query_params`
 
 For millions of historical records, consider adding:
 - Database indexes on `county` and `peakWSPD10`

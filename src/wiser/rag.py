@@ -341,11 +341,6 @@ def index_sources(
     )
 
 
-def rag_index_has_chunks(conn: sqlite3.Connection) -> bool:
-    initialize_rag_schema(conn)
-    return int(conn.execute("SELECT COUNT(*) FROM RagChunk").fetchone()[0]) > 0
-
-
 def search_rag(
     conn: sqlite3.Connection,
     query: str,

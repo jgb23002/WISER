@@ -3,6 +3,14 @@ from __future__ import annotations
 import sqlite3
 
 
+def county_historical_count(conn: sqlite3.Connection, county: str) -> int:
+    """Return the number of WeatherData rows for a county."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM WeatherData WHERE LOWER(county) = LOWER(?)",
+        (county,),
+    ).fetchone()[0]
+
+
 def top_counties_by_outage(
     conn: sqlite3.Connection, limit: int = 10
 ) -> list[dict[str, object]]:

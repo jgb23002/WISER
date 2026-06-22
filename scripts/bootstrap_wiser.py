@@ -48,7 +48,7 @@ def main() -> None:
     conn = data_agent.build_database(args.db)
     table_counts = get_table_counts(conn)
 
-    analytics_agent = StormWeatherAnalyticsAgent(data_agent)
+    analytics_agent = StormWeatherAnalyticsAgent()
     summary = analytics_agent.county_outage_summary_from_db(conn, limit=5)
     conn.close()
 

@@ -34,26 +34,14 @@ from wiser.external_sources import (
 )
 from wiser.openai_summarizer import openai_config
 from wiser.rag import DEFAULT_RAG_SOURCES, format_excerpt
+from wiser.cli_helpers import FEATURE_ALIASES, validate_wind_positive
+from wiser.query_engine import county_historical_count
 
 # ---------------------------------------------------------------------------
 # Similarity query parsing (CLI-only; engine and agents stay string-free)
 # ---------------------------------------------------------------------------
 
 # User-facing aliases → WeatherData column names.
-_ALIAS_TO_FEATURE: dict[str, str] = {
-    "wind": "peakWSPD10",
-    "windspeed": "peakWSPD10",
-    "wind_speed": "peakWSPD10",
-    "peakwspd10": "peakWSPD10",
-    "precip": "sumAFWA_TOTPRECIP",
-    "precipitation": "sumAFWA_TOTPRECIP",
-    "sumafwa_totprecip": "sumAFWA_TOTPRECIP",
-    "wgt5": "wgt5",
-    "wgt9": "wgt9",
-    "wgt13": "wgt13",
-    "wgt18": "wgt18",
-}
-
 _PARAM_PATTERN = re.compile(
     r"(?P<name>[a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?P<value>[0-9]+(?:\.[0-9]*)?)"
 )
@@ -77,7 +65,7 @@ def parse_similarity_params(query: str) -> dict[str, float]:
     params: dict[str, float] = {}
     for match in _PARAM_PATTERN.finditer(normalized):
         alias = match.group("name").lower()
-        feature = _ALIAS_TO_FEATURE.get(alias)
+        feature = FEATURE_ALIASES.get(alias)
         if feature is not None:
             params[feature] = float(match.group("value"))
     return params
@@ -187,6 +175,13 @@ def handle_weather_analytics(ctx: CliContext) -> None:
         )
         return
 
+    if "top" in text and ("county" in text or "counties" in text):
+        print(f"Top {ctx.limit} counties by outage:")
+        print_rows(
+            ctx.analytics_agent.county_outage_summary_from_db(ctx.conn, limit=ctx.limit)
+        )
+        return
+
     if county:
         print(f"Top {ctx.limit} storm events for county {county}:")
         print_rows(
@@ -198,9 +193,10 @@ def handle_weather_analytics(ctx: CliContext) -> None:
         )
         return
 
-    print(f"Top {ctx.limit} counties by outage:")
-    print_rows(
-        ctx.analytics_agent.county_outage_summary_from_db(ctx.conn, limit=ctx.limit)
+    print(
+        "I can't answer this with the current analytics agent yet. "
+        "Try a supported query like 'top counties by outage', "
+        "'top storms by outage', or 'history for county Hartford'."
     )
 
 
@@ -225,14 +221,11 @@ def handle_similarity_search(ctx: CliContext) -> None:
         )
         return
 
-    if "peakWSPD10" in query_params and query_params["peakWSPD10"] <= 0:
-        print("Wind speed must be positive (> 0).")
+    if err := validate_wind_positive(query_params):
+        print(err)
         return
 
-    total = ctx.conn.execute(
-        "SELECT COUNT(*) FROM WeatherData WHERE LOWER(county) = LOWER(?)",
-        (county,),
-    ).fetchone()[0]
+    total = county_historical_count(ctx.conn, county)
 
     results = ctx.similarity_agent.find_similar(
         ctx.conn, county, query_params, limit=ctx.limit
@@ -453,7 +446,7 @@ def main() -> None:
 
     routing_agent = TaskRoutingAgent()
     data_agent = DataRetrievalProcessingAgent(args.input)
-    analytics_agent = StormWeatherAnalyticsAgent(data_agent)
+    analytics_agent = StormWeatherAnalyticsAgent()
     similarity_agent = SimilarityQueryAgent()
     rag_sources = tuple(args.rag_source) if args.rag_source else DEFAULT_RAG_SOURCES
     rag_agent = RAGKnowledgeAgent(rag_sources)

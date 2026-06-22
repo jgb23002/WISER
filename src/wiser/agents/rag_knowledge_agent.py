@@ -10,11 +10,8 @@ from wiser.rag import (
     REPO_ROOT,
     RagAnswer,
     RagIndexSummary,
-    RagResult,
     answer_rag,
-    build_augmented_context,
     index_sources,
-    search_rag,
 )
 
 
@@ -35,25 +32,6 @@ class RAGKnowledgeAgent:
             root=self.root,
             rebuild=rebuild,
         )
-
-    def retrieve(
-        self,
-        conn: sqlite3.Connection,
-        query: str,
-        *,
-        limit: int = 5,
-    ) -> list[RagResult]:
-        return search_rag(conn, query, limit=limit)
-
-    def build_context(
-        self,
-        conn: sqlite3.Connection,
-        query: str,
-        *,
-        limit: int = 5,
-    ) -> str:
-        results = self.retrieve(conn, query, limit=limit)
-        return build_augmented_context(query, results)
 
     def answer(
         self,

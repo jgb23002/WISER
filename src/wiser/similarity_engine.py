@@ -14,7 +14,8 @@ The core idea
 Single-feature parity guarantee
 ---------------------------------
 rank_by_similarity(data, {"peakWSPD10": v}) produces exactly the same rankings
-and scores as the legacy 1-D algorithm in find_similar_storms.py, because:
+and scores as the legacy 1-D algorithm (now kept as a reference fixture in
+tests/test_similarity_algorithm.py), because:
   sqrt(w * (z_hist - z_query)^2)  with w=1  =  |z_hist - z_query|
 """
 
@@ -131,7 +132,8 @@ def rank_by_similarity(
 
     Single-feature parity guarantee:
         rank_by_similarity(data, {"peakWSPD10": v}) produces the same order
-        and scores as the legacy calculate_similarity() in find_similar_storms.py.
+        and scores as the legacy calculate_similarity() kept as a reference
+        fixture in tests/test_similarity_algorithm.py.
     """
     if not historical or not query_params:
         return []

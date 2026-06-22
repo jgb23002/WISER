@@ -11,7 +11,7 @@
 ## Prerequisites
 
 - Python **3.9+**
-- No external dependencies — everything uses the Python standard library (`sqlite3`, `csv`, `datetime`, `argparse`, `unittest`)
+- Core workflows use only the Python standard library (`sqlite3`, `csv`, `datetime`, `argparse`, `unittest`). External storm-context features have optional dependencies: `faiss-cpu` and `numpy` for fast text similarity, `pypdf` for PDF extraction, and an `OPENAI_API_KEY` for AI-generated impact summaries. All fall back gracefully when absent.
 
 ---
 
@@ -38,7 +38,7 @@ python -m venv .venv
 ```bash
 pip install -r requirements.txt
 ```
-> No packages are installed at this stage — the file is a placeholder for future additions.
+> No packages are installed at this stage — the file documents optional packages for external-context acceleration (`faiss-cpu`, `numpy`, `pypdf`). Uncomment and install only what you need.
 
 ---
 
@@ -87,8 +87,8 @@ python scripts/bootstrap_wiser.py \
 | Query type | Keywords detected | Agent called |
 |---|---|---|
 | Data / DB management | `load`, `csv`, `database`, `schema`, `ingest` … | `DataRetrievalProcessingAgent` |
-| RAG / knowledge retrieval | `rag`, `docs`, `explain`, `algorithm`, `reference` … | `RAGKnowledgeAgent` |
-| Weather analytics | `outage`, `storm`, `county`, `top`, `trend` … | `StormWeatherAnalyticsAgent` |
+| RAG / knowledge retrieval | `rag`, `docs`, `explain`, `algorithm`, `reference`, `impact`, `hurricane`, `nhc`, `ncei` … | `RAGKnowledgeAgent` plus optional external web/PDF context |
+| Weather analytics | `outage`, `storm`, `county`, `top`, `trend` … | `StormWeatherAnalyticsAgent` using fixed query wrappers |
 | Similarity search | `similar`, `find similar`, `rank storms`, or parameter patterns (e.g., `wind=`) … | `SimilarityQueryAgent` |
 
 ```bash
@@ -180,7 +180,7 @@ Use the ranked historical **outages** as a rough guide for what a current event 
 
 ## Running the Tests
 
-To run the entire test suite (104 tests) covering database schema, RAG indexing/retrieval, task routing, query parsing, and similarity algorithms:
+To run the entire test suite (131 tests) covering database schema, RAG indexing/retrieval, external source parsing, OpenAI summarization, task routing, query parsing, and similarity algorithms:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -190,7 +190,7 @@ Expected output:
 ```
 ...
 ----------------------------------------------------------------------
-Ran 104 tests in 0.120s
+Ran 131 tests in 0.9s
 
 OK
 ```
@@ -201,11 +201,13 @@ The test files cover the following functionality:
 |---|---|
 | `tests/test_schema.py` | Validates database constraints (CHECK, UNIQUE, FK), composite primary keys, table structures, and column datatypes. |
 | `tests/test_database.py` | Verifies database schema initialization and backwards compatibility with legacy structures. |
-| `tests/test_rag.py` | Tests grounding, chunking, indexing, and answers retrieval inside the RAG engine. |
+| `tests/test_rag.py` | Tests grounding, chunking, indexing, and answer retrieval inside the RAG engine. |
+| `tests/test_external_sources.py` | Validates external web/PDF indexing, URL normalisation, HTML/PDF extraction, and text-vector ranking. |
+| `tests/test_openai_summarizer.py` | Verifies OpenAI Responses API request construction, response parsing, and dotenv loading. |
 | `tests/test_similarity_algorithm.py` | Validates Z-score calculations, statistics, symmetry, and legacy single-dimension mathematical correctness. |
-| `tests/test_similarity_engine.py` | Verifies multi-dimensional Z-score calculations (parity, weights overrides, zero std dev, partial features). |
-| `tests/test_task_routing.py` | Tests keyword and pattern matching routing decisions (avoiding RAG collisions). |
-| `tests/test_wiser_cli.py` | Verifies CLI query parsing, county auto-detection, and dispatch registry handlers. |
+| `tests/test_similarity_engine.py` | Verifies multi-dimensional Z-score calculations (parity, weight overrides, zero std dev, partial features). |
+| `tests/test_task_routing.py` | Tests keyword and pattern matching routing decisions (avoiding RAG collisions, rejecting unknown aliases). |
+| `tests/test_wiser_cli.py` | Verifies CLI query parsing, county auto-detection, dispatch registry handlers, and analytics fallback guard. |
 | `tests/test_data_pipeline.py` | Validates parsing of CSV columns and correct extraction of state codes from event codes. |
 
 ---
@@ -218,6 +220,8 @@ WISER/
 │   └── testdata.csv              # Raw input — 2,352 storm-county rows
 ├── docs/
 │   ├── ARCHITECTURE.md           # System design & data flow diagrams
+│   ├── EXTERNAL_STORM_CONTEXT.md # External NOAA/NHC/NCEI context feature docs
+│   ├── STORM_SIMILARITY_ALGORITHM.md  # Algorithm design and math reference
 │   └── WISER Database Info.png   # Schema diagram
 ├── scripts/
 │   ├── bootstrap_wiser.py        # Parses CSV → normalizes → builds DB
@@ -227,10 +231,14 @@ WISER/
 │   └── schema.sql                # DDL — source of truth for all three tables
 ├── src/
 │   └── wiser/
+│       ├── cli_helpers.py        # Shared CLI constants (FEATURE_ALIASES, FLAG_TO_FEATURE, validators)
 │       ├── data_pipeline.py      # CSV parsing & row normalization
 │       ├── database.py           # Schema init, data loading, row counts
-│       ├── query_engine.py       # SQL queries (top counties, storms, history)
+│       ├── external_sources.py   # External web/PDF crawling, indexing, and impact summarization
+│       ├── openai_summarizer.py  # OpenAI Responses API wrapper for impact summaries
+│       ├── query_engine.py       # SQL queries (top counties, storms, history, county count)
 │       ├── rag.py                # RAG document indexing + lexical retrieval
+│       ├── similarity.py         # Text-vector ranking (exact + optional FAISS backend)
 │       ├── similarity_engine.py  # Multi-dimensional L2 Z-score similarity calculations
 │       └── agents/
 │           ├── task_routing_agent.py              # Keyword → route classifier
@@ -240,14 +248,16 @@ WISER/
 │           └── storm_weather_analytics_agent.py   # Wraps query engine for analytics
 ├── tests/
 │   ├── __init__.py
-│   ├── test_data_pipeline.py     # Data pipeline and state extraction tests
-│   ├── test_database.py          # Database initialization compatibility tests
-│   ├── test_rag.py               # RAG indexing/retrieval tests
-│   ├── test_schema.py            # 27 schema validation tests
-│   ├── test_task_routing.py      # Route classification tests
+│   ├── test_data_pipeline.py         # Data pipeline and state extraction tests
+│   ├── test_database.py              # Database initialization compatibility tests
+│   ├── test_external_sources.py      # External source indexing, parsing, and ranking tests
+│   ├── test_openai_summarizer.py     # OpenAI summarizer request/response tests
+│   ├── test_rag.py                   # RAG indexing/retrieval tests
+│   ├── test_schema.py                # 27 schema validation tests
+│   ├── test_task_routing.py          # Route classification tests
 │   ├── test_similarity_algorithm.py  # Legacy similarity algorithm correctness tests
-│   ├── test_similarity_engine.py # Multi-dimensional similarity engine tests
-│   └── test_wiser_cli.py         # CLI parsing and dispatcher handler registry tests
+│   ├── test_similarity_engine.py     # Multi-dimensional similarity engine tests
+│   └── test_wiser_cli.py             # CLI parsing and dispatcher handler registry tests
 ├── requirements.txt
 └── README.md
 ```
@@ -256,30 +266,39 @@ WISER/
 
 ## How It Works
 
-```
-data/testdata.csv
-       │
-       ▼
-data_pipeline.py          Parse eventCode → stormCode + eventDateTime + state
-                          Deduplicate into Storm (294), County (8), WeatherData (2,352)
-       │
-       ▼
-database.py               Create tables, enforce FK/CHECK constraints, insert rows
-       │
-       ▼
-data/wiser.db             SQLite database with 3 normalized tables + 3 indexes
-       │
-       ├── TaskRoutingAgent        Classifies query by keyword/parameters
-       │         │
-       │    DATA_RETRIEVAL ──────► DataRetrievalProcessingAgent  (rebuild DB)
-       │    RAG_KNOWLEDGE ───────► RAGKnowledgeAgent             (retrieve sourced context)
-       │    WEATHER_ANALYTICS ───► StormWeatherAnalyticsAgent    (query DB)
-       │    SIMILARITY_SEARCH ───► SimilarityQueryAgent          (rank storms via Z-score)
-       │
-       ├── find_similar_storms.py  --county + weather flags → ranked historical matches
-       │
-       ▼
-  Console output
+```text
+User query
+    |
+    v
+TaskRoutingAgent
+    |
+    |-- DATA_RETRIEVAL
+    |   "build sqlite database from csv"
+    |   DataRetrievalProcessingAgent rebuilds data/wiser.db from data/testdata.csv.
+    |
+    |-- WEATHER_ANALYTICS
+    |   "top counties by outage"
+    |   "top storms by outage"
+    |   "history for county Hartford"
+    |   StormWeatherAnalyticsAgent calls query_engine.py fixed SQL query wrappers.
+    |   There is no dynamic SQL AI agent yet.
+    |
+    |-- SIMILARITY_SEARCH
+    |   "find storms similar to wind=9.2 precip=45 in Fairfield"
+    |   SimilarityQueryAgent ranks historical storms with weighted L2 Z-score
+    |   similarity over up to 6 weather features in similarity_engine.py.
+    |
+    `-- RAG_KNOWLEDGE
+        "explain the storm similarity algorithm"
+        "impact of the new storm in Connecticut"
+        RAGKnowledgeAgent indexes local .md/.py/.sql/.txt sources with rag.py.
+        Impact-style questions can also crawl NOAA/NHC/NCEI web pages and
+        linked PDFs via external_sources.py, rank text with FAISS when installed
+        or an exact text-vector fallback, and summarize with OpenAI when an API
+        key is configured or a local extractive fallback otherwise.
+
+find_similar_storms.py bypasses TaskRoutingAgent and directly runs
+SimilarityQueryAgent for --county + weather-flag similarity searches.
 ```
 
 ---

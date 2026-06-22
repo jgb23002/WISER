@@ -1,12 +1,14 @@
-"""Agent modules for the WISER starter implementation.
+"""Agent modules for the WISER multi-agent analytics system.
 
 Available agents
 ----------------
 DataRetrievalProcessingAgent  – CSV ingestion and database bootstrap
 StormWeatherAnalyticsAgent    – SQL-based outage and county analytics
 SimilarityQueryAgent          – Multi-dimensional Z-score storm similarity
-RAGKnowledgeAgent             – Retrieval-augmented knowledge base
-TaskRoutingAgent              – Priority-ordered keyword routing
+RAGKnowledgeAgent             – Local RAG index (docs/code/schema) + optional
+                                external NOAA/NHC/NCEI web and PDF context with
+                                OpenAI or local extractive summarization
+TaskRoutingAgent              – Priority-ordered keyword/parameter routing
 """
 
 from wiser.agents.data_retrieval_processing_agent import DataRetrievalProcessingAgent
