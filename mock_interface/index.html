@@ -23,7 +23,6 @@
           <a href="#router">Task Router</a>
           <a href="#similarity">Results</a>
           <a href="#evidence">Evidence</a>
-          <a href="#commands">Commands</a>
         </nav>
       </aside>
 
@@ -218,30 +217,6 @@
           </article>
         </section>
 
-        <section class="panel architecture-card">
-          <div class="panel-title">
-            <div>
-              <p class="section-label">Architecture</p>
-              <h3>Agent workflow reference</h3>
-            </div>
-          </div>
-          <img src="../docs/WISER Image.png" alt="WISER multi-agent architecture diagram" />
-        </section>
-
-        <section class="panel command-card" id="commands">
-          <div class="panel-title">
-            <div>
-              <p class="section-label">Terminal backup</p>
-              <h3>Demo commands</h3>
-            </div>
-          </div>
-<pre><code>python3 scripts/bootstrap_wiser.py
-python3 scripts/wiser_cli.py "build sqlite database from csv"
-python3 scripts/wiser_cli.py "top counties by outage" --limit 3
-python3 scripts/wiser_cli.py "explain the storm similarity algorithm" --limit 3
-python3 scripts/wiser_cli.py "find storms similar to wind=9.2 precip=45 in Fairfield" --limit 5
-python3 scripts/wiser_cli.py "impact of the new storm in Connecticut" --limit 3 --no-openai-summary --max-linked-pdfs 2</code></pre>
-        </section>
       </main>
     </div>
 
