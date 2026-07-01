@@ -7,7 +7,7 @@ datasets or regions.
 
 The engine and this agent know nothing about natural language.
 String-to-feature aliasing (e.g. "wind" → "peakWSPD10") belongs only in
-the CLI layer (find_similar_storms.py).
+the interface layer (wiser.handlers / cli_helpers / find_similar_storms.py).
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Tests for wiser_cli similarity query parsing and route registry."""
+"""Tests for similarity query parsing, the route registry, and CLI rendering."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 SRC_DIR = Path(__file__).parent.parent / "src"
@@ -16,13 +17,15 @@ if str(SCRIPTS_DIR) not in sys.path:
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from wiser.agents.sql_ai_agent import SqlValidationError  # noqa: E402
 from wiser.agents.task_routing_agent import Route  # noqa: E402
-from wiser_cli import (  # noqa: E402
+from wiser.handlers import (  # noqa: E402
     ROUTE_HANDLERS,
     handle_weather_analytics,
     parse_similarity_county,
     parse_similarity_params,
 )
+from wiser_cli import render_result  # noqa: E402
 
 
 class TestParseSimilarityParams(unittest.TestCase):
@@ -107,11 +110,21 @@ class TestWeatherAnalyticsHandler(unittest.TestCase):
             conn=None,
             limit=10,
             analytics_agent=FailingAnalyticsAgent(),
+            sql_model=None,
+            dry_run_sql=False,
         )
+
+        # Force the SQL AI agent to fail so the fixed-query fallback runs;
+        # this test asserts the fallback's behaviour for unsupported queries.
+        with patch(
+            "wiser.agents.sql_ai_agent.SqlAiAgent.run",
+            side_effect=SqlValidationError("forced failure for fallback test"),
+        ):
+            result = handle_weather_analytics(ctx)
 
         output = io.StringIO()
         with redirect_stdout(output):
-            handle_weather_analytics(ctx)
+            render_result(result)
 
         self.assertIn(
             "I can't answer this with the current analytics agent yet",

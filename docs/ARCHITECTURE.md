@@ -427,8 +427,12 @@ User Interfaces
     |       |   `-- DataRetrievalProcessingAgent
     |       |
     |       |-- WEATHER_ANALYTICS
-    |       |   `-- StormWeatherAnalyticsAgent -> query_engine.py fixed SQL wrappers
-    |       |       No dynamic SQL AI agent is implemented yet.
+    |       |   `-- SqlAiAgent (LLM → validated SELECT → read-only exec)
+    |       |       ├─ dry_run=True  → returns prompt, no API call
+    |       |       ├─ LLM call      → Chat Completions (gpt-3.5-turbo default)
+    |       |       ├─ sqlglot       → syntax + SELECT-only validation
+    |       |       └─ on SqlValidationError or API failure:
+    |       |           fallback → StormWeatherAnalyticsAgent -> query_engine.py
     |       |
     |       |-- SIMILARITY_SEARCH
     |       |   `-- SimilarityQueryAgent -> similarity_engine.py weighted L2 Z-score
@@ -478,5 +482,8 @@ Configuration
    ├─ --no-linked-pdfs         Index source pages only; skip linked PDFs
    ├─ --similarity-backend     Text ranking: auto | faiss | exact (default: auto)
    ├─ --openai-model <id>      OpenAI model for impact summaries
-   └─ --no-openai-summary      Force local extractive summary even if API key is set
+   ├─ --no-openai-summary      Force local extractive summary even if API key is set
+   ├─ --sql-model <id>         OpenAI model for SQL generation only (default: gpt-3.5-turbo)
+   ├─ --show-sql               Print the generated SQL query alongside results
+   └─ --dry-run-sql            Print the prompt sent to SqlAiAgent; exit without API call
 ```
