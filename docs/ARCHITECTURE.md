@@ -80,16 +80,18 @@
 │  ├─ save_normalized()    │ │
 │  └─ build_database()     │ ├─────────────────┐
 │                          │                   │
-│  Analytics Agent         │                   ▼
-│  ├─ county_outage_...()  │        ┌───────────────────────┐
-│  ├─ top_storms_by...()   │        │  SIMILARITY ENGINE    │
-│  ├─ county_storm_...()   │        ├───────────────────────┤
+│  SQL AI Agent            │                   ▼
+│  ├─ run(): NL → SELECT   │        ┌───────────────────────┐
+│  │                       │        │  SIMILARITY ENGINE    │
+│  Analytics Agent         │        ├───────────────────────┤
+│  (SQL AI fallback)       │        │                       │
+│  ├─ county_outage_...()  │        │  Similarity Engine    │
+│  ├─ top_storms_by...()   │        │  ├─ rank_by_sim...()  │
+│  ├─ county_storm_...()   │        │  └─ compute_stats()   │
 │  │                       │        │                       │
-│  RAG Knowledge Agent     │        │  Similarity Engine    │
-│  ├─ ensure_index()       │        │  ├─ rank_by_sim...()  │
-│  └─ answer()             │        │  └─ compute_stats()   │
-│                          │        │                       │
-│  └─ answer()             │        └───────────────────────┘
+│  RAG Knowledge Agent     │        └───────────────────────┘
+│  ├─ ensure_index()       │
+│  └─ answer()             │
 │                          │
 │  Similarity Query Agent  │
 │  ├─ find_similar() ──────┼───────────────▲
@@ -107,16 +109,26 @@
 │                                                                           │
 │  2. CLI Interface                                                        │
 │     scripts/wiser_cli.py                                                 │
-│     └─ Accepts natural language queries and parses key=value parameters: │
+│     └─ Renders wiser.handlers results as text. Natural language          │
+│        queries with key=value parameters:                                │
 │        "top counties by outage"                                          │
 │        "find storms similar to wind=9.2 precip=45 in Fairfield"          │
 │        "explain the storm similarity algorithm"                          │
 │                                                                           │
-│  3. Similarity Search CLI                                                │
+│  3. Streamlit Web Interface                                              │
+│     streamlit_app.py  (streamlit run streamlit_app.py)                   │
+│     └─ Renders the same wiser.handlers results as widgets; sidebar       │
+│        covers the common CLI flags (model and source-list flags stay     │
+│        CLI-only). No duplicated routing or SQL logic.                    │
+│                                                                           │
+│  4. Similarity Search CLI                                                │
 │     scripts/find_similar_storms.py                                       │
 │     └─ Directly queries multidimensional storm similarity:               │
 │        python scripts/find_similar_storms.py --county Hartford \         │
 │               --wind-speed 6.5 --precip 30.0                             │
+│                                                                           │
+│  Interfaces 2 and 3 share src/wiser/handlers.py: route handlers return   │
+│  structured result dataclasses; each interface only renders them.        │
 │                                                                           │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -321,11 +333,25 @@ test_task_routing.py (10 routing classifier tests)
 ├─ Validates Route.DATA_RETRIEVAL, Route.WEATHER_ANALYTICS, Route.RAG_KNOWLEDGE
 └─ Validates Route.SIMILARITY_SEARCH classification and ignores RAG collisions
 
-test_wiser_cli.py (13 CLI registry and parsing tests)
+test_wiser_cli.py (13 parsing and CLI rendering tests)
 ├─ Validates natural language parameter extractor (wind=9.2, wgt5=12)
 ├─ Validates county detection and auto-resolution from text query strings
 ├─ Validates dispatcher handlers registry (ROUTE_HANDLERS) mapping
-└─ Validates analytics handler returns explicit message for unsupported queries
+└─ Validates analytics fallback renders explicit message for unsupported queries
+
+test_handlers.py (18 shared handler layer tests)
+├─ TestHandleDataRetrieval (rebuild + table counts, connection replacement)
+├─ TestHandleWeatherAnalytics (LLM success, dry-run, fallback + warning notices)
+├─ TestHandleSimilaritySearch (happy path, param/county/wind validation errors)
+├─ TestHandleRagKnowledge (grounded answers, cited sources, no-context case)
+└─ TestDispatch (registry coverage, unknown-route suggestions)
+   All handlers asserted print-free: results are structured dataclasses.
+
+test_streamlit_app.py (4 headless AppTest smoke tests, skipped without streamlit)
+├─ App loads without crashing; no-API-key banner shown
+├─ Similarity query renders a results dataframe
+├─ Dry-run analytics shows the LLM prompt with no API call
+└─ Missing-county error surfaces as st.error, not a crash
 
 test_external_sources.py (13 tests)
 ├─ TestExternalSourceIndexAndSummary (indexing, OpenAI/local summarization)
@@ -335,6 +361,15 @@ test_external_sources.py (13 tests)
 test_openai_summarizer.py (6 tests)
 └─ Validates OpenAI Responses API request construction, response parsing, dotenv loading
 
+test_sql_ai_agent.py (52 tests, all LLM calls mocked — no network access)
+├─ TestLoadSchemaDdl (CREATE TABLE/INDEX extraction from schema.sql)
+├─ TestCleanSql (markdown fence stripping)
+├─ TestValidateSql (SELECT-only, single-statement, CTE, write rejection)
+├─ TestDryRun (prompt returned, no HTTP call)
+├─ TestMockedLlmPipeline (8 query types end-to-end with mocked LLM)
+├─ TestCliHandlerFallback (fallback to fixed queries on agent failure)
+└─ TestCliFlags (--dry-run-sql, --show-sql behaviour)
+
 test_data_pipeline.py (1 pipeline test)
 └─ Test eventCode parsing and state abbreviation extraction logic
 
@@ -342,7 +377,7 @@ test_database.py (2 initialization tests)
 test_similarity_algorithm.py (13 tests)
 test_rag.py (10 tests)
 
-Result: 131/131 ✓ PASSING
+Result: 205/205 ✓ PASSING
 ```
 
 ---
@@ -359,7 +394,7 @@ DEVELOPMENT
 
 PRODUCTION (Future)
 ├─ PostgreSQL (multi-user)
-│  └─ Conversion notes in legacy code
+│  └─ Would require dialect conversion of sql/schema.sql
 ├─ Proper authentication
 │  └─ Environment variables for credentials
 └─ Replication and backups
@@ -419,7 +454,12 @@ data_pipeline.py (CSV → Normalized dicts)
 
 User Interfaces
     |
-    |-- wiser_cli.py
+    |-- wiser_cli.py (text renderer)
+    |-- streamlit_app.py (web renderer)
+    |   |
+    |   Both consume src/wiser/handlers.py:
+    |   route handlers return structured results
+    |   (AnalyticsResult, SimilarityResult, RagKnowledgeResult, ...)
     |   |
     |   `-- TaskRoutingAgent
     |       |
@@ -427,8 +467,12 @@ User Interfaces
     |       |   `-- DataRetrievalProcessingAgent
     |       |
     |       |-- WEATHER_ANALYTICS
-    |       |   `-- StormWeatherAnalyticsAgent -> query_engine.py fixed SQL wrappers
-    |       |       No dynamic SQL AI agent is implemented yet.
+    |       |   `-- SqlAiAgent (LLM → validated SELECT → read-only exec)
+    |       |       ├─ dry_run=True  → returns prompt, no API call
+    |       |       ├─ LLM call      → Chat Completions (WISER_OPENAI_MODEL or gpt-4o-mini)
+    |       |       ├─ sqlglot       → syntax + SELECT-only validation
+    |       |       └─ on SqlValidationError or API failure:
+    |       |           fallback → StormWeatherAnalyticsAgent -> query_engine.py
     |       |
     |       |-- SIMILARITY_SEARCH
     |       |   `-- SimilarityQueryAgent -> similarity_engine.py weighted L2 Z-score
@@ -465,7 +509,6 @@ Configuration
 │
 └─ COMMAND-LINE OVERRIDES (wiser_cli.py)
    ├─ --input <path>           CSV source file
-   ├─ --output-dir <path>      Normalised CSV output directory
    ├─ --db <path>              SQLite database path
    ├─ --limit <n>              Top-N / chunk limit (default: 10)
    ├─ --county <name>          Override county auto-detection for similarity
@@ -478,5 +521,8 @@ Configuration
    ├─ --no-linked-pdfs         Index source pages only; skip linked PDFs
    ├─ --similarity-backend     Text ranking: auto | faiss | exact (default: auto)
    ├─ --openai-model <id>      OpenAI model for impact summaries
-   └─ --no-openai-summary      Force local extractive summary even if API key is set
+   ├─ --no-openai-summary      Force local extractive summary even if API key is set
+   ├─ --sql-model <id>         OpenAI model for SQL generation only (default: gpt-4o-mini)
+   ├─ --show-sql               Print the generated SQL query alongside results
+   └─ --dry-run-sql            Print the prompt sent to SqlAiAgent; exit without API call
 ```

@@ -641,8 +641,6 @@ def _content_quality_multiplier(
 
     if lower_source_path.startswith("docs/"):
         multiplier *= 1.3
-    if lower_source_path == "scripts/storm_similarity_alg.md":
-        multiplier *= 0.35
     if lower_source_path.endswith(".py") and not wants_code:
         multiplier *= 0.35
     elif lower_source_path.endswith(".py"):

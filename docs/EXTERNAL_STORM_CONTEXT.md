@@ -59,6 +59,8 @@ export WISER_OPENAI_MODEL="gpt-5.5"
 python scripts/wiser_cli.py "impact of the new storm" --openai-model gpt-5.5
 ```
 
+Note that `WISER_OPENAI_MODEL` is a single knob shared by both OpenAI features: impact summaries here **and** SQL generation in the SqlAiAgent (which otherwise falls back to `gpt-4o-mini`). Setting it changes both. To pick a different model per feature for a single run, use `--openai-model` (summaries) and `--sql-model` (SQL generation).
+
 If the key is absent, the API call fails, or you pass `--no-openai-summary`, WISER falls back to its local extractive summary.
 
 ## CLI Controls

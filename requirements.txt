@@ -4,4 +4,10 @@
 # faiss-cpu
 # numpy
 # pypdf
-
+#
+# Optional SQL AI agent hardening (full syntax + SELECT-only validation;
+# without it a conservative regex check is used):
+# sqlglot
+#
+# Web interface (streamlit run streamlit_app.py):
+# streamlit
