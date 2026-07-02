@@ -4,7 +4,7 @@
 
 **W**eather **I**ntegrated **S**torm **E**vent **R**esponse — a Connecticut storm outage analytics system built on a multi-agent architecture. It ingests raw storm CSV data, normalizes it into a relational SQLite database, answers natural-language analytics queries, and retrieves grounded RAG context from project docs/code. Query it from the CLI or the Streamlit web interface — both are thin renderers over the same shared handler layer (`src/wiser/handlers.py`), so there is exactly one implementation of routing, dispatch, and query logic.
 
-> See the live system at [wisermaci.engr.uconn.edu](http://wisermaci.engr.uconn.edu/)
+> Reference for future integration: [wisermaci.engr.uconn.edu](http://wisermaci.engr.uconn.edu/) — the UConn WISER site (not connected to this repo).
 
 ---
 
@@ -138,9 +138,13 @@ pip install streamlit
 streamlit run streamlit_app.py
 ```
 
-- Every CLI flag has a sidebar equivalent (limit, county override, dry-run
-  SQL, show SQL, rebuild RAG, external crawling, …). The OpenAI model comes
-  from `WISER_OPENAI_MODEL` in the repo-root `.env`.
+- The sidebar covers the common CLI options: database/CSV paths, result
+  limit, county override, dry-run SQL, show SQL, show RAG context, rebuild
+  RAG, external crawling, OpenAI summary toggle, and similarity backend.
+  A few flags stay CLI-only: `--rag-source`, `--web-source`,
+  `--max-linked-pdfs`, `--no-linked-pdfs`, `--openai-model`, and
+  `--sql-model`. The OpenAI model comes from `WISER_OPENAI_MODEL` in the
+  repo-root `.env`.
 - Example-query buttons cover each route and are color-coded by the agent
   they route to; the submitted query and route decision are shown in the
   same color for every run.
@@ -251,7 +255,8 @@ WISER/
 │   ├── ARCHITECTURE.md           # System design & data flow diagrams
 │   ├── EXTERNAL_STORM_CONTEXT.md # External NOAA/NHC/NCEI context feature docs
 │   ├── STORM_SIMILARITY_ALGORITHM.md  # Algorithm design and math reference
-│   └── WISER Database Info.png   # Schema diagram
+│   ├── WISER Database Info.png   # Schema diagram
+│   └── WISER Image.png           # README banner image
 ├── scripts/
 │   ├── bootstrap_wiser.py        # Parses CSV → normalizes → builds DB
 │   ├── find_similar_storms.py    # Storm similarity CLI (supports up to 6 weather features)
@@ -293,6 +298,7 @@ WISER/
 │   ├── test_similarity_algorithm.py  # Legacy similarity algorithm correctness tests
 │   ├── test_similarity_engine.py     # Multi-dimensional similarity engine tests
 │   └── test_wiser_cli.py             # Similarity parsing and CLI rendering tests
+├── .env.example                      # Template for OPENAI_API_KEY / WISER_OPENAI_MODEL
 ├── requirements.txt
 ├── streamlit_app.py                  # Streamlit web interface (renders wiser.handlers results)
 └── README.md

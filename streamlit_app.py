@@ -212,7 +212,7 @@ def _set_query(query: str) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="WISER", page_icon="🌩️", layout="wide")
-    st.title("🌩️ WISER — Weather Impact Storm Event Reasoner")
+    st.title("🌩️ WISER — Weather Integrated Storm Event Response")
     st.caption(
         "Natural-language queries routed across four agents: data retrieval, "
         "SQL analytics, storm similarity, and RAG knowledge."

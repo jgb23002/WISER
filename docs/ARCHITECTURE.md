@@ -118,7 +118,8 @@
 │  3. Streamlit Web Interface                                              │
 │     streamlit_app.py  (streamlit run streamlit_app.py)                   │
 │     └─ Renders the same wiser.handlers results as widgets; sidebar       │
-│        mirrors every CLI flag. No duplicated routing or SQL logic.       │
+│        covers the common CLI flags (model and source-list flags stay     │
+│        CLI-only). No duplicated routing or SQL logic.                    │
 │                                                                           │
 │  4. Similarity Search CLI                                                │
 │     scripts/find_similar_storms.py                                       │
@@ -468,7 +469,7 @@ User Interfaces
     |       |-- WEATHER_ANALYTICS
     |       |   `-- SqlAiAgent (LLM → validated SELECT → read-only exec)
     |       |       ├─ dry_run=True  → returns prompt, no API call
-    |       |       ├─ LLM call      → Chat Completions (gpt-4o-mini default)
+    |       |       ├─ LLM call      → Chat Completions (WISER_OPENAI_MODEL or gpt-4o-mini)
     |       |       ├─ sqlglot       → syntax + SELECT-only validation
     |       |       └─ on SqlValidationError or API failure:
     |       |           fallback → StormWeatherAnalyticsAgent -> query_engine.py
@@ -508,7 +509,6 @@ Configuration
 │
 └─ COMMAND-LINE OVERRIDES (wiser_cli.py)
    ├─ --input <path>           CSV source file
-   ├─ --output-dir <path>      Normalised CSV output directory
    ├─ --db <path>              SQLite database path
    ├─ --limit <n>              Top-N / chunk limit (default: 10)
    ├─ --county <name>          Override county auto-detection for similarity
