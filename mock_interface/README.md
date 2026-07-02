@@ -12,7 +12,7 @@ python3 -m http.server 8092
 Then open:
 
 ```text
-http://localhost:8092/mock_interface/index.html
+re
 ```
 
 The interface is a static presentation mock for:
