@@ -139,9 +139,11 @@ streamlit run streamlit_app.py
 ```
 
 - Every CLI flag has a sidebar equivalent (limit, county override, dry-run
-  SQL, show SQL, rebuild RAG, external crawling, model overrides, …).
-- Example-query buttons cover each route; the route decision and reason are
-  shown for every run.
+  SQL, show SQL, rebuild RAG, external crawling, …). The OpenAI model comes
+  from `WISER_OPENAI_MODEL` in the repo-root `.env`.
+- Example-query buttons cover each route and are color-coded by the agent
+  they route to; the submitted query and route decision are shown in the
+  same color for every run.
 - Without an `OPENAI_API_KEY`, a banner explains that analytics fall back to
   fixed queries and impact summaries use the local extractive mode — the app
   keeps working, nothing crashes.

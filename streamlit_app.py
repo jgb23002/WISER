@@ -42,12 +42,12 @@ from wiser.handlers import (
 from wiser.openai_summarizer import openai_config
 from wiser.rag import format_excerpt
 
-ROUTE_LABELS = {
-    Route.DATA_RETRIEVAL: ":green[data_retrieval]",
-    Route.WEATHER_ANALYTICS: ":orange[weather_analytics]",
-    Route.SIMILARITY_SEARCH: ":blue[similarity_search]",
-    Route.RAG_KNOWLEDGE: ":violet[rag_knowledge]",
-    Route.UNKNOWN: ":red[unknown]",
+ROUTE_COLORS = {
+    Route.DATA_RETRIEVAL: "green",
+    Route.WEATHER_ANALYTICS: "orange",
+    Route.SIMILARITY_SEARCH: "blue",
+    Route.RAG_KNOWLEDGE: "violet",
+    Route.UNKNOWN: "red",
 }
 
 _NOTICE_RENDERERS = {"error": st.error, "warning": st.warning, "info": st.info}
@@ -246,9 +246,6 @@ def main() -> None:
             help="Show the prompt that would be sent to the LLM without making an API call.",
         )
         show_sql = st.checkbox("Show generated SQL", value=True)
-        sql_model = st.text_input(
-            "SQL model", value="", help="Default: WISER_OPENAI_MODEL or gpt-4o-mini."
-        )
 
         st.subheader("RAG / external context")
         show_rag_context = st.checkbox("Show augmented context", value=False)
@@ -266,21 +263,30 @@ def main() -> None:
         similarity_backend = st.selectbox(
             "Text similarity backend", options=("auto", "faiss", "exact")
         )
-        openai_model = st.text_input(
-            "Summary model", value="", help="Default: WISER_OPENAI_MODEL or gpt-5.5."
-        )
 
         st.caption(
             f"OpenAI key: {'configured' if llm_config.api_key_present else 'not set'} · "
-            f"model default: {llm_config.model}"
+            f"model: {llm_config.model}",
+            help="Set WISER_OPENAI_MODEL in the repo-root .env to change the model.",
         )
 
+    routing_agent = TaskRoutingAgent()
+
     st.markdown("**Example queries**")
+    st.caption(
+        "Colored by the agent each query routes to: "
+        + " · ".join(
+            f":{color}[{route.value}]"
+            for route, color in ROUTE_COLORS.items()
+            if route is not Route.UNKNOWN
+        )
+    )
     example_columns = st.columns(min(len(EXAMPLE_QUERIES), 4))
     for position, example in enumerate(EXAMPLE_QUERIES):
+        example_color = ROUTE_COLORS.get(routing_agent.route(example).route, "gray")
         with example_columns[position % len(example_columns)]:
             st.button(
-                example,
+                f":{example_color}[{example}]",
                 key=f"example_{position}",
                 on_click=_set_query,
                 args=(example,),
@@ -301,9 +307,12 @@ def main() -> None:
         st.warning("Enter a query first.")
         return
 
-    decision = TaskRoutingAgent().route(query)
-    route_label = ROUTE_LABELS.get(decision.route, decision.route.value)
-    st.markdown(f"**Route:** {route_label} — {decision.reason}")
+    decision = routing_agent.route(query)
+    route_color = ROUTE_COLORS.get(decision.route, "gray")
+    st.markdown(f"### :{route_color}[❝{query}❞]")
+    st.markdown(
+        f"**Route:** :{route_color}[{decision.route.value}] — {decision.reason}"
+    )
 
     try:
         with st.spinner("Running agents..."):
@@ -316,9 +325,7 @@ def main() -> None:
                 rebuild_rag=rebuild_rag,
                 crawl_web_sources=crawl_web_sources,
                 similarity_backend=similarity_backend,
-                openai_model=openai_model.strip() or None,
                 use_openai_summary=use_openai_summary,
-                sql_model=sql_model.strip() or None,
                 dry_run_sql=dry_run_sql,
             )
             try:
