@@ -2,7 +2,7 @@
 
 ![WISER Image](docs/WISER%20Image.png)
 
-**W**eather **I**ntegrated **S**torm **E**vent **R**esponse — a Connecticut storm outage analytics system built on a multi-agent architecture. It ingests raw storm CSV data, normalizes it into a relational SQLite database, answers natural-language analytics queries, and retrieves grounded RAG context from project docs/code.
+**W**eather **I**ntegrated **S**torm **E**vent **R**esponse — a Connecticut storm outage analytics system built on a multi-agent architecture. It ingests raw storm CSV data, normalizes it into a relational SQLite database, answers natural-language analytics queries, and retrieves grounded RAG context from project docs/code. Query it from the CLI or the Streamlit web interface — both are thin renderers over the same shared handler layer (`src/wiser/handlers.py`), so there is exactly one implementation of routing, dispatch, and query logic.
 
 > See the live system at [wisermaci.engr.uconn.edu](http://wisermaci.engr.uconn.edu/)
 
@@ -11,7 +11,7 @@
 ## Prerequisites
 
 - Python **3.9+**
-- Core workflows use only the Python standard library (`sqlite3`, `csv`, `datetime`, `argparse`, `unittest`). External storm-context features have optional dependencies: `faiss-cpu` and `numpy` for fast text similarity, `pypdf` for PDF extraction, and an `OPENAI_API_KEY` for AI-generated impact summaries. All fall back gracefully when absent.
+- Core workflows use only the Python standard library (`sqlite3`, `csv`, `datetime`, `argparse`, `unittest`). Optional dependencies: `faiss-cpu` and `numpy` for fast text similarity, `pypdf` for PDF extraction, `sqlglot` for full syntax validation of AI-generated SQL, and an `OPENAI_API_KEY` (in `.env` or the environment) for AI-generated SQL analytics queries and impact summaries. All fall back gracefully when absent.
 
 ---
 
@@ -88,7 +88,7 @@ python scripts/bootstrap_wiser.py \
 |---|---|---|
 | Data / DB management | `load`, `csv`, `database`, `schema`, `ingest` … | `DataRetrievalProcessingAgent` |
 | RAG / knowledge retrieval | `rag`, `docs`, `explain`, `algorithm`, `reference`, `impact`, `hurricane`, `nhc`, `ncei` … | `RAGKnowledgeAgent` plus optional external web/PDF context |
-| Weather analytics | `outage`, `storm`, `county`, `top`, `trend` … | `StormWeatherAnalyticsAgent` using fixed query wrappers |
+| Weather analytics | `outage`, `storm`, `county`, `top`, `trend` … | `SqlAiAgent` (LLM → validated read-only SELECT), falling back to `StormWeatherAnalyticsAgent` fixed query wrappers |
 | Similarity search | `similar`, `find similar`, `rank storms`, or parameter patterns (e.g., `wind=`) … | `SimilarityQueryAgent` |
 
 ```bash
@@ -118,9 +118,33 @@ The `--limit` flag controls how many rows are returned for top-N queries (defaul
 For RAG queries, `--limit` controls retrieved context chunks. Use `--rebuild-rag` to refresh the local index, `--show-rag-context` to print the full augmented prompt, and repeat `--rag-source <path>` to index a custom file or directory.
 For similarity searches, `--county` overrides county auto-detection from query text.
 
+Weather-analytics queries are answered by the **SqlAiAgent**: an LLM generates a SQLite `SELECT`, which is validated (syntax + SELECT-only, via `sqlglot` when installed) and executed against a read-only connection. On validation or API failure, the CLI falls back to the fixed query wrappers. Related flags: `--sql-model <id>` picks the OpenAI model for SQL generation (default: `WISER_OPENAI_MODEL` or `gpt-4o-mini`), `--show-sql` prints the generated SQL alongside results, and `--dry-run-sql` prints the exact prompt without making an API call.
+
 Impact-style storm questions automatically crawl the default NOAA/NHC/NCEI context sources, including linked National Hurricane Center Tropical Cyclone Report PDFs. WISER stores extracted web/PDF paragraphs in the existing RAG tables, ranks them with optional Meta/Facebook FAISS similarity search when available, and falls back to a dependency-free exact text-vector ranking otherwise. See [docs/EXTERNAL_STORM_CONTEXT.md](docs/EXTERNAL_STORM_CONTEXT.md).
 
 If `OPENAI_API_KEY` is set in `.env` or the shell environment, WISER uses the OpenAI Responses API to generate short cited impact summaries from the retrieved paragraphs. Without a key, or with `--no-openai-summary`, it uses the local extractive summary.
+
+---
+
+### Web interface (Streamlit)
+
+The same agent system is available as a web UI. It consumes the identical
+handler layer the CLI uses (`wiser.handlers`) — no duplicated routing,
+dispatch, or SQL logic — and reads `OPENAI_API_KEY` from the same repo-root
+`.env` / environment as the CLI.
+
+```bash
+pip install streamlit
+streamlit run streamlit_app.py
+```
+
+- Every CLI flag has a sidebar equivalent (limit, county override, dry-run
+  SQL, show SQL, rebuild RAG, external crawling, model overrides, …).
+- Example-query buttons cover each route; the route decision and reason are
+  shown for every run.
+- Without an `OPENAI_API_KEY`, a banner explains that analytics fall back to
+  fixed queries and impact summaries use the local extractive mode — the app
+  keeps working, nothing crashes.
 
 ---
 
@@ -180,7 +204,7 @@ Use the ranked historical **outages** as a rough guide for what a current event 
 
 ## Running the Tests
 
-To run the entire test suite (131 tests) covering database schema, RAG indexing/retrieval, external source parsing, OpenAI summarization, task routing, query parsing, and similarity algorithms:
+To run the entire test suite (205 tests) covering database schema, RAG indexing/retrieval, external source parsing, OpenAI summarization, SQL AI agent validation, task routing, the shared handler layer, query parsing, and similarity algorithms:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -190,7 +214,7 @@ Expected output:
 ```
 ...
 ----------------------------------------------------------------------
-Ran 131 tests in 0.9s
+Ran 205 tests in 1.2s
 
 OK
 ```
@@ -204,10 +228,13 @@ The test files cover the following functionality:
 | `tests/test_rag.py` | Tests grounding, chunking, indexing, and answer retrieval inside the RAG engine. |
 | `tests/test_external_sources.py` | Validates external web/PDF indexing, URL normalisation, HTML/PDF extraction, and text-vector ranking. |
 | `tests/test_openai_summarizer.py` | Verifies OpenAI Responses API request construction, response parsing, and dotenv loading. |
+| `tests/test_sql_ai_agent.py` | Verifies SQL AI agent schema loading, fence stripping, SELECT-only validation, dry-run mode, mocked LLM pipeline, and handler fallback rendering. All LLM calls are mocked. |
+| `tests/test_handlers.py` | Verifies the shared handler layer returns structured results (no printing): analytics LLM/fallback/dry-run paths, similarity validation errors, RAG answers, dispatch registry. |
+| `tests/test_streamlit_app.py` | Headless Streamlit smoke tests (AppTest): app loads, similarity and dry-run analytics render, errors surface without crashing. Skipped when `streamlit` is not installed. |
 | `tests/test_similarity_algorithm.py` | Validates Z-score calculations, statistics, symmetry, and legacy single-dimension mathematical correctness. |
 | `tests/test_similarity_engine.py` | Verifies multi-dimensional Z-score calculations (parity, weight overrides, zero std dev, partial features). |
 | `tests/test_task_routing.py` | Tests keyword and pattern matching routing decisions (avoiding RAG collisions, rejecting unknown aliases). |
-| `tests/test_wiser_cli.py` | Verifies CLI query parsing, county auto-detection, dispatch registry handlers, and analytics fallback guard. |
+| `tests/test_wiser_cli.py` | Verifies similarity query parsing, county auto-detection, dispatch registry, and CLI rendering of handler results. |
 | `tests/test_data_pipeline.py` | Validates parsing of CSV columns and correct extraction of state codes from event codes. |
 
 ---
@@ -226,7 +253,8 @@ WISER/
 ├── scripts/
 │   ├── bootstrap_wiser.py        # Parses CSV → normalizes → builds DB
 │   ├── find_similar_storms.py    # Storm similarity CLI (supports up to 6 weather features)
-│   └── wiser_cli.py              # Natural-language query entry point
+│   ├── smoke_sql_ai_agent.py     # Live OpenAI eval harness for SqlAiAgent (not a unit test)
+│   └── wiser_cli.py              # CLI entry point (argparse + text rendering over wiser.handlers)
 ├── sql/
 │   └── schema.sql                # DDL — source of truth for all three tables
 ├── src/
@@ -237,6 +265,7 @@ WISER/
 │       ├── external_sources.py   # External web/PDF crawling, indexing, and impact summarization
 │       ├── openai_summarizer.py  # OpenAI Responses API wrapper for impact summaries
 │       ├── query_engine.py       # SQL queries (top counties, storms, history, county count)
+│       ├── handlers.py           # Shared route handlers + result types (consumed by CLI and Streamlit)
 │       ├── rag.py                # RAG document indexing + lexical retrieval
 │       ├── similarity.py         # Text-vector ranking (exact + optional FAISS backend)
 │       ├── similarity_engine.py  # Multi-dimensional L2 Z-score similarity calculations
@@ -245,7 +274,8 @@ WISER/
 │           ├── data_retrieval_processing_agent.py # Orchestrates pipeline + DB build
 │           ├── rag_knowledge_agent.py             # Builds/searches local RAG index
 │           ├── similarity_query_agent.py          # Performs similarity query & ranking
-│           └── storm_weather_analytics_agent.py   # Wraps query engine for analytics
+│           ├── sql_ai_agent.py                    # NL → validated SELECT → read-only exec (LLM)
+│           └── storm_weather_analytics_agent.py   # Wraps query engine for analytics (fallback)
 ├── tests/
 │   ├── __init__.py
 │   ├── test_data_pipeline.py         # Data pipeline and state extraction tests
@@ -253,12 +283,16 @@ WISER/
 │   ├── test_external_sources.py      # External source indexing, parsing, and ranking tests
 │   ├── test_openai_summarizer.py     # OpenAI summarizer request/response tests
 │   ├── test_rag.py                   # RAG indexing/retrieval tests
+│   ├── test_handlers.py              # Shared handler layer structured-result tests
 │   ├── test_schema.py                # 27 schema validation tests
+│   ├── test_sql_ai_agent.py          # SQL AI agent validation, pipeline, and fallback tests
+│   ├── test_streamlit_app.py         # Headless Streamlit smoke tests (skipped without streamlit)
 │   ├── test_task_routing.py          # Route classification tests
 │   ├── test_similarity_algorithm.py  # Legacy similarity algorithm correctness tests
 │   ├── test_similarity_engine.py     # Multi-dimensional similarity engine tests
-│   └── test_wiser_cli.py             # CLI parsing and dispatcher handler registry tests
+│   └── test_wiser_cli.py             # Similarity parsing and CLI rendering tests
 ├── requirements.txt
+├── streamlit_app.py                  # Streamlit web interface (renders wiser.handlers results)
 └── README.md
 ```
 
@@ -278,10 +312,12 @@ TaskRoutingAgent
     |
     |-- WEATHER_ANALYTICS
     |   "top counties by outage"
-    |   "top storms by outage"
-    |   "history for county Hartford"
-    |   StormWeatherAnalyticsAgent calls query_engine.py fixed SQL query wrappers.
-    |   There is no dynamic SQL AI agent yet.
+    |   "how many storms happened between 2010 and 2015?"
+    |   SqlAiAgent asks an LLM for a SQLite SELECT, validates it
+    |   (syntax + SELECT-only, sqlglot when installed), and executes it
+    |   on a read-only connection. On validation or API failure it falls
+    |   back to StormWeatherAnalyticsAgent's fixed query wrappers in
+    |   query_engine.py ("top storms", "top counties", county history).
     |
     |-- SIMILARITY_SEARCH
     |   "find storms similar to wind=9.2 precip=45 in Fairfield"
@@ -299,6 +335,10 @@ TaskRoutingAgent
 
 find_similar_storms.py bypasses TaskRoutingAgent and directly runs
 SimilarityQueryAgent for --county + weather-flag similarity searches.
+
+Handlers for all four routes live in src/wiser/handlers.py and return
+structured result dataclasses. scripts/wiser_cli.py (text) and
+streamlit_app.py (web) are interchangeable renderers over that one layer.
 ```
 
 ---
