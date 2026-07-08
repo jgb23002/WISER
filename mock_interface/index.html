@@ -1,0 +1,907 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WISER Presentation Mock</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --ink: #17202a;
+      --muted: #5b6777;
+      --line: #d9dee7;
+      --nav: #17202a;
+      --teal: #007c89;
+      --green: #2f7d32;
+      --amber: #b56b00;
+      --blue: #2d5fd7;
+      --red: #b13b3b;
+      --shadow: 0 10px 24px rgba(23, 32, 42, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+    }
+
+    .sidebar {
+      background: var(--nav);
+      color: #f8fbff;
+      padding: 22px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: #eef7f7;
+      color: var(--teal);
+      font-weight: 800;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.1;
+    }
+
+    .brand p {
+      margin: 4px 0 0;
+      color: #b9c6d6;
+      font-size: 13px;
+    }
+
+    .nav-section {
+      display: grid;
+      gap: 8px;
+    }
+
+    .nav-title {
+      color: #91a0b3;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .nav-item {
+      border: 0;
+      border-radius: 8px;
+      color: #dfe8f5;
+      background: transparent;
+      text-align: left;
+      padding: 10px 12px;
+      cursor: pointer;
+      min-height: 42px;
+    }
+
+    .nav-item.active {
+      background: #263547;
+      color: #ffffff;
+    }
+
+    .side-panel {
+      margin-top: auto;
+      border: 1px solid #34465d;
+      border-radius: 8px;
+      padding: 14px;
+      background: #1f2c3b;
+    }
+
+    .side-panel img {
+      width: 100%;
+      max-height: 150px;
+      object-fit: contain;
+      border-radius: 6px;
+      background: #ffffff;
+    }
+
+    .side-panel p {
+      margin: 10px 0 0;
+      color: #c7d3e1;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    main {
+      min-width: 0;
+      padding: 26px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 22px;
+    }
+
+    .topbar h2 {
+      margin: 0;
+      font-size: clamp(24px, 3vw, 34px);
+      line-height: 1.1;
+    }
+
+    .topbar p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      max-width: 760px;
+      line-height: 1.45;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 12px;
+      background: var(--surface);
+      color: var(--green);
+      font-weight: 700;
+      box-shadow: var(--shadow);
+    }
+
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+    }
+
+    .tab-button {
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--ink);
+      border-radius: 8px;
+      padding: 10px 14px;
+      cursor: pointer;
+      min-height: 42px;
+    }
+
+    .tab-button.active {
+      border-color: var(--teal);
+      box-shadow: inset 0 -3px 0 var(--teal);
+      color: var(--teal);
+      font-weight: 700;
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .grid.metrics {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin-bottom: 16px;
+    }
+
+    .grid.two {
+      grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+    }
+
+    .panel,
+    .metric,
+    .query-button {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .panel {
+      padding: 18px;
+    }
+
+    .panel h3,
+    .metric h3 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .metric {
+      padding: 16px;
+      min-height: 132px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .metric-value {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      color: var(--ink);
+    }
+
+    .metric-value strong {
+      font-size: 34px;
+      line-height: 1;
+    }
+
+    .metric-value span {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .metric p,
+    .panel p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #edf8f6;
+      color: var(--teal);
+      border: 1px solid #bee4df;
+      white-space: nowrap;
+    }
+
+    .badge.blue {
+      background: #edf2ff;
+      border-color: #c9d6ff;
+      color: var(--blue);
+    }
+
+    .badge.amber {
+      background: #fff5e6;
+      border-color: #f4d39e;
+      color: var(--amber);
+    }
+
+    .badge.green {
+      background: #edf8ed;
+      border-color: #c6e2c6;
+      color: var(--green);
+    }
+
+    .diagram {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(110px, 1fr));
+      gap: 10px;
+      align-items: stretch;
+      margin-top: 12px;
+    }
+
+    .node {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      min-height: 92px;
+      background: #fbfcfe;
+      position: relative;
+    }
+
+    .node:not(:last-child)::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: -9px;
+      width: 8px;
+      height: 2px;
+      background: var(--line);
+    }
+
+    .node strong {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 6px;
+    }
+
+    .node span {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .select,
+    .primary,
+    .secondary {
+      min-height: 42px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--ink);
+      padding: 9px 12px;
+    }
+
+    .primary {
+      border-color: var(--teal);
+      background: var(--teal);
+      color: #ffffff;
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .secondary {
+      cursor: pointer;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      background: #f9fafc;
+    }
+
+    .chart {
+      display: grid;
+      gap: 11px;
+      margin-top: 12px;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 108px minmax(0, 1fr) 58px;
+      gap: 10px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .bar-track {
+      height: 14px;
+      background: #edf0f5;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .bar {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--teal);
+    }
+
+    .bar.blue {
+      background: var(--blue);
+    }
+
+    .bar.amber {
+      background: var(--amber);
+    }
+
+    .query-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .query-button {
+      border-radius: 8px;
+      padding: 13px;
+      text-align: left;
+      cursor: pointer;
+      min-height: 74px;
+    }
+
+    .query-button.active {
+      border-color: var(--blue);
+      box-shadow: inset 4px 0 0 var(--blue), var(--shadow);
+    }
+
+    .query-button strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .query-button span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .response {
+      display: grid;
+      gap: 12px;
+    }
+
+    .code {
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #111827;
+      color: #e5edf8;
+      padding: 14px;
+      overflow-x: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .footer-link {
+      color: var(--blue);
+      text-decoration: none;
+      font-weight: 700;
+    }
+
+    @media (max-width: 1020px) {
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: static;
+      }
+
+      .side-panel {
+        display: none;
+      }
+
+      .grid.metrics,
+      .grid.two,
+      .diagram {
+        grid-template-columns: 1fr;
+      }
+
+      .node:not(:last-child)::after {
+        display: none;
+      }
+    }
+
+    @media (max-width: 640px) {
+      main {
+        padding: 18px;
+      }
+
+      .topbar {
+        flex-direction: column;
+      }
+
+      .status-pill {
+        width: 100%;
+        justify-content: center;
+      }
+
+      .bar-row {
+        grid-template-columns: 1fr;
+        gap: 5px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">W</div>
+        <div>
+          <h1>WISER</h1>
+          <p>Storm outage intelligence</p>
+        </div>
+      </div>
+
+      <nav class="nav-section" aria-label="Presentation sections">
+        <div class="nav-title">Presentation</div>
+        <button class="nav-item active" data-tab="status">Demo status</button>
+        <button class="nav-item" data-tab="external">External staging</button>
+        <button class="nav-item" data-tab="queries">Agent demo</button>
+        <button class="nav-item" data-tab="architecture">Architecture</button>
+      </nav>
+
+      <div class="side-panel">
+        <img src="../docs/WISER Image.png" alt="WISER visual overview">
+        <p>Single demo view for routing, SQL, staged utility feeds, and professor-facing walkthroughs.</p>
+      </div>
+    </aside>
+
+    <main>
+      <section class="topbar">
+        <div>
+          <h2>Presentation Mock Interface</h2>
+          <p>Updated with the July implementation work: ground-truth agent tests, SQL validation cases, EagleEye/National Grid CSV staging, and the combined documentation path.</p>
+        </div>
+        <div class="status-pill"><span class="status-dot"></span> Ready to present</div>
+      </section>
+
+      <div class="tabs" aria-label="Mock interface tabs">
+        <button class="tab-button active" data-tab="status">Demo status</button>
+        <button class="tab-button" data-tab="external">External staging</button>
+        <button class="tab-button" data-tab="queries">Agent demo</button>
+        <button class="tab-button" data-tab="architecture">Architecture</button>
+      </div>
+
+      <section class="tab-panel active" id="status">
+        <div class="grid metrics">
+          <article class="metric">
+            <div class="panel-header">
+              <h3>Task routing</h3>
+              <span class="badge green">Ground truth</span>
+            </div>
+            <div class="metric-value"><strong>43/43</strong><span>passed</span></div>
+            <p>Coverage for SQL analytics, data retrieval, summaries, similarity, and external source commands.</p>
+          </article>
+
+          <article class="metric">
+            <div class="panel-header">
+              <h3>SQL AI Agent</h3>
+              <span class="badge blue">Semantic cases</span>
+            </div>
+            <div class="metric-value"><strong>27/27</strong><span>passed</span></div>
+            <p>Ground-truth checks for generated SQL intent, tables, filters, ordering, and safety expectations.</p>
+          </article>
+
+          <article class="metric">
+            <div class="panel-header">
+              <h3>External feeds</h3>
+              <span class="badge amber">Staging ready</span>
+            </div>
+            <div class="metric-value"><strong>2</strong><span>sources</span></div>
+            <p>EagleEye and National Grid sample CSV parsers load into the new staging/provenance table.</p>
+          </article>
+        </div>
+
+        <div class="grid two">
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Implementation checklist</h3>
+              <span class="badge green">Current branch</span>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Area</th>
+                  <th>Status</th>
+                  <th>Presenter note</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Memory / agent routing</td>
+                  <td><span class="badge green">Done</span></td>
+                  <td>Deterministic router test set added.</td>
+                </tr>
+                <tr>
+                  <td>SQL AI ground truth</td>
+                  <td><span class="badge green">Done</span></td>
+                  <td>Evaluation fixture and CLI flags added.</td>
+                </tr>
+                <tr>
+                  <td>EagleEye / National Grid</td>
+                  <td><span class="badge amber">Staged</span></td>
+                  <td>Sample CSV parser and loader ready; live contracts still required.</td>
+                </tr>
+                <tr>
+                  <td>Data visualization</td>
+                  <td><span class="badge green">Done</span></td>
+                  <td>Mock dashboard, chart, and architecture diagram added.</td>
+                </tr>
+              </tbody>
+            </table>
+          </article>
+
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Outage preview</h3>
+              <span class="badge">Sample staged rows</span>
+            </div>
+            <div class="chart" aria-label="Sample outage counts by county">
+              <div class="bar-row">
+                <span>Fairfield</span>
+                <div class="bar-track"><div class="bar" style="width: 100%"></div></div>
+                <strong>1,820</strong>
+              </div>
+              <div class="bar-row">
+                <span>New Haven</span>
+                <div class="bar-track"><div class="bar blue" style="width: 66%"></div></div>
+                <strong>1,210</strong>
+              </div>
+              <div class="bar-row">
+                <span>Hartford</span>
+                <div class="bar-track"><div class="bar amber" style="width: 47%"></div></div>
+                <strong>860</strong>
+              </div>
+              <div class="bar-row">
+                <span>Litchfield</span>
+                <div class="bar-track"><div class="bar" style="width: 28%"></div></div>
+                <strong>520</strong>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="external">
+        <div class="grid two">
+          <article class="panel">
+            <div class="panel-header">
+              <h3>External outage staging</h3>
+              <span class="badge amber" id="loadStatus">Not loaded</span>
+            </div>
+            <div class="toolbar">
+              <select class="select" id="feedSelect" aria-label="Feed source">
+                <option value="all">All sample feeds</option>
+                <option value="EagleEye">EagleEye sample</option>
+                <option value="National Grid">National Grid sample</option>
+              </select>
+              <button class="primary" id="loadFeed">Load sample feed</button>
+              <button class="secondary" id="clearFeed">Clear preview</button>
+            </div>
+            <table style="margin-top: 16px">
+              <thead>
+                <tr>
+                  <th>Source</th>
+                  <th>County</th>
+                  <th>Observed</th>
+                  <th>Outages</th>
+                  <th>Confidence</th>
+                </tr>
+              </thead>
+              <tbody id="feedRows"></tbody>
+            </table>
+          </article>
+
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Staging design</h3>
+              <span class="badge">ExternalOutageObservation</span>
+            </div>
+            <p>The parser keeps source provenance separate from the historical storm tables, so live EagleEye/National Grid data can be added later when contracts, fields, and access details are available.</p>
+            <div class="chart" id="sourceChart"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="queries">
+        <div class="grid two">
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Professor walkthrough queries</h3>
+              <span class="badge blue">Agent routing</span>
+            </div>
+            <div class="query-list">
+              <button class="query-button active" data-query="analytics">
+                <strong>top counties by outage</strong>
+                <span>Routes to SQL analytics and returns an ordered county summary.</span>
+              </button>
+              <button class="query-button" data-query="similarity">
+                <strong>find storms similar to wind=9.2 precip=45 in Fairfield</strong>
+                <span>Routes to the similarity tool with ranked historical neighbors.</span>
+              </button>
+              <button class="query-button" data-query="external">
+                <strong>load national grid outage csv</strong>
+                <span>Routes to data retrieval and stages utility observations.</span>
+              </button>
+              <button class="query-button" data-query="impact">
+                <strong>summarize hurricane impact context</strong>
+                <span>Routes to external storm context with optional OpenAI summary support.</span>
+              </button>
+            </div>
+          </article>
+
+          <article class="panel response">
+            <div class="panel-header">
+              <h3 id="responseTitle">SQL Analytics Result</h3>
+              <span class="badge blue" id="routeBadge">SQL_ANALYTICS</span>
+            </div>
+            <p id="responseText">The router selects the SQL AI Agent for aggregated outage questions. The generated query is checked against expected table, filter, ordering, and SELECT-only safety behavior.</p>
+            <pre class="code" id="responseCode">SELECT county, SUM(customersOut) AS total_outages
+FROM Outages
+GROUP BY county
+ORDER BY total_outages DESC
+LIMIT 5;</pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="architecture">
+        <article class="panel">
+          <div class="panel-header">
+            <h3>Agentic framework</h3>
+            <a class="footer-link" href="../docs/WISER_DOCUMENTATION.md">Combined documentation</a>
+          </div>
+          <p>One router coordinates the specialized agents and keeps CLI, Streamlit, and this mock surface aligned around the same implementation.</p>
+          <div class="diagram">
+            <div class="node">
+              <strong>User query</strong>
+              <span>Natural language storm, outage, or data-loading request.</span>
+            </div>
+            <div class="node">
+              <strong>Task router</strong>
+              <span>Ground-truth tested routing across 43 cases.</span>
+            </div>
+            <div class="node">
+              <strong>Specialist agent</strong>
+              <span>SQL analytics, similarity, RAG context, or data retrieval.</span>
+            </div>
+            <div class="node">
+              <strong>Data layer</strong>
+              <span>SQLite schema plus ExternalOutageObservation staging.</span>
+            </div>
+            <div class="node">
+              <strong>Answer</strong>
+              <span>Tables, SQL, impact summary, chart-ready rows, and provenance.</span>
+            </div>
+          </div>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const tabs = Array.from(document.querySelectorAll("[data-tab]"));
+    const panels = Array.from(document.querySelectorAll(".tab-panel"));
+
+    function activateTab(name) {
+      tabs.forEach((item) => item.classList.toggle("active", item.dataset.tab === name));
+      panels.forEach((panel) => panel.classList.toggle("active", panel.id === name));
+    }
+
+    tabs.forEach((item) => {
+      item.addEventListener("click", () => activateTab(item.dataset.tab));
+    });
+
+    const rows = [
+      { source: "EagleEye", county: "Fairfield", observed: "2025-08-18 14:00", outages: 1820, confidence: "High" },
+      { source: "EagleEye", county: "New Haven", observed: "2025-08-18 14:00", outages: 1210, confidence: "High" },
+      { source: "National Grid", county: "Hartford", observed: "2025-08-18 14:15", outages: 860, confidence: "Medium" },
+      { source: "National Grid", county: "Litchfield", observed: "2025-08-18 14:15", outages: 520, confidence: "Medium" }
+    ];
+
+    const feedRows = document.getElementById("feedRows");
+    const sourceChart = document.getElementById("sourceChart");
+    const feedSelect = document.getElementById("feedSelect");
+    const loadStatus = document.getElementById("loadStatus");
+
+    function renderRows(filter = "all") {
+      const visible = filter === "all" ? rows : rows.filter((row) => row.source === filter);
+      feedRows.innerHTML = visible.map((row) => `
+        <tr>
+          <td>${row.source}</td>
+          <td>${row.county}</td>
+          <td>${row.observed}</td>
+          <td>${row.outages.toLocaleString()}</td>
+          <td>${row.confidence}</td>
+        </tr>
+      `).join("");
+
+      const bySource = visible.reduce((acc, row) => {
+        acc[row.source] = (acc[row.source] || 0) + row.outages;
+        return acc;
+      }, {});
+      const max = Math.max(...Object.values(bySource), 1);
+      sourceChart.innerHTML = Object.entries(bySource).map(([source, count], index) => `
+        <div class="bar-row">
+          <span>${source}</span>
+          <div class="bar-track"><div class="bar ${index % 2 ? "blue" : ""}" style="width: ${(count / max) * 100}%"></div></div>
+          <strong>${count.toLocaleString()}</strong>
+        </div>
+      `).join("");
+
+      loadStatus.textContent = `${visible.length} rows staged`;
+      loadStatus.classList.add("green");
+    }
+
+    document.getElementById("loadFeed").addEventListener("click", () => {
+      renderRows(feedSelect.value);
+    });
+
+    document.getElementById("clearFeed").addEventListener("click", () => {
+      feedRows.innerHTML = "";
+      sourceChart.innerHTML = "";
+      loadStatus.textContent = "Not loaded";
+      loadStatus.classList.remove("green");
+    });
+
+    renderRows("all");
+
+    const responses = {
+      analytics: {
+        title: "SQL Analytics Result",
+        route: "SQL_ANALYTICS",
+        text: "The router selects the SQL AI Agent for aggregated outage questions. The generated query is checked against expected table, filter, ordering, and SELECT-only safety behavior.",
+        code: "SELECT county, SUM(customersOut) AS total_outages\nFROM Outages\nGROUP BY county\nORDER BY total_outages DESC\nLIMIT 5;"
+      },
+      similarity: {
+        title: "Similarity Result",
+        route: "STORM_SIMILARITY",
+        text: "The similarity agent compares the requested wind, precipitation, and county context against historical storms, then returns ranked neighbors for planning.",
+        code: "Target: Fairfield, wind=9.2, precip=45\n1. 2020-08 Tropical Storm Isaias\n2. 2012-10 Hurricane Sandy\n3. 2021-09 Ida remnants"
+      },
+      external: {
+        title: "External Feed Result",
+        route: "DATA_RETRIEVAL",
+        text: "Explicit load/build/CSV wording now routes to data retrieval first, so the EagleEye/National Grid parser work is easy to demo without fighting the analytics router.",
+        code: "Loaded into ExternalOutageObservation\ninserted: 4\nskipped_duplicates: 0\nsources: EagleEye, National Grid"
+      },
+      impact: {
+        title: "Impact Summary Result",
+        route: "EXTERNAL_CONTEXT",
+        text: "The context path retrieves storm impact passages and can use the OpenAI key from .env for concise cited summaries when enabled.",
+        code: "Context sources: NOAA / NHC / NCEI\nSummary mode: OpenAI when OPENAI_API_KEY is present\nFallback: local extractive summary"
+      }
+    };
+
+    const queryButtons = Array.from(document.querySelectorAll(".query-button"));
+    queryButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        queryButtons.forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        const response = responses[button.dataset.query];
+        document.getElementById("responseTitle").textContent = response.title;
+        document.getElementById("routeBadge").textContent = response.route;
+        document.getElementById("responseText").textContent = response.text;
+        document.getElementById("responseCode").textContent = response.code;
+      });
+    });
+  </script>
+</body>
+</html>

@@ -6,6 +6,10 @@
 
 > Reference for future integration: [wisermaci.engr.uconn.edu](http://wisermaci.engr.uconn.edu/) — the UConn WISER site (not connected to this repo).
 
+Documentation:
+
+- [WISER documentation](docs/WISER_DOCUMENTATION.md)
+
 ---
 
 ## Prerequisites
@@ -120,9 +124,29 @@ For similarity searches, `--county` overrides county auto-detection from query t
 
 Weather-analytics queries are answered by the **SqlAiAgent**: an LLM generates a SQLite `SELECT`, which is validated (syntax + SELECT-only, via `sqlglot` when installed) and executed against a read-only connection. On validation or API failure, the CLI falls back to the fixed query wrappers. Related flags: `--sql-model <id>` picks the OpenAI model for SQL generation (default: `WISER_OPENAI_MODEL` or `gpt-4o-mini`), `--show-sql` prints the generated SQL alongside results, and `--dry-run-sql` prints the exact prompt without making an API call.
 
-Impact-style storm questions automatically crawl the default NOAA/NHC/NCEI context sources, including linked National Hurricane Center Tropical Cyclone Report PDFs. WISER stores extracted web/PDF paragraphs in the existing RAG tables, ranks them with optional Meta/Facebook FAISS similarity search when available, and falls back to a dependency-free exact text-vector ranking otherwise. See [docs/EXTERNAL_STORM_CONTEXT.md](docs/EXTERNAL_STORM_CONTEXT.md).
+Impact-style storm questions automatically crawl the default NOAA/NHC/NCEI context sources, including linked National Hurricane Center Tropical Cyclone Report PDFs. WISER stores extracted web/PDF paragraphs in the existing RAG tables, ranks them with optional Meta/Facebook FAISS similarity search when available, and falls back to a dependency-free exact text-vector ranking otherwise. See [docs/WISER_DOCUMENTATION.md](docs/WISER_DOCUMENTATION.md).
 
 If `OPENAI_API_KEY` is set in `.env` or the shell environment, WISER uses the OpenAI Responses API to generate short cited impact summaries from the retrieved paragraphs. Without a key, or with `--no-openai-summary`, it uses the local extractive summary.
+
+Fixture-backed EagleEye and National Grid CSV loading is available through a neutral staging table (`ExternalOutageObservation`). These loaders do not require OpenAI and do not perform live API calls:
+
+```bash
+# Load an EagleEye-style CSV into the external outage staging table
+python3 scripts/wiser_cli.py \
+  --load-external \
+  --external-source eagleeye \
+  --external-file tests/fixtures/eagleeye_sample.csv \
+  --db data/wiser.db
+
+# Load a National Grid-style CSV into the same staging table
+python3 scripts/wiser_cli.py \
+  --load-external \
+  --external-source national-grid \
+  --external-file tests/fixtures/national_grid_sample.csv \
+  --db data/wiser.db
+```
+
+The parser preserves source provenance (`sourceSystem`, `sourceRecordId`, `rawPayload`) and normalizes timestamps to UTC. Live EagleEye/National Grid API pulls still require source credentials and endpoint/field documentation.
 
 ---
 
@@ -138,6 +162,10 @@ pip install streamlit
 streamlit run streamlit_app.py
 ```
 
+- A no-install presentation mock is available at
+  [`mock_interface/index.html`](mock_interface/index.html). It mirrors the
+  implementation status panels, EagleEye/National Grid staging preview,
+  agent demo queries, and architecture diagram for professor walkthroughs.
 - The sidebar covers the common CLI options: database/CSV paths, result
   limit, county override, dry-run SQL, show SQL, show RAG context, rebuild
   RAG, external crawling, OpenAI summary toggle, and similarity backend.
@@ -148,6 +176,9 @@ streamlit run streamlit_app.py
 - Example-query buttons cover each route and are color-coded by the agent
   they route to; the submitted query and route decision are shown in the
   same color for every run.
+- The top tabs expose presentation-ready status: routing/SQL ground-truth
+  metrics, EagleEye/National Grid sample staging, and recent staged external
+  outage rows.
 - Without an `OPENAI_API_KEY`, a banner explains that analytics fall back to
   fixed queries and impact summaries use the local extractive mode — the app
   keeps working, nothing crashes.
@@ -204,25 +235,38 @@ Rank   Storm Code      Similarity   Outages    Wind (m/s)   Precip (mm)  Event D
 ...
 ```
 
-Use the ranked historical **outages** as a rough guide for what a current event with similar weather conditions might look like in that county. Algorithm details: [docs/STORM_SIMILARITY_ALGORITHM.md](docs/STORM_SIMILARITY_ALGORITHM.md).
+Use the ranked historical **outages** as a rough guide for what a current event with similar weather conditions might look like in that county. Algorithm details: [docs/WISER_DOCUMENTATION.md](docs/WISER_DOCUMENTATION.md).
 
 ---
 
 ## Running the Tests
 
-To run the entire test suite (205 tests) covering database schema, RAG indexing/retrieval, external source parsing, OpenAI summarization, SQL AI agent validation, task routing, the shared handler layer, query parsing, and similarity algorithms:
+To run the entire test suite covering database schema, RAG indexing/retrieval, external source parsing, OpenAI summarization, SQL AI agent validation, task routing, the shared handler layer, query parsing, and similarity algorithms:
 
 ```bash
-python -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v
 ```
 
 Expected output:
 ```
 ...
 ----------------------------------------------------------------------
-Ran 205 tests in 1.2s
+Ran <n> tests in <time>s
 
 OK
+```
+
+Ground-truth evaluation shortcuts:
+
+```bash
+python3 scripts/wiser_cli.py --evaluate-routing --evaluate-sql
+```
+
+Expected output:
+
+```text
+routing: 43/43 passed (100.0%)
+sql: 27/27 passed (100.0%)
 ```
 
 The test files cover the following functionality:
@@ -233,13 +277,16 @@ The test files cover the following functionality:
 | `tests/test_database.py` | Verifies database schema initialization and backwards compatibility with legacy structures. |
 | `tests/test_rag.py` | Tests grounding, chunking, indexing, and answer retrieval inside the RAG engine. |
 | `tests/test_external_sources.py` | Validates external web/PDF indexing, URL normalisation, HTML/PDF extraction, and text-vector ranking. |
+| `tests/test_external_integrations.py` | Validates fixture-backed EagleEye/National Grid CSV parsers, external outage staging schema, timestamp normalization, and loading/upserts. |
 | `tests/test_openai_summarizer.py` | Verifies OpenAI Responses API request construction, response parsing, and dotenv loading. |
 | `tests/test_sql_ai_agent.py` | Verifies SQL AI agent schema loading, fence stripping, SELECT-only validation, dry-run mode, mocked LLM pipeline, and handler fallback rendering. All LLM calls are mocked. |
+| `tests/test_sql_ai_ground_truth.py` | Runs the SQL AI ground-truth fixture against a deterministic SQLite seed DB and mocked `SqlAiAgent` responses. |
 | `tests/test_handlers.py` | Verifies the shared handler layer returns structured results (no printing): analytics LLM/fallback/dry-run paths, similarity validation errors, RAG answers, dispatch registry. |
 | `tests/test_streamlit_app.py` | Headless Streamlit smoke tests (AppTest): app loads, similarity and dry-run analytics render, errors surface without crashing. Skipped when `streamlit` is not installed. |
 | `tests/test_similarity_algorithm.py` | Validates Z-score calculations, statistics, symmetry, and legacy single-dimension mathematical correctness. |
 | `tests/test_similarity_engine.py` | Verifies multi-dimensional Z-score calculations (parity, weight overrides, zero std dev, partial features). |
 | `tests/test_task_routing.py` | Tests keyword and pattern matching routing decisions (avoiding RAG collisions, rejecting unknown aliases). |
+| `tests/test_task_routing_ground_truth.py` | Runs the JSON task-routing ground-truth corpus and route-priority regression cases. |
 | `tests/test_wiser_cli.py` | Verifies similarity query parsing, county auto-detection, dispatch registry, and CLI rendering of handler results. |
 | `tests/test_data_pipeline.py` | Validates parsing of CSV columns and correct extraction of state codes from event codes. |
 
@@ -252,9 +299,7 @@ WISER/
 ├── data/
 │   └── testdata.csv              # Raw input — 2,352 storm-county rows
 ├── docs/
-│   ├── ARCHITECTURE.md           # System design & data flow diagrams
-│   ├── EXTERNAL_STORM_CONTEXT.md # External NOAA/NHC/NCEI context feature docs
-│   ├── STORM_SIMILARITY_ALGORITHM.md  # Algorithm design and math reference
+│   ├── WISER_DOCUMENTATION.md    # Combined architecture, agents, schema, similarity, RAG, integrations
 │   ├── WISER Database Info.png   # Schema diagram
 │   └── WISER Image.png           # README banner image
 ├── scripts/
@@ -270,6 +315,8 @@ WISER/
 │       ├── data_pipeline.py      # CSV parsing & row normalization
 │       ├── database.py           # Schema init, data loading, row counts
 │       ├── external_sources.py   # External web/PDF crawling, indexing, and impact summarization
+│       ├── evaluation.py         # Ground-truth fixture evaluation helpers
+│       ├── integrations/         # EagleEye/National Grid CSV parser + outage staging helpers
 │       ├── openai_summarizer.py  # OpenAI Responses API wrapper for impact summaries
 │       ├── query_engine.py       # SQL queries (top counties, storms, history, county count)
 │       ├── handlers.py           # Shared route handlers + result types (consumed by CLI and Streamlit)
@@ -285,16 +332,24 @@ WISER/
 │           └── storm_weather_analytics_agent.py   # Wraps query engine for analytics (fallback)
 ├── tests/
 │   ├── __init__.py
+│   ├── fixtures/
+│   │   ├── eagleeye_sample.csv
+│   │   ├── national_grid_sample.csv
+│   │   ├── sql_ai_ground_truth.json
+│   │   └── task_routing_cases.json
 │   ├── test_data_pipeline.py         # Data pipeline and state extraction tests
 │   ├── test_database.py              # Database initialization compatibility tests
 │   ├── test_external_sources.py      # External source indexing, parsing, and ranking tests
+│   ├── test_external_integrations.py # EagleEye/National Grid fixture parser + staging tests
 │   ├── test_openai_summarizer.py     # OpenAI summarizer request/response tests
 │   ├── test_rag.py                   # RAG indexing/retrieval tests
 │   ├── test_handlers.py              # Shared handler layer structured-result tests
 │   ├── test_schema.py                # 27 schema validation tests
 │   ├── test_sql_ai_agent.py          # SQL AI agent validation, pipeline, and fallback tests
+│   ├── test_sql_ai_ground_truth.py   # SQL AI semantic ground-truth tests
 │   ├── test_streamlit_app.py         # Headless Streamlit smoke tests (skipped without streamlit)
 │   ├── test_task_routing.py          # Route classification tests
+│   ├── test_task_routing_ground_truth.py # Routing ground-truth fixture tests
 │   ├── test_similarity_algorithm.py  # Legacy similarity algorithm correctness tests
 │   ├── test_similarity_engine.py     # Multi-dimensional similarity engine tests
 │   └── test_wiser_cli.py             # Similarity parsing and CLI rendering tests
@@ -353,13 +408,14 @@ streamlit_app.py (web) are interchangeable renderers over that one layer.
 
 ## Database Schema
 
-Schema defined in `sql/schema.sql`. Three normalized tables:
+Schema defined in `sql/schema.sql`. Three normalized core tables plus one external outage staging table:
 
 | Table | Primary Key | Rows |
 |---|---|---|
 | `Storm` | `stormCode BIGINT` | 294 |
 | `County` | `county VARCHAR(64)` | 8 |
 | `WeatherData` | `(stormCode, county)` | 2,352 |
+| `ExternalOutageObservation` | `id INTEGER` plus unique `(sourceSystem, sourceRecordId, observedAt)` | Optional external feed rows |
 
 ![Schema Diagram](docs/WISER%20Database%20Info.png)
 

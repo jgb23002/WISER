@@ -24,6 +24,8 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from wiser.agents.task_routing_agent import Route, TaskRoutingAgent
+from wiser.database import connect
+from wiser.evaluation import evaluate_routing_cases, evaluate_sql_ground_truth
 from wiser.handlers import (
     DEFAULT_DB_PATH,
     DEFAULT_INPUT_CSV,
@@ -39,6 +41,12 @@ from wiser.handlers import (
     build_context,
     dispatch_route,
 )
+from wiser.integrations.eagleeye import parse_eagleeye_csv
+from wiser.integrations.external_outage import (
+    load_external_observations,
+    recent_external_observations,
+)
+from wiser.integrations.national_grid import parse_national_grid_csv
 from wiser.openai_summarizer import openai_config
 from wiser.rag import format_excerpt
 
@@ -51,6 +59,20 @@ ROUTE_COLORS = {
 }
 
 _NOTICE_RENDERERS = {"error": st.error, "warning": st.warning, "info": st.info}
+ROUTING_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "task_routing_cases.json"
+SQL_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "sql_ai_ground_truth.json"
+SCHEMA_PATH = REPO_ROOT / "sql" / "schema.sql"
+COMBINED_DOC_PATH = REPO_ROOT / "docs" / "WISER_DOCUMENTATION.md"
+EXTERNAL_SAMPLE_FEEDS = {
+    "EagleEye": (
+        REPO_ROOT / "tests" / "fixtures" / "eagleeye_sample.csv",
+        parse_eagleeye_csv,
+    ),
+    "National Grid": (
+        REPO_ROOT / "tests" / "fixtures" / "national_grid_sample.csv",
+        parse_national_grid_csv,
+    ),
+}
 
 
 def _render_notices(notices: list[Notice]) -> None:
@@ -112,6 +134,40 @@ def _render_rows(rows: list[dict[str, object]]) -> None:
         st.info("No results found.")
         return
     st.dataframe(rows, hide_index=True, width="stretch")
+    _render_result_chart(rows)
+
+
+def _render_result_chart(rows: list[dict[str, object]]) -> None:
+    if _has_columns(rows, "county", "total_outage"):
+        _render_bar_chart(_chart_rows(rows, "county", "total_outage"))
+    elif _has_columns(rows, "stormCode", "total_outage"):
+        _render_bar_chart(_chart_rows(rows, "stormCode", "total_outage"))
+    elif _has_columns(rows, "stormCode", "outage"):
+        _render_bar_chart(_chart_rows(rows, "stormCode", "outage"))
+
+
+def _render_bar_chart(chart_rows: list[dict[str, object]]) -> None:
+    if chart_rows:
+        st.bar_chart(chart_rows, x="label", y="value")
+
+
+def _has_columns(rows: list[dict[str, object]], *columns: str) -> bool:
+    if not rows:
+        return False
+    return all(column in rows[0] for column in columns)
+
+
+def _chart_rows(
+    rows: list[dict[str, object]],
+    label_key: str,
+    value_key: str,
+) -> list[dict[str, object]]:
+    chart_rows: list[dict[str, object]] = []
+    for row in rows:
+        value = row.get(value_key)
+        if isinstance(value, (int, float)):
+            chart_rows.append({"label": str(row.get(label_key)), "value": value})
+    return chart_rows
 
 
 def _render_similarity(result: SimilarityResult) -> None:
@@ -138,6 +194,8 @@ def _render_similarity(result: SimilarityResult) -> None:
             ),
         },
     )
+    if _has_columns(result.rows, "stormCode", "similarity"):
+        _render_bar_chart(_chart_rows(result.rows, "stormCode", "similarity"))
 
 
 def _render_rag(result: RagKnowledgeResult, *, show_rag_context: bool) -> None:
@@ -151,8 +209,8 @@ def _render_rag(result: RagKnowledgeResult, *, show_rag_context: bool) -> None:
         st.caption(
             f"External storm context: {web_summary.total_documents} documents, "
             f"{web_summary.total_chunks} chunks "
-            f"({web_summary.documents_indexed} refreshed, "
-            f"{len(web_summary.failures)} failed) · "
+            f"({web_summary.documents_indexed} refreshed"
+            f"{', ' + str(len(web_summary.failures)) + ' failed' if web_summary.failures else ''}) · "
             f"similarity backend: {result.backend_status}"
         )
         if web_summary.failures:
@@ -183,6 +241,100 @@ def _render_unknown(result: UnknownRouteResult) -> None:
     st.warning("No route matched this query. Try one of these:")
     for suggestion in result.suggestions:
         st.markdown(f"- `{suggestion}`")
+
+
+@st.cache_data(show_spinner=False)
+def _evaluation_metrics() -> tuple[dict[str, object], dict[str, object]]:
+    routing = evaluate_routing_cases(ROUTING_FIXTURE)
+    sql = evaluate_sql_ground_truth(SQL_FIXTURE, schema_path=SCHEMA_PATH)
+    return (
+        {
+            "name": routing.name,
+            "passed": routing.passed,
+            "total": routing.total,
+            "failed": routing.failed,
+            "pass_rate": routing.pass_rate,
+        },
+        {
+            "name": sql.name,
+            "passed": sql.passed,
+            "total": sql.total,
+            "failed": sql.failed,
+            "pass_rate": sql.pass_rate,
+        },
+    )
+
+
+def _render_demo_status(db_path: str) -> None:
+    routing, sql = _evaluation_metrics()
+    col1, col2, col3 = st.columns(3)
+    col1.metric(
+        "Routing ground truth",
+        f"{routing['passed']}/{routing['total']}",
+        f"{routing['pass_rate'] * 100:.0f}%",
+    )
+    col2.metric(
+        "SQL ground truth",
+        f"{sql['passed']}/{sql['total']}",
+        f"{sql['pass_rate'] * 100:.0f}%",
+    )
+    col3.metric(
+        "External CSV feeds",
+        f"{len(EXTERNAL_SAMPLE_FEEDS)} ready",
+        "staging enabled",
+    )
+
+    st.caption(
+        "Presentation-ready demo surface: routed queries, semantic SQL evaluation, "
+        "EagleEye/National Grid CSV staging, consolidated docs, and result charts."
+    )
+    st.markdown(f"Documentation: `{COMBINED_DOC_PATH.relative_to(REPO_ROOT)}`")
+
+    with st.expander("Current SQLite staging preview", expanded=False):
+        _render_external_preview(db_path, limit=8)
+
+
+def _render_external_feed_loader(db_path: str) -> None:
+    feed_names = tuple(EXTERNAL_SAMPLE_FEEDS)
+    selected_feed = st.selectbox("Sample external feed", options=("All", *feed_names))
+    if st.button("Load sample feed", width="stretch"):
+        feeds_to_load = feed_names if selected_feed == "All" else (selected_feed,)
+        summaries = []
+        conn = connect(db_path)
+        try:
+            for feed_name in feeds_to_load:
+                sample_path, parser = EXTERNAL_SAMPLE_FEEDS[feed_name]
+                observations = parser(sample_path)
+                summaries.append(load_external_observations(conn, observations))
+        finally:
+            conn.close()
+
+        loaded = sum(summary.rows_loaded for summary in summaries)
+        st.success(f"Loaded {loaded} external outage observations into `{db_path}`.")
+
+    _render_external_preview(db_path, limit=10)
+
+
+def _render_external_preview(db_path: str, *, limit: int) -> None:
+    if not Path(db_path).is_file():
+        st.info("No external outage observations staged yet.")
+        return
+    try:
+        conn = connect(db_path, create=False)
+        try:
+            rows = recent_external_observations(conn, limit=limit)
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 - keep presentation panel resilient
+        st.warning(f"External staging preview unavailable: {type(exc).__name__}: {exc}")
+        return
+
+    if not rows:
+        st.info("No external outage observations staged yet.")
+        return
+    st.dataframe(rows, hide_index=True, width="stretch")
+    if _has_columns(rows, "sourceRecordId", "outageCount"):
+        _render_bar_chart(_chart_rows(rows, "sourceRecordId", "outageCount"))
 
 
 def render_result(
@@ -271,6 +423,12 @@ def main() -> None:
         )
 
     routing_agent = TaskRoutingAgent()
+
+    status_tab, external_tab = st.tabs(("Demo status", "External outage staging"))
+    with status_tab:
+        _render_demo_status(db_path)
+    with external_tab:
+        _render_external_feed_loader(db_path)
 
     st.markdown("**Example queries**")
     st.caption(

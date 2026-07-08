@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -12,6 +13,7 @@ from unittest.mock import patch
 
 SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 SRC_DIR = Path(__file__).parent.parent / "src"
+FIXTURE_DIR = Path(__file__).parent / "fixtures"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 if str(SRC_DIR) not in sys.path:
@@ -25,7 +27,7 @@ from wiser.handlers import (  # noqa: E402
     parse_similarity_county,
     parse_similarity_params,
 )
-from wiser_cli import render_result  # noqa: E402
+from wiser_cli import main, render_result  # noqa: E402
 
 
 class TestParseSimilarityParams(unittest.TestCase):
@@ -131,6 +133,54 @@ class TestWeatherAnalyticsHandler(unittest.TestCase):
             output.getvalue(),
         )
         self.assertIn("top counties by outage", output.getvalue())
+
+
+class TestCliEvaluationFlags(unittest.TestCase):
+    def _run_cli(self, *args: str) -> str:
+        output = io.StringIO()
+        with patch.object(sys, "argv", ["wiser_cli.py", *args]), \
+                redirect_stdout(output):
+            main()
+        return output.getvalue()
+
+    def test_evaluate_routing_prints_metrics(self):
+        output = self._run_cli("--evaluate-routing")
+
+        self.assertIn("routing:", output)
+        self.assertIn("100.0%", output)
+
+    def test_evaluate_sql_prints_metrics(self):
+        output = self._run_cli("--evaluate-sql")
+
+        self.assertIn("sql:", output)
+        self.assertIn("100.0%", output)
+
+
+class TestCliExternalLoad(unittest.TestCase):
+    def test_load_external_eagleeye_prints_summary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "external.db"
+            output = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "wiser_cli.py",
+                    "--load-external",
+                    "--external-source",
+                    "eagleeye",
+                    "--external-file",
+                    str(FIXTURE_DIR / "eagleeye_sample.csv"),
+                    "--db",
+                    str(db_path),
+                ],
+            ), redirect_stdout(output):
+                main()
+
+        text = output.getvalue()
+        self.assertIn("External outage observations loaded", text)
+        self.assertIn("source: EagleEye", text)
+        self.assertIn("rows parsed: 2", text)
 
 
 if __name__ == "__main__":

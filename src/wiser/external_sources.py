@@ -89,6 +89,7 @@ class SourceDocument:
 class CrawlResult:
     documents: tuple[SourceDocument, ...]
     failures: tuple[str, ...]
+    optional_link_failures: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,7 @@ class ExternalSourceIndexSummary:
     total_documents: int
     total_chunks: int
     failures: tuple[str, ...]
+    optional_link_failures: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -145,6 +147,7 @@ def crawl_source_documents(
     fetch = fetcher or fetch_url
     documents: list[SourceDocument] = []
     failures: list[str] = []
+    optional_link_failures: list[str] = []
     seen_urls: set[str] = set()
 
     for url in urls:
@@ -177,7 +180,7 @@ def crawl_source_documents(
             try:
                 linked_resource = fetch(link.url)
             except Exception as exc:  # pragma: no cover - depends on remote services
-                failures.append(f"{link.url}: {exc}")
+                optional_link_failures.append(f"{link.url}: {exc}")
                 continue
             linked_document = source_document_from_resource(
                 linked_resource,
@@ -186,7 +189,11 @@ def crawl_source_documents(
             if linked_document.content:
                 documents.append(linked_document)
 
-    return CrawlResult(documents=tuple(documents), failures=tuple(failures))
+    return CrawlResult(
+        documents=tuple(documents),
+        failures=tuple(failures),
+        optional_link_failures=tuple(optional_link_failures),
+    )
 
 
 def index_external_sources(
@@ -216,6 +223,7 @@ def index_external_sources(
         total_documents=summary.total_documents,
         total_chunks=summary.total_chunks,
         failures=crawl_result.failures,
+        optional_link_failures=crawl_result.optional_link_failures,
     )
 
 

@@ -60,6 +60,16 @@ class TestSchemaStructure(unittest.TestCase):
         )
         self.assertIsNotNone(cursor.fetchone())
 
+    def test_external_outage_table_exists(self):
+        """Test that ExternalOutageObservation table exists."""
+        cursor = self.conn.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='ExternalOutageObservation'
+            """
+        )
+        self.assertIsNotNone(cursor.fetchone())
+
     def test_storm_columns(self):
         """Test Storm table has correct columns."""
         cursor = self.conn.execute("PRAGMA table_info(Storm)")
@@ -109,6 +119,28 @@ class TestSchemaStructure(unittest.TestCase):
             self.assertIn(col_name, columns)
             self.assertEqual(columns[col_name], col_type)
 
+    def test_external_outage_columns(self):
+        """Test ExternalOutageObservation table has correct columns."""
+        cursor = self.conn.execute("PRAGMA table_info(ExternalOutageObservation)")
+        columns = {row[1]: row[2] for row in cursor.fetchall()}
+
+        expected_columns = {
+            "id": "INTEGER",
+            "sourceSystem": "TEXT",
+            "sourceRecordId": "TEXT",
+            "observedAt": "TIMESTAMP",
+            "county": "VARCHAR(64)",
+            "serviceTerritory": "TEXT",
+            "outageCount": "INTEGER",
+            "customerCount": "INTEGER",
+            "restorationStatus": "TEXT",
+            "rawPayload": "TEXT",
+        }
+
+        for col_name, col_type in expected_columns.items():
+            self.assertIn(col_name, columns)
+            self.assertEqual(columns[col_name], col_type)
+
     def test_storm_primary_key(self):
         """Test Storm has correct primary key."""
         cursor = self.conn.execute("PRAGMA table_info(Storm)")
@@ -135,6 +167,8 @@ class TestSchemaStructure(unittest.TestCase):
         self.assertIn("idx_weatherdata_outage", index_names)
         self.assertIn("idx_weatherdata_county", index_names)
         self.assertIn("idx_storm_datetime", index_names)
+        self.assertIn("idx_external_outage_source_time", index_names)
+        self.assertIn("idx_external_outage_county", index_names)
 
 
 class TestConstraints(unittest.TestCase):
