@@ -22,6 +22,13 @@ if str(SCRIPTS_DIR) not in sys.path:
 from find_similar_storms import print_results  # noqa: E402
 
 from wiser.agents.task_routing_agent import TaskRoutingAgent
+from wiser.database import connect
+from wiser.integrations.eagleeye import parse_eagleeye_csv
+from wiser.integrations.external_outage import (
+    load_external_observations,
+    recent_external_observations,
+)
+from wiser.integrations.national_grid import parse_national_grid_csv
 from wiser.handlers import (
     DEFAULT_DB_PATH,
     DEFAULT_INPUT_CSV,
@@ -36,7 +43,20 @@ from wiser.handlers import (
     build_context,
     dispatch_route,
 )
+from wiser.evaluation import (  # noqa: E402
+    evaluate_routing_cases,
+    evaluate_sql_ground_truth,
+    format_evaluation_summary,
+)
 from wiser.rag import RagResult, format_excerpt
+
+DEFAULT_ROUTING_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "task_routing_cases.json"
+DEFAULT_SQL_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "sql_ai_ground_truth.json"
+DEFAULT_SCHEMA_PATH = REPO_ROOT / "sql" / "schema.sql"
+EXTERNAL_SOURCE_PARSERS = {
+    "eagleeye": parse_eagleeye_csv,
+    "national-grid": parse_national_grid_csv,
+}
 
 # ---------------------------------------------------------------------------
 # Result renderers (the only printing layer)
@@ -50,6 +70,38 @@ def print_rows(rows: list[dict[str, object]]) -> None:
     for row in rows:
         fields = ", ".join(f"{key}={value}" for key, value in row.items())
         print(f"  - {fields}")
+
+
+def load_external_source(
+    *,
+    db_path: str,
+    source: str,
+    file_path: str,
+    preview_limit: int,
+) -> None:
+    parser = EXTERNAL_SOURCE_PARSERS[source]
+    observations = parser(file_path)
+
+    conn = connect(db_path)
+    try:
+        summary = load_external_observations(conn, observations)
+        preview_rows = recent_external_observations(
+            conn,
+            source_system=summary.source_system,
+            limit=preview_limit,
+        )
+    finally:
+        conn.close()
+
+    print("External outage observations loaded:")
+    print(f"  - source: {summary.source_system}")
+    print(f"  - file: {file_path}")
+    print(f"  - rows parsed: {summary.rows_seen}")
+    print(f"  - rows loaded: {summary.rows_loaded}")
+    print(f"  - source table count: {summary.table_count}")
+    if preview_rows:
+        print("Recent loaded observations:")
+        print_rows(preview_rows)
 
 
 def _print_sources(cited_results: tuple[RagResult, ...]) -> None:
@@ -117,8 +169,8 @@ def _render_rag_knowledge(result: RagKnowledgeResult, *, show_rag_context: bool)
             "External storm context ready: "
             f"{web_summary.total_documents} documents, "
             f"{web_summary.total_chunks} chunks "
-            f"({web_summary.documents_indexed} refreshed, "
-            f"{len(web_summary.failures)} failed)."
+            f"({web_summary.documents_indexed} refreshed"
+            f"{', ' + str(len(web_summary.failures)) + ' failed' if web_summary.failures else ''})."
         )
         print(f"Similarity backend: {result.backend_status}")
         for failure in web_summary.failures[:3]:
@@ -185,7 +237,11 @@ def render_result(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="WISER command-line agent demo.")
-    parser.add_argument("query", help="Natural language query for the routing agent.")
+    parser.add_argument(
+        "query",
+        nargs="?",
+        help="Natural language query for the routing agent.",
+    )
     parser.add_argument(
         "--input",
         default=DEFAULT_INPUT_CSV,
@@ -294,7 +350,83 @@ def main() -> None:
             "then exit without making an API call."
         ),
     )
+    parser.add_argument(
+        "--evaluate-routing",
+        action="store_true",
+        help="Run the task-routing ground-truth fixture and print pass/fail metrics.",
+    )
+    parser.add_argument(
+        "--evaluate-sql",
+        action="store_true",
+        help=(
+            "Run the SQL AI ground-truth fixture against its deterministic "
+            "SQLite seed database."
+        ),
+    )
+    parser.add_argument(
+        "--routing-fixture",
+        default=str(DEFAULT_ROUTING_FIXTURE),
+        help="Path to the routing ground-truth fixture.",
+    )
+    parser.add_argument(
+        "--sql-fixture",
+        default=str(DEFAULT_SQL_FIXTURE),
+        help="Path to the SQL AI ground-truth fixture.",
+    )
+    parser.add_argument(
+        "--load-external",
+        action="store_true",
+        help="Load an EagleEye or National Grid CSV into the external outage staging table.",
+    )
+    parser.add_argument(
+        "--external-source",
+        choices=tuple(EXTERNAL_SOURCE_PARSERS),
+        help="External outage source name for --load-external.",
+    )
+    parser.add_argument(
+        "--external-file",
+        help="CSV file to load for --load-external.",
+    )
+    parser.add_argument(
+        "--external-preview-limit",
+        type=int,
+        default=5,
+        help="Number of recently loaded external rows to print.",
+    )
     args = parser.parse_args()
+
+    if args.load_external:
+        if not args.external_source:
+            parser.error("--external-source is required with --load-external")
+        if not args.external_file:
+            parser.error("--external-file is required with --load-external")
+        load_external_source(
+            db_path=args.db,
+            source=args.external_source,
+            file_path=args.external_file,
+            preview_limit=args.external_preview_limit,
+        )
+        return
+
+    if args.evaluate_routing or args.evaluate_sql:
+        summaries = []
+        if args.evaluate_routing:
+            summaries.append(evaluate_routing_cases(args.routing_fixture))
+        if args.evaluate_sql:
+            summaries.append(
+                evaluate_sql_ground_truth(
+                    args.sql_fixture,
+                    schema_path=DEFAULT_SCHEMA_PATH,
+                )
+            )
+        for summary in summaries:
+            print(format_evaluation_summary(summary))
+        if any(summary.failed for summary in summaries):
+            raise SystemExit(1)
+        return
+
+    if not args.query:
+        parser.error("query is required unless an evaluation flag is used")
 
     routing_agent = TaskRoutingAgent()
     decision = routing_agent.route(args.query)

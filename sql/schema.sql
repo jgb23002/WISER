@@ -9,6 +9,7 @@ PRAGMA foreign_keys = OFF;
 -- Drop existing tables (reverse dependency order)
 -- ============================================================================
 DROP TABLE IF EXISTS WeatherData;
+DROP TABLE IF EXISTS ExternalOutageObservation;
 DROP TABLE IF EXISTS StormCounty;
 DROP TABLE IF EXISTS County;
 DROP TABLE IF EXISTS Storm;
@@ -78,8 +79,36 @@ CREATE TABLE WeatherData (
 );
 
 -- ============================================================================
+-- ExternalOutageObservation Table: Staging/provenance table for utility/source
+-- outage feeds such as EagleEye and National Grid.
+--
+-- This intentionally does not write into WeatherData because live utility feeds
+-- may represent incidents, customers, assets, feeders, or service territories
+-- rather than one normalized historical (stormCode, county) observation.
+-- ============================================================================
+CREATE TABLE ExternalOutageObservation (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sourceSystem TEXT NOT NULL,
+    sourceRecordId TEXT NOT NULL,
+    observedAt TIMESTAMP NOT NULL,
+    county VARCHAR(64),
+    serviceTerritory TEXT,
+    outageCount INTEGER,
+    customerCount INTEGER,
+    restorationStatus TEXT,
+    rawPayload TEXT NOT NULL,
+    UNIQUE (sourceSystem, sourceRecordId, observedAt),
+    CHECK (outageCount IS NULL OR outageCount >= 0),
+    CHECK (customerCount IS NULL OR customerCount >= 0)
+);
+
+-- ============================================================================
 -- Indexes for common query patterns
 -- ============================================================================
 CREATE INDEX idx_weatherdata_outage ON WeatherData(outage DESC);
 CREATE INDEX idx_weatherdata_county ON WeatherData(county);
 CREATE INDEX idx_storm_datetime ON Storm(eventDateTime);
+CREATE INDEX idx_external_outage_source_time
+    ON ExternalOutageObservation(sourceSystem, observedAt DESC);
+CREATE INDEX idx_external_outage_county
+    ON ExternalOutageObservation(county);

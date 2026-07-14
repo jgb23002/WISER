@@ -23,6 +23,9 @@ class RouteDecision:
 
 class TaskRoutingAgent:
     DATA_KEYWORDS = {
+        "build",
+        "rebuild",
+        "refresh",
         "load",
         "retrieve",
         "raw",
@@ -34,6 +37,23 @@ class TaskRoutingAgent:
         "sqlite",
         "ingest",
         "normalize",
+    }
+    DATA_ACTION_KEYWORDS = {
+        "build",
+        "rebuild",
+        "refresh",
+        "load",
+        "raw",
+        "csv",
+        "ingest",
+        "normalize",
+    }
+    DATA_METADATA_KEYWORDS = {
+        "schema",
+        "table",
+        "database",
+        "db",
+        "sqlite",
     }
     ANALYTICS_KEYWORDS = {
         "analyze",
@@ -104,6 +124,14 @@ class TaskRoutingAgent:
                 route=Route.SIMILARITY_SEARCH,
                 reason="Matched similarity search keywords.",
             )
+        # Explicit data-management requests can contain domain words such as
+        # "storm" or "weather"; keep build/load/normalize/CSV commands out of
+        # the analytics path.
+        if self._looks_like_data_management(text):
+            return RouteDecision(
+                route=Route.DATA_RETRIEVAL,
+                reason="Matched data/database-oriented keywords.",
+            )
         # Analytics before data: "top counties from database" is analytics,
         # not a data-load operation.
         if any(keyword in text for keyword in self.ANALYTICS_KEYWORDS):
@@ -119,4 +147,11 @@ class TaskRoutingAgent:
         return RouteDecision(
             route=Route.UNKNOWN,
             reason="No strong keyword match; needs manual decision.",
+        )
+
+    def _looks_like_data_management(self, text: str) -> bool:
+        if any(keyword in text for keyword in self.DATA_ACTION_KEYWORDS):
+            return True
+        return "retrieve" in text and any(
+            keyword in text for keyword in self.DATA_METADATA_KEYWORDS
         )

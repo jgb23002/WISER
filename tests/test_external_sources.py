@@ -10,9 +10,11 @@ if str(SRC_DIR) not in sys.path:
 
 from wiser.external_sources import (  # noqa: E402
     DEFAULT_STORM_CONTEXT_URLS,
+    FetchedResource,
     OpenAISummarizationError,
     SourceDocument,
     answer_storm_impact,
+    crawl_source_documents,
     discover_pdf_links,
     extract_text_blocks_from_html,
     extract_text_from_pdf,
@@ -97,6 +99,36 @@ class TestExternalSourceParsing(unittest.TestCase):
         garbage = "ù @ ÐÒy=? 2=É( " * 40
 
         self.assertFalse(is_readable_text(garbage))
+
+    def test_linked_pdf_failures_are_optional(self):
+        html = """
+        <html>
+          <head><title>Storm Source</title></head>
+          <body>
+            <p>Storm impact context with wind, flooding, and outage damage.</p>
+            <a href="/missing-report.pdf">PDF</a>
+          </body>
+        </html>
+        """
+
+        def fetcher(url: str) -> FetchedResource:
+            if url.endswith(".pdf"):
+                raise RuntimeError("HTTP Error 404: Not Found")
+            return FetchedResource(
+                url=url,
+                content=html.encode("utf-8"),
+                content_type="text/html",
+            )
+
+        result = crawl_source_documents(
+            ["https://example.gov/storm-source"],
+            fetcher=fetcher,
+        )
+
+        self.assertEqual(len(result.documents), 1)
+        self.assertEqual(result.failures, ())
+        self.assertEqual(len(result.optional_link_failures), 1)
+        self.assertIn("missing-report.pdf", result.optional_link_failures[0])
 
 
 class TestExternalSourceIndexAndSummary(unittest.TestCase):

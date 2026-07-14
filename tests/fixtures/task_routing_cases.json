@@ -1,0 +1,309 @@
+[
+  {
+    "id": "data_001",
+    "query": "build sqlite database from csv",
+    "expected_route": "data_retrieval",
+    "category": "data_retrieval",
+    "notes": "Canonical database rebuild query.",
+    "expected_reason_contains": "data"
+  },
+  {
+    "id": "data_002",
+    "query": "load the raw storm csv",
+    "expected_route": "data_retrieval",
+    "category": "data_retrieval",
+    "notes": "Raw CSV loading request.",
+    "expected_reason_contains": "data"
+  },
+  {
+    "id": "data_003",
+    "query": "normalize the weather csv",
+    "expected_route": "data_retrieval",
+    "category": "data_retrieval",
+    "notes": "Normalization belongs to data processing.",
+    "expected_reason_contains": "data"
+  },
+  {
+    "id": "data_004",
+    "query": "show database schema",
+    "expected_route": "data_retrieval",
+    "category": "data_retrieval",
+    "notes": "Schema/database metadata route."
+  },
+  {
+    "id": "data_005",
+    "query": "ingest the source data",
+    "expected_route": "data_retrieval",
+    "category": "data_retrieval",
+    "notes": "Ingestion route."
+  },
+  {
+    "id": "data_006",
+    "query": "retrieve the sqlite table counts",
+    "expected_route": "data_retrieval",
+    "category": "data_retrieval",
+    "notes": "Retrieval/table metadata route."
+  },
+  {
+    "id": "data_007",
+    "query": "refresh db from data/testdata.csv",
+    "expected_route": "data_retrieval",
+    "category": "data_retrieval",
+    "notes": "DB refresh route."
+  },
+  {
+    "id": "analytics_001",
+    "query": "top counties by outage",
+    "expected_route": "weather_analytics",
+    "category": "weather_analytics",
+    "notes": "Canonical outage analytics query.",
+    "expected_reason_contains": "analytics"
+  },
+  {
+    "id": "analytics_002",
+    "query": "top storms by outage",
+    "expected_route": "weather_analytics",
+    "category": "weather_analytics",
+    "notes": "Canonical storm ranking query."
+  },
+  {
+    "id": "analytics_003",
+    "query": "history for county Hartford",
+    "expected_route": "weather_analytics",
+    "category": "weather_analytics",
+    "notes": "County history route."
+  },
+  {
+    "id": "analytics_004",
+    "query": "What is the total outage count for Fairfield county?",
+    "expected_route": "weather_analytics",
+    "category": "sql_ai_analytics",
+    "notes": "SQL AI aggregation question."
+  },
+  {
+    "id": "analytics_005",
+    "query": "Which storms had wind above 9 m/s in Hartford?",
+    "expected_route": "weather_analytics",
+    "category": "sql_ai_analytics",
+    "notes": "SQL AI filter question."
+  },
+  {
+    "id": "analytics_006",
+    "query": "How many storms happened between 2010 and 2015?",
+    "expected_route": "weather_analytics",
+    "category": "sql_ai_analytics",
+    "notes": "SQL AI date-range question."
+  },
+  {
+    "id": "analytics_007",
+    "query": "Which county had more outages, Fairfield or Hartford?",
+    "expected_route": "weather_analytics",
+    "category": "sql_ai_analytics",
+    "notes": "SQL AI comparison question."
+  },
+  {
+    "id": "analytics_008",
+    "query": "Which storms lasted longer than 48 hours?",
+    "expected_route": "weather_analytics",
+    "category": "sql_ai_analytics",
+    "notes": "SQL AI duration question."
+  },
+  {
+    "id": "analytics_009",
+    "query": "compare outage trends for New Haven",
+    "expected_route": "weather_analytics",
+    "category": "weather_analytics",
+    "notes": "Comparison/trend analytics."
+  },
+  {
+    "id": "analytics_010",
+    "query": "analyze weather for Windham county",
+    "expected_route": "weather_analytics",
+    "category": "weather_analytics",
+    "notes": "Direct analytics wording."
+  },
+  {
+    "id": "analytics_011",
+    "query": "top counties from database",
+    "expected_route": "weather_analytics",
+    "category": "routing_priority",
+    "notes": "Analytics should win over database metadata for top-N wording."
+  },
+  {
+    "id": "analytics_012",
+    "query": "worst storm outage in Fairfield",
+    "expected_route": "weather_analytics",
+    "category": "weather_analytics",
+    "notes": "Outage/storm analytics."
+  },
+  {
+    "id": "rag_001",
+    "query": "explain the storm similarity algorithm",
+    "expected_route": "rag_knowledge",
+    "category": "rag_knowledge",
+    "notes": "Canonical RAG explanation query.",
+    "expected_reason_contains": "RAG"
+  },
+  {
+    "id": "rag_002",
+    "query": "how does storm similarity work",
+    "expected_route": "rag_knowledge",
+    "category": "rag_knowledge",
+    "notes": "Method explanation routes to RAG."
+  },
+  {
+    "id": "rag_003",
+    "query": "summarize the documentation",
+    "expected_route": "rag_knowledge",
+    "category": "rag_knowledge",
+    "notes": "Documentation summary."
+  },
+  {
+    "id": "rag_004",
+    "query": "what docs describe the RAG process",
+    "expected_route": "rag_knowledge",
+    "category": "rag_knowledge",
+    "notes": "Docs/RAG wording."
+  },
+  {
+    "id": "rag_005",
+    "query": "impact of the new storm in Connecticut",
+    "expected_route": "rag_knowledge",
+    "category": "external_context",
+    "notes": "Storm impact routes to external/RAG context."
+  },
+  {
+    "id": "rag_006",
+    "query": "reference NHC reports for hurricane impact",
+    "expected_route": "rag_knowledge",
+    "category": "external_context",
+    "notes": "NHC/reference wording."
+  },
+  {
+    "id": "rag_007",
+    "query": "find NCEI context for Connecticut storms",
+    "expected_route": "rag_knowledge",
+    "category": "external_context",
+    "notes": "NCEI/context wording."
+  },
+  {
+    "id": "rag_008",
+    "query": "explain top counties by outage",
+    "expected_route": "rag_knowledge",
+    "category": "routing_priority",
+    "notes": "Explanation intent wins when no numeric feature params are present."
+  },
+  {
+    "id": "rag_009",
+    "query": "describe the prompt used for SQL analytics",
+    "expected_route": "rag_knowledge",
+    "category": "rag_knowledge",
+    "notes": "Prompt/docs explanation."
+  },
+  {
+    "id": "similarity_001",
+    "query": "find storms similar to wind=9.2, precip=45 in Fairfield",
+    "expected_route": "similarity_search",
+    "category": "similarity_search",
+    "notes": "Canonical similarity query.",
+    "expected_reason_contains": "similarity"
+  },
+  {
+    "id": "similarity_002",
+    "query": "rank storms similar to wind=6.5",
+    "expected_route": "similarity_search",
+    "category": "similarity_search",
+    "notes": "Similarity ranking wording."
+  },
+  {
+    "id": "similarity_003",
+    "query": "find storm similarity wind=9.2",
+    "expected_route": "similarity_search",
+    "category": "routing_priority",
+    "notes": "Numeric feature params keep similarity from being swallowed by RAG."
+  },
+  {
+    "id": "similarity_004",
+    "query": "storms like wgt18=4 in Hartford",
+    "expected_route": "similarity_search",
+    "category": "similarity_search",
+    "notes": "Known feature alias is enough to route to similarity."
+  },
+  {
+    "id": "similarity_005",
+    "query": "similar to precipitation=51.5 for New Haven",
+    "expected_route": "similarity_search",
+    "category": "similarity_search",
+    "notes": "Full precipitation alias."
+  },
+  {
+    "id": "similarity_006",
+    "query": "find storms with peakwspd10=10.2 and wgt9=2",
+    "expected_route": "similarity_search",
+    "category": "similarity_search",
+    "notes": "Column-name feature alias."
+  },
+  {
+    "id": "similarity_007",
+    "query": "similar to wind_speed=8.4 in Windham",
+    "expected_route": "similarity_search",
+    "category": "similarity_search",
+    "notes": "Underscore alias."
+  },
+  {
+    "id": "similarity_008",
+    "query": "find storms similar to wgt5=12 wgt13=1",
+    "expected_route": "similarity_search",
+    "category": "similarity_search",
+    "notes": "Multiple threshold features."
+  },
+  {
+    "id": "similarity_009",
+    "query": "find storms with wgt99=4",
+    "expected_route": "weather_analytics",
+    "category": "routing_priority",
+    "notes": "Unknown wgt parameter should not route to similarity; storm wording remains analytics."
+  },
+  {
+    "id": "unknown_001",
+    "query": "hello",
+    "expected_route": "unknown",
+    "category": "unknown",
+    "notes": "No route signals."
+  },
+  {
+    "id": "unknown_002",
+    "query": "what can you do",
+    "expected_route": "unknown",
+    "category": "unknown",
+    "notes": "Generic capability question."
+  },
+  {
+    "id": "unknown_003",
+    "query": "what about Hartford",
+    "expected_route": "unknown",
+    "category": "memory_followup",
+    "notes": "Future memory follow-up, unknown until memory is explicit."
+  },
+  {
+    "id": "unknown_004",
+    "query": "make a chart",
+    "expected_route": "unknown",
+    "category": "unknown",
+    "notes": "Visualization command without data intent."
+  },
+  {
+    "id": "unknown_005",
+    "query": "forecast tomorrow",
+    "expected_route": "unknown",
+    "category": "unknown",
+    "notes": "Forecasting is not implemented."
+  },
+  {
+    "id": "unknown_006",
+    "query": "send an email update",
+    "expected_route": "unknown",
+    "category": "unknown",
+    "notes": "Unsupported action."
+  }
+]

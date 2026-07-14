@@ -70,6 +70,7 @@ class TestDatabaseInitialization(unittest.TestCase):
             self.assertIn("Storm", table_names)
             self.assertIn("County", table_names)
             self.assertIn("WeatherData", table_names)
+            self.assertIn("ExternalOutageObservation", table_names)
             self.assertNotIn("StormCounty", table_names)
         finally:
             conn.close()
