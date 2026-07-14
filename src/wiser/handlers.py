@@ -30,6 +30,7 @@ from wiser.external_sources import (
     DEFAULT_STORM_CONTEXT_URLS,
     ExternalSourceIndexSummary,
     answer_storm_impact,
+    has_external_context,
     index_external_sources,
     should_use_external_storm_context,
     similarity_backend_status,
@@ -440,7 +441,14 @@ def handle_rag_knowledge(ctx: HandlerContext) -> RagKnowledgeResult:
     result = RagKnowledgeResult(index_summary=index_summary)
 
     use_external_context = should_use_external_storm_context(ctx.query)
-    if ctx.crawl_web_sources or use_external_context:
+    # Crawling NOAA/NHC/NCEI sources downloads dozens of PDFs and takes
+    # minutes, so reuse the indexed chunks unless the caller explicitly asked
+    # for a crawl/rebuild or nothing external has been indexed yet.
+    need_crawl = ctx.crawl_web_sources or (
+        use_external_context
+        and (ctx.rebuild_rag or not has_external_context(ctx.conn))
+    )
+    if need_crawl:
         result.external_summary = index_external_sources(
             ctx.conn,
             ctx.web_sources,
@@ -449,6 +457,13 @@ def handle_rag_knowledge(ctx: HandlerContext) -> RagKnowledgeResult:
             max_linked_pdfs=ctx.max_linked_pdfs,
         )
         result.backend_status = similarity_backend_status()
+    elif use_external_context:
+        result.notices.append(
+            Notice(
+                "Using previously indexed external storm context; "
+                "enable the web-source crawl to refresh it."
+            )
+        )
 
     if use_external_context:
         impact_answer = answer_storm_impact(

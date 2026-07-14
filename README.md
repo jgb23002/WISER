@@ -120,7 +120,7 @@ For similarity searches, `--county` overrides county auto-detection from query t
 
 Weather-analytics queries are answered by the **SqlAiAgent**: an LLM generates a SQLite `SELECT`, which is validated (syntax + SELECT-only, via `sqlglot` when installed) and executed against a read-only connection. On validation or API failure, the CLI falls back to the fixed query wrappers. Related flags: `--sql-model <id>` picks the OpenAI model for SQL generation (default: `WISER_OPENAI_MODEL` or `gpt-4o-mini`), `--show-sql` prints the generated SQL alongside results, and `--dry-run-sql` prints the exact prompt without making an API call.
 
-Impact-style storm questions automatically crawl the default NOAA/NHC/NCEI context sources, including linked National Hurricane Center Tropical Cyclone Report PDFs. WISER stores extracted web/PDF paragraphs in the existing RAG tables, ranks them with optional Meta/Facebook FAISS similarity search when available, and falls back to a dependency-free exact text-vector ranking otherwise. See [docs/EXTERNAL_STORM_CONTEXT.md](docs/EXTERNAL_STORM_CONTEXT.md).
+Impact-style storm questions automatically crawl the default NOAA/NHC/NCEI context sources the first time (including linked National Hurricane Center Tropical Cyclone Report PDFs — roughly 60 downloads, so expect a minute or more). Later impact queries reuse the indexed chunks and answer in seconds; request a crawl (`--crawl-web-sources` / the Streamlit checkbox) or a RAG rebuild to refresh them. WISER stores extracted web/PDF paragraphs in the existing RAG tables, ranks them with optional Meta/Facebook FAISS similarity search when available, and falls back to a dependency-free exact text-vector ranking otherwise. See [docs/EXTERNAL_STORM_CONTEXT.md](docs/EXTERNAL_STORM_CONTEXT.md).
 
 If `OPENAI_API_KEY` is set in `.env` or the shell environment, WISER uses the OpenAI Responses API to generate short cited impact summaries from the retrieved paragraphs. Without a key, or with `--no-openai-summary`, it uses the local extractive summary.
 
@@ -210,7 +210,7 @@ Use the ranked historical **outages** as a rough guide for what a current event 
 
 ## Running the Tests
 
-To run the entire test suite (205 tests) covering database schema, RAG indexing/retrieval, external source parsing, OpenAI summarization, SQL AI agent validation, task routing, the shared handler layer, query parsing, and similarity algorithms:
+To run the entire test suite (207 tests) covering database schema, RAG indexing/retrieval, external source parsing, OpenAI summarization, SQL AI agent validation, task routing, the shared handler layer, query parsing, and similarity algorithms:
 
 ```bash
 python -m unittest discover -s tests -v
