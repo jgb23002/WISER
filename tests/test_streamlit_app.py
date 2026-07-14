@@ -80,9 +80,7 @@ class TestStreamlitApp(unittest.TestCase):
 
     def _run_query(self, at: "AppTest", query: str) -> "AppTest":
         self._widget(at.text_input, "SQLite database").set_value(str(self.db_path))
-        at.text_input(key="query_input").set_value(query)
-        self._widget(at.button, "Run query").set_value(True)
-        at.run()
+        at.chat_input[0].set_value(query).run()
         self.assertFalse(at.exception, f"app crashed on query: {at.exception}")
         return at
 
@@ -110,6 +108,25 @@ class TestStreamlitApp(unittest.TestCase):
         self._run_query(at, "find storms similar to wind=9.2")
         error_text = " ".join(err.value for err in at.error)
         self.assertIn("County required", error_text)
+
+    def test_transcript_persists_across_turns(self):
+        at = self._start_app()
+        self._widget(at.checkbox, "Dry-run SQL").check()
+        self._run_query(at, "top storms by outage")
+        self._run_query(at, "top counties by outage")
+        markdown_text = " ".join(md.value for md in at.markdown)
+        # Both user turns are still in the replayed transcript.
+        self.assertIn("top storms by outage", markdown_text)
+        self.assertIn("top counties by outage", markdown_text)
+        self.assertEqual(len(at.session_state["messages"]), 4)
+
+    def test_unknown_follow_up_sticks_to_analytics(self):
+        at = self._start_app()
+        self._widget(at.checkbox, "Dry-run SQL").check()
+        self._run_query(at, "top storms by outage")
+        self._run_query(at, "what about Hartford?")
+        markdown_text = " ".join(md.value for md in at.markdown)
+        self.assertIn("sticky route", markdown_text)
 
 
 if __name__ == "__main__":

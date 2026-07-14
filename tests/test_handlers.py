@@ -98,6 +98,7 @@ def _make_ctx(query: str, conn: sqlite3.Connection, **overrides) -> SimpleNamesp
         use_openai_summary=False,
         sql_model=None,
         dry_run_sql=False,
+        history=None,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)

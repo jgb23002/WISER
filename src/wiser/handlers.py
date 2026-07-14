@@ -25,6 +25,7 @@ from wiser.agents.sql_ai_agent import SqlAiAgent, SqlValidationError
 from wiser.agents.storm_weather_analytics_agent import StormWeatherAnalyticsAgent
 from wiser.agents.task_routing_agent import Route
 from wiser.cli_helpers import FEATURE_ALIASES, validate_wind_positive
+from wiser.conversation import ConversationTurn
 from wiser.database import connect, get_table_counts, has_required_tables
 from wiser.external_sources import (
     DEFAULT_STORM_CONTEXT_URLS,
@@ -163,6 +164,7 @@ class HandlerContext:
     use_openai_summary: bool
     sql_model: str | None = None
     dry_run_sql: bool = False
+    history: tuple[ConversationTurn, ...] | None = None
 
 
 @dataclass
@@ -262,6 +264,7 @@ def build_context(
     use_openai_summary: bool = True,
     sql_model: str | None = None,
     dry_run_sql: bool = False,
+    history: Sequence[ConversationTurn] | None = None,
 ) -> HandlerContext:
     """Construct agents, open (or bootstrap) the database, and bundle a context.
 
@@ -295,6 +298,7 @@ def build_context(
         use_openai_summary=use_openai_summary,
         sql_model=sql_model,
         dry_run_sql=dry_run_sql,
+        history=tuple(history) if history else None,
     )
 
 
@@ -313,13 +317,16 @@ def handle_data_retrieval(ctx: HandlerContext) -> DataRetrievalResult:
 
 def handle_weather_analytics(ctx: HandlerContext) -> AnalyticsResult:
     agent = SqlAiAgent(model=ctx.sql_model, dry_run=ctx.dry_run_sql)
+    # getattr: interface tests fake the context with SimpleNamespace objects
+    # that may predate the history field.
+    history = getattr(ctx, "history", None)
 
     if ctx.dry_run_sql:
-        result = agent.run(ctx.query, ctx.conn, limit=ctx.limit)
+        result = agent.run(ctx.query, ctx.conn, limit=ctx.limit, history=history)
         return AnalyticsResult(dry_run_prompt=result["sql"])
 
     try:
-        result = agent.run(ctx.query, ctx.conn, limit=ctx.limit)
+        result = agent.run(ctx.query, ctx.conn, limit=ctx.limit, history=history)
         return AnalyticsResult(
             sql=result["sql"],
             rows=result["rows"],
@@ -530,3 +537,20 @@ def dispatch_route(decision_route: Route, ctx: HandlerContext) -> HandlerResult:
     """Invoke the registered handler for a route decision and return its result."""
     handler = ROUTE_HANDLERS.get(decision_route, DEFAULT_ROUTE_HANDLER)
     return handler(ctx)
+
+
+def turn_from_result(query: str, result: HandlerResult) -> ConversationTurn | None:
+    """The turn a surface should append to its LLM history, or None.
+
+    Only successful LLM-generated analytics answers become history: fallback
+    answers, dry-run prompts, errors, and non-analytics routes return None.
+    UI transcripts still display those turns; they just don't feed the prompt.
+    """
+    if (
+        isinstance(result, AnalyticsResult)
+        and result.sql
+        and not result.used_fallback
+        and result.dry_run_prompt is None
+    ):
+        return ConversationTurn(question=query, sql=result.sql, answer=result.answer)
+    return None

@@ -124,6 +124,15 @@ For similarity searches, `--county` overrides county auto-detection from query t
 
 Weather-analytics queries are answered by the **SqlAiAgent**: an LLM generates a SQLite `SELECT`, which is validated (syntax + SELECT-only, via `sqlglot` when installed) and executed against a read-only connection. On validation or API failure, the CLI falls back to the fixed query wrappers. Related flags: `--sql-model <id>` picks the OpenAI model for SQL generation (default: `WISER_OPENAI_MODEL` or `gpt-4o-mini`), `--show-sql` prints the generated SQL alongside results, and `--dry-run-sql` prints the exact prompt without making an API call.
 
+**Conversational follow-ups.** `--interactive` (`-i`) starts a multi-turn session where analytics follow-ups reuse the conversation context — each successful turn's question, generated SQL, and answer are replayed to the LLM (last 5 turns), so *"what about Hartford?"* after *"top counties by outage"* resolves correctly. Follow-ups that match no routing keywords stick to the analytics route. Inside the session, `clear` resets the conversation and `exit`/`quit`/Ctrl-D leaves. The Streamlit app has the same behaviour through its chat interface.
+
+```bash
+python scripts/wiser_cli.py --interactive --show-sql
+wiser> top counties by outage
+wiser> what about only Hartford?    # follow-up: reuses conversation context
+wiser> exit
+```
+
 Impact-style storm questions automatically crawl the default NOAA/NHC/NCEI context sources the first time (including linked National Hurricane Center Tropical Cyclone Report PDFs — roughly 60 downloads, so expect a minute or more). Later impact queries reuse the indexed chunks and answer in seconds; request a crawl (`--crawl-web-sources` / the Streamlit checkbox) or a RAG rebuild to refresh them. WISER stores extracted web/PDF paragraphs in the existing RAG tables, ranks them with optional Meta/Facebook FAISS similarity search when available, and falls back to a dependency-free exact text-vector ranking otherwise. See [docs/WISER_DOCUMENTATION.md](docs/WISER_DOCUMENTATION.md).
 
 If `OPENAI_API_KEY` is set in `.env` or the shell environment, WISER uses the OpenAI Responses API to generate short cited impact summaries from the retrieved paragraphs. Without a key, or with `--no-openai-summary`, it uses the local extractive summary.
@@ -312,6 +321,7 @@ WISER/
 ├── src/
 │   └── wiser/
 │       ├── cli_helpers.py        # Shared CLI constants (FEATURE_ALIASES, FLAG_TO_FEATURE, validators)
+│       ├── conversation.py       # Conversational memory: ConversationTurn + sticky-route helper
 │       ├── data_pipeline.py      # CSV parsing & row normalization
 │       ├── database.py           # Schema init, data loading, row counts
 │       ├── external_sources.py   # External web/PDF crawling, indexing, and impact summarization
@@ -337,6 +347,7 @@ WISER/
 │   │   ├── national_grid_sample.csv
 │   │   ├── sql_ai_ground_truth.json
 │   │   └── task_routing_cases.json
+│   ├── test_conversation_memory.py   # Multi-turn prompts, sticky routing, and REPL tests
 │   ├── test_data_pipeline.py         # Data pipeline and state extraction tests
 │   ├── test_database.py              # Database initialization compatibility tests
 │   ├── test_external_sources.py      # External source indexing, parsing, and ranking tests

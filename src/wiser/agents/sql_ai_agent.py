@@ -6,10 +6,11 @@ import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from wiser.conversation import MAX_HISTORY_TURNS, ConversationTurn
 from wiser.openai_summarizer import load_dotenv
 
 try:
@@ -107,6 +108,7 @@ class SqlAiAgent:
         conn: sqlite3.Connection,
         *,
         limit: int = DEFAULT_ROW_LIMIT,
+        history: Sequence[ConversationTurn] | None = None,
     ) -> dict[str, Any]:
         """Run the SQL AI pipeline for a natural-language query.
 
@@ -116,6 +118,9 @@ class SqlAiAgent:
                    the file path for read-only execution).
             limit: Default row limit hinted to the LLM; the user's question
                    can still override it explicitly.
+            history: Prior conversation turns (oldest first). Only the last
+                   MAX_HISTORY_TURNS reach the LLM prompt. The agent stays
+                   stateless: the caller owns and accumulates the history.
 
         Returns:
             {
@@ -125,10 +130,12 @@ class SqlAiAgent:
                 "dry_run": bool  — True if the LLM call was skipped,
             }
         """
-        user_message = _build_user_message(self._schema_ddl, query, limit=limit)
+        messages = _build_messages(self._schema_ddl, query, limit=limit, history=history)
 
         if self.dry_run:
-            full_prompt = f"[SYSTEM]\n{_SYSTEM_PROMPT}\n\n[USER]\n{user_message}"
+            full_prompt = "\n\n".join(
+                f"[{message['role'].upper()}]\n{message['content']}" for message in messages
+            )
             return {"sql": full_prompt, "rows": [], "answer": "", "dry_run": True}
 
         load_dotenv()
@@ -139,8 +146,7 @@ class SqlAiAgent:
         resolved_model = self.model or os.environ.get("WISER_OPENAI_MODEL", DEFAULT_SQL_MODEL)
 
         raw = _call_chat_llm(
-            system=_SYSTEM_PROMPT,
-            user=user_message,
+            messages=messages,
             model=resolved_model,
             api_key=api_key,
         )
@@ -186,20 +192,41 @@ def _build_user_message(
     )
 
 
+def _build_messages(
+    schema_ddl: str,
+    query: str,
+    *,
+    limit: int = DEFAULT_ROW_LIMIT,
+    history: Sequence[ConversationTurn] | None = None,
+) -> list[dict[str, str]]:
+    """Build the chat message list: system, prior turns, then the question.
+
+    The schema and row limit are sent only in the final user message — they
+    are identical every turn, so repeating them per historical turn would
+    multiply tokens for no information gain.
+    """
+    messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    for turn in list(history or ())[-MAX_HISTORY_TURNS:]:
+        messages.append({"role": "user", "content": f"Question: {turn.question}"})
+        messages.append(
+            {"role": "assistant", "content": f"SQL: {turn.sql}\nAnswer: {turn.answer}"}
+        )
+    messages.append(
+        {"role": "user", "content": _build_user_message(schema_ddl, query, limit=limit)}
+    )
+    return messages
+
+
 def _call_chat_llm(
     *,
-    system: str,
-    user: str,
+    messages: list[dict[str, str]],
     model: str,
     api_key: str,
     timeout: int = 30,
 ) -> str:
     body = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
+        "messages": messages,
         "max_tokens": 512,
         "temperature": 0,
     }
