@@ -50,9 +50,29 @@ RULES:
 - peakWSPD10 = actual peak wind speed at 10m height. "fastest storm" = MAX(peakWSPD10).
 - outage = number of trouble spots dispatched. "worst" = MAX or SUM(outage).
 - JOIN WeatherData to Storm whenever eventDateTime or eventLength is needed.
-- Apply the default row limit provided with the question unless the user asks for a different number.
-- Return ONLY the raw SQL query. No markdown fences, no backticks, no prose.
+- LIMIT precedence: a number in the question ("top 5", "just 3") ALWAYS wins;
+  otherwise, on a follow-up, keep the previous SQL's LIMIT; otherwise use the
+  default row limit provided with the question.
+- Return ONLY the raw SQL query. No markdown fences, no backticks, no prose,
+  no "SQL:" prefix, no "Answer:" suffix.
 - NEVER generate INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, REPLACE, or TRUNCATE.
+
+CONVERSATION RULES (apply when prior Question/SQL/Answer turns precede the question):
+- A follow-up refines the MOST RECENT query: start from the previous SQL and change
+  only what the user asks to change.
+- Keep every prior constraint — filters, joins, grouping, ORDER BY, LIMIT — unless the
+  follow-up explicitly changes or removes it.
+- Swaps replace in place: "what about fairfield?" changes only the county filter;
+  "order by precipitation" changes the ORDER BY column and updates the SELECT
+  list to show the new metric instead of the old one.
+- Exclusions accumulate: "also exclude X" extends the existing exclusion,
+  e.g. LOWER(county) NOT IN ('hartford', 'fairfield').
+- "statewide" or "all counties" removes the county filter and keeps everything else.
+- "those", "them", "that one", "there" refer to the previous query's results: reuse the
+  previous SQL's filters/ordering/limit — or nest the previous SQL as a subquery — so
+  the new query targets the same rows.
+- A question about a new, unrelated topic is NOT a follow-up: answer it fresh and
+  carry nothing over from earlier turns.
 
 EXAMPLES:
 Q: What is the total outage count for Fairfield county?
@@ -78,6 +98,16 @@ A: SELECT stormCode, COUNT(DISTINCT county) AS county_count FROM WeatherData GRO
 
 Q: Which storms lasted longer than 48 hours?
 A: SELECT s.stormCode, s.eventDateTime, s.eventLength FROM Storm s WHERE s.eventLength > 48 ORDER BY s.eventLength DESC LIMIT 10;
+
+FOLLOW-UP EXAMPLE (one conversation; each answer refines the previous SQL):
+Q: What were the top 5 storms by precipitation in Hartford?
+A: SELECT w.stormCode, w.sumAFWA_TOTPRECIP FROM WeatherData w WHERE LOWER(w.county) = 'hartford' ORDER BY w.sumAFWA_TOTPRECIP DESC LIMIT 5;
+Q: only storms after 2012
+A: SELECT w.stormCode, w.sumAFWA_TOTPRECIP FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode WHERE LOWER(w.county) = 'hartford' AND strftime('%Y', s.eventDateTime) > '2012' ORDER BY w.sumAFWA_TOTPRECIP DESC LIMIT 5;
+Q: what about fairfield county
+A: SELECT w.stormCode, w.sumAFWA_TOTPRECIP FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode WHERE LOWER(w.county) = 'fairfield' AND strftime('%Y', s.eventDateTime) > '2012' ORDER BY w.sumAFWA_TOTPRECIP DESC LIMIT 5;
+Q: just the top 3
+A: SELECT w.stormCode, w.sumAFWA_TOTPRECIP FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode WHERE LOWER(w.county) = 'fairfield' AND strftime('%Y', s.eventDateTime) > '2012' ORDER BY w.sumAFWA_TOTPRECIP DESC LIMIT 3;
 """
 
 
@@ -184,10 +214,22 @@ def _build_user_message(
     query: str,
     *,
     limit: int = DEFAULT_ROW_LIMIT,
+    follow_up: bool = False,
 ) -> str:
+    # On follow-ups a bare "Default row limit: N" line reliably overpowers the
+    # carried LIMIT (observed with gpt-4o-mini even when annotated), so the
+    # numeric anchor is only stated as the no-previous-LIMIT fallback.
+    if follow_up:
+        limit_line = (
+            "Row limit: this is a follow-up — keep the previous SQL's LIMIT"
+            " unless the question changes it. If the previous SQL had no"
+            f" LIMIT, default to {limit}."
+        )
+    else:
+        limit_line = f"Default row limit: {limit}"
     return (
         f"Schema:\n{schema_ddl}\n\n"
-        f"Default row limit: {limit}\n\n"
+        f"{limit_line}\n\n"
         f"Question: {query}"
     )
 
@@ -206,13 +248,19 @@ def _build_messages(
     multiply tokens for no information gain.
     """
     messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
-    for turn in list(history or ())[-MAX_HISTORY_TURNS:]:
+    trimmed = list(history or ())[-MAX_HISTORY_TURNS:]
+    for turn in trimmed:
         messages.append({"role": "user", "content": f"Question: {turn.question}"})
         messages.append(
             {"role": "assistant", "content": f"SQL: {turn.sql}\nAnswer: {turn.answer}"}
         )
     messages.append(
-        {"role": "user", "content": _build_user_message(schema_ddl, query, limit=limit)}
+        {
+            "role": "user",
+            "content": _build_user_message(
+                schema_ddl, query, limit=limit, follow_up=bool(trimmed)
+            ),
+        }
     )
     return messages
 
@@ -259,8 +307,14 @@ def _call_chat_llm(
 
 def _clean_sql(raw: str) -> str:
     text = raw.strip()
+    # With history in the prompt the model sometimes echoes the transcript
+    # format ("SQL: ...\nAnswer: ...") despite instructions; unwrap the label
+    # both outside and inside any markdown fence.
+    text = re.sub(r"^SQL:\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"^```(?:sql)?\s*\n?", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\n?```\s*$", "", text)
+    text = re.sub(r"^SQL:\s*", "", text.strip(), flags=re.IGNORECASE)
+    text = re.sub(r"\n\s*Answer:.*\Z", "", text, flags=re.IGNORECASE | re.DOTALL)
     return text.strip()
 
 
@@ -332,12 +386,24 @@ def _execute_ro(sql: str, db_path: str) -> list[dict[str, Any]]:
         ro_conn.close()
 
 
+_ANSWER_PREVIEW_ROWS = 3
+
+
 def _make_answer(rows: list[dict[str, Any]]) -> str:
+    """One-line answer for the user; also feeds conversation history, so it
+    includes concrete values — follow-ups like "when did the first one
+    happen?" can only be resolved if prior results name their rows."""
     if not rows:
         return "No results found."
     if len(rows) == 1 and len(rows[0]) == 1:
         key, val = next(iter(rows[0].items()))
         return f"The {key} is {val}."
+    preview = "; ".join(
+        ", ".join(f"{key}={value}" for key, value in row.items())
+        for row in rows[:_ANSWER_PREVIEW_ROWS]
+    )
     if len(rows) == 1:
-        return "Found 1 matching record."
-    return f"Found {len(rows)} results."
+        return f"Found 1 matching record: {preview}."
+    if len(rows) <= _ANSWER_PREVIEW_ROWS:
+        return f"Found {len(rows)} results: {preview}."
+    return f"Found {len(rows)} results; top {_ANSWER_PREVIEW_ROWS}: {preview}."

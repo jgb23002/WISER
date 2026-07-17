@@ -153,8 +153,20 @@ class TestBuildMessages(unittest.TestCase):
         for message in messages[:-1]:
             self.assertNotIn("CREATE TABLE", message["content"].replace(_SYSTEM_PROMPT, ""))
         self.assertIn("CREATE TABLE", messages[-1]["content"])
-        self.assertIn("Default row limit: 10", messages[-1]["content"])
+        self.assertIn("default to 10", messages[-1]["content"])
         self.assertIn("Question: what about Hartford?", messages[-1]["content"])
+
+    def test_follow_up_limit_line_only_when_history_present(self):
+        # On follow-ups the numeric default is demoted to a fallback so it
+        # cannot overpower a LIMIT carried from the previous turn.
+        with_history = _build_messages(
+            _SCHEMA_DDL, "just the top 3", limit=10, history=(_TURN_1,)
+        )
+        self.assertIn("keep the previous SQL's LIMIT", with_history[-1]["content"])
+        self.assertNotIn("Default row limit:", with_history[-1]["content"])
+        without_history = _build_messages(_SCHEMA_DDL, "top storms", limit=10)
+        self.assertIn("Default row limit: 10", without_history[-1]["content"])
+        self.assertNotIn("keep the previous SQL's LIMIT", without_history[-1]["content"])
 
     def test_no_history_matches_legacy_two_message_prompt(self):
         for history in (None, ()):
@@ -229,6 +241,23 @@ class TestRunWithHistory(unittest.TestCase):
         second_messages = mock_llm.call_args_list[1].kwargs["messages"]
         joined = "\n".join(m["content"] for m in second_messages)
         self.assertIn(sql1, joined)
+
+    def test_format_echoed_response_still_validates_and_executes(self):
+        # Regression: with history in the prompt, gpt-4o-mini sometimes echoes
+        # the transcript format ("SQL: ...\nAnswer: ..."), which used to fail
+        # sqlglot validation and drop the turn to the fixed-query fallback.
+        raw = (
+            "SQL: SELECT SUM(outage) AS total_outage FROM WeatherData"
+            " WHERE LOWER(county) = 'fairfield';\n"
+            "Answer: The total_outage is 350."
+        )
+        with patch("wiser.agents.sql_ai_agent._call_chat_llm", return_value=raw):
+            result = SqlAiAgent().run(
+                "what about fairfield county", self.conn, limit=10, history=(_TURN_1,)
+            )
+        self.assertFalse(result["sql"].startswith("SQL:"))
+        self.assertNotIn("Answer:", result["sql"])
+        self.assertEqual(result["rows"], [{"total_outage": 350}])
 
     def test_dry_run_with_history_shows_assistant_blocks(self):
         agent = SqlAiAgent(dry_run=True)

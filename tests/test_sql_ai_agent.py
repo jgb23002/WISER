@@ -35,6 +35,7 @@ from wiser.agents.sql_ai_agent import (  # noqa: E402
     SqlValidationError,
     _clean_sql,
     _load_schema_ddl,
+    _make_answer,
     _validate_sql,
 )
 from wiser.agents.storm_weather_analytics_agent import StormWeatherAnalyticsAgent  # noqa: E402
@@ -167,6 +168,68 @@ class TestCleanSql(unittest.TestCase):
         result = _clean_sql("```sql SELECT 1;```")
         self.assertNotIn("```", result)
         self.assertIn("SELECT", result)
+
+    # With conversation history in the prompt, the model sometimes echoes the
+    # transcript format ("SQL: ...\nAnswer: ..."). These pin the unwrapping.
+
+    def test_strips_sql_label_prefix(self):
+        self.assertEqual(_clean_sql("SQL: SELECT 1;"), "SELECT 1;")
+
+    def test_strips_sql_label_case_insensitive(self):
+        self.assertEqual(_clean_sql("sql: SELECT 1;"), "SELECT 1;")
+
+    def test_strips_answer_trailer(self):
+        raw = "SQL: SELECT 1;\nAnswer: Found 3 results."
+        self.assertEqual(_clean_sql(raw), "SELECT 1;")
+
+    def test_strips_multiline_answer_trailer(self):
+        raw = "SELECT 1;\nAnswer: Found 3 results.\nMore prose here."
+        self.assertEqual(_clean_sql(raw), "SELECT 1;")
+
+    def test_strips_sql_label_inside_fence(self):
+        self.assertEqual(_clean_sql("```sql\nSQL: SELECT 1;\n```"), "SELECT 1;")
+
+    def test_strips_sql_label_outside_fence(self):
+        self.assertEqual(_clean_sql("SQL: ```sql\nSELECT 1;\n```"), "SELECT 1;")
+
+    def test_answer_in_string_literal_is_preserved(self):
+        sql = "SELECT 'Answer: yes' AS label FROM Storm;"
+        self.assertEqual(_clean_sql(sql), sql)
+
+
+# ---------------------------------------------------------------------------
+# 2b. _make_answer — previews feed conversation history for anaphora
+# ---------------------------------------------------------------------------
+
+
+class TestMakeAnswer(unittest.TestCase):
+    def test_empty_rows(self):
+        self.assertEqual(_make_answer([]), "No results found.")
+
+    def test_single_scalar_names_the_value(self):
+        self.assertEqual(
+            _make_answer([{"total_outage": 350}]), "The total_outage is 350."
+        )
+
+    def test_single_row_includes_values(self):
+        answer = _make_answer([{"stormCode": 2012102806, "outage": 350}])
+        self.assertIn("stormCode=2012102806", answer)
+        self.assertIn("outage=350", answer)
+        self.assertTrue(answer.startswith("Found 1 matching record"))
+
+    def test_few_rows_all_previewed(self):
+        rows = [{"county": "Hartford"}, {"county": "Fairfield"}]
+        answer = _make_answer(rows)
+        self.assertTrue(answer.startswith("Found 2 results"))
+        self.assertIn("county=Hartford", answer)
+        self.assertIn("county=Fairfield", answer)
+
+    def test_many_rows_preview_capped_at_three(self):
+        rows = [{"n": i} for i in range(10)]
+        answer = _make_answer(rows)
+        self.assertTrue(answer.startswith("Found 10 results; top 3:"))
+        self.assertIn("n=2", answer)
+        self.assertNotIn("n=3", answer)
 
 
 # ---------------------------------------------------------------------------
