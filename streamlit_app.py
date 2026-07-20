@@ -24,6 +24,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from wiser.agents.task_routing_agent import Route, TaskRoutingAgent
+from wiser.conversation import resolve_route
 from wiser.database import connect
 from wiser.evaluation import evaluate_routing_cases, evaluate_sql_ground_truth
 from wiser.handlers import (
@@ -40,6 +41,7 @@ from wiser.handlers import (
     UnknownRouteResult,
     build_context,
     dispatch_route,
+    turn_from_result,
 )
 from wiser.integrations.eagleeye import parse_eagleeye_csv
 from wiser.integrations.external_outage import (
@@ -358,8 +360,13 @@ def render_result(
 
 
 def _set_query(query: str) -> None:
-    st.session_state["query_input"] = query
-    st.session_state["auto_run"] = True
+    # st.chat_input cannot be pre-filled; example buttons queue a pending turn.
+    st.session_state["pending_query"] = query
+
+
+def _render_route_line(route: Route, reason: str) -> None:
+    route_color = ROUTE_COLORS.get(route, "gray")
+    st.markdown(f"**Route:** :{route_color}[{route.value}] — {reason}")
 
 
 def main() -> None:
@@ -451,52 +458,92 @@ def main() -> None:
                 width="stretch",
             )
 
-    query = st.text_input(
-        "Query",
-        key="query_input",
-        placeholder="e.g. top counties by outage",
+    # Conversation state: full display transcript, LLM history (successful SQL
+    # turns only), and the last dispatched route for sticky follow-up routing.
+    st.session_state.setdefault("messages", [])
+    st.session_state.setdefault("sql_history", [])
+    st.session_state.setdefault("last_route", None)
+
+    if st.session_state["messages"] and st.button("Clear conversation"):
+        st.session_state["messages"] = []
+        st.session_state["sql_history"] = []
+        st.session_state["last_route"] = None
+
+    # Replay the transcript on every rerun.
+    for message in st.session_state["messages"]:
+        with st.chat_message(message["role"]):
+            if message["role"] == "user":
+                st.markdown(message["content"])
+            elif "error" in message:
+                st.error(message["error"])
+            else:
+                _render_route_line(message["route"], message["reason"])
+                render_result(
+                    message["result"],
+                    show_sql=show_sql,
+                    show_rag_context=show_rag_context,
+                )
+
+    query = st.chat_input("e.g. top counties by outage") or st.session_state.pop(
+        "pending_query", None
     )
-    run_clicked = st.button("Run query", type="primary")
-    auto_run = st.session_state.pop("auto_run", False)
-
-    if not (run_clicked or auto_run):
+    if not query or not query.strip():
         return
-    if not query.strip():
-        st.warning("Enter a query first.")
-        return
+    query = query.strip()
 
-    decision = routing_agent.route(query)
-    route_color = ROUTE_COLORS.get(decision.route, "gray")
-    st.markdown(f"### :{route_color}[❝{query}❞]")
-    st.markdown(
-        f"**Route:** :{route_color}[{decision.route.value}] — {decision.reason}"
+    st.session_state["messages"].append({"role": "user", "content": query})
+    with st.chat_message("user"):
+        st.markdown(query)
+
+    decision = resolve_route(
+        routing_agent.route(query), st.session_state["last_route"]
     )
-
-    try:
-        with st.spinner("Running agents..."):
-            ctx = build_context(
-                query,
-                input_csv=input_csv,
-                db_path=db_path,
-                limit=limit,
-                county=county.strip() or None,
-                rebuild_rag=rebuild_rag,
-                crawl_web_sources=crawl_web_sources,
-                similarity_backend=similarity_backend,
-                use_openai_summary=use_openai_summary,
-                dry_run_sql=dry_run_sql,
+    with st.chat_message("assistant"):
+        _render_route_line(decision.route, decision.reason)
+        try:
+            with st.spinner("Running agents..."):
+                ctx = build_context(
+                    query,
+                    input_csv=input_csv,
+                    db_path=db_path,
+                    limit=limit,
+                    county=county.strip() or None,
+                    rebuild_rag=rebuild_rag,
+                    crawl_web_sources=crawl_web_sources,
+                    similarity_backend=similarity_backend,
+                    use_openai_summary=use_openai_summary,
+                    dry_run_sql=dry_run_sql,
+                    history=tuple(st.session_state["sql_history"]),
+                )
+                try:
+                    result = dispatch_route(decision.route, ctx)
+                finally:
+                    # Handlers may replace ctx.conn (database rebuild); close
+                    # whichever connection is current.
+                    ctx.conn.close()
+        except Exception as exc:  # noqa: BLE001 - surface anything to the UI
+            error_text = f"{type(exc).__name__}: {exc}"
+            st.error(error_text)
+            st.session_state["messages"].append(
+                {"role": "assistant", "error": error_text}
             )
-            try:
-                result = dispatch_route(decision.route, ctx)
-            finally:
-                # Handlers may replace ctx.conn (database rebuild); close
-                # whichever connection is current.
-                ctx.conn.close()
-    except Exception as exc:  # noqa: BLE001 - surface anything to the UI
-        st.error(f"{type(exc).__name__}: {exc}")
-        return
+            return
 
-    render_result(result, show_sql=show_sql, show_rag_context=show_rag_context)
+        render_result(result, show_sql=show_sql, show_rag_context=show_rag_context)
+
+    st.session_state["messages"].append(
+        {
+            "role": "assistant",
+            "route": decision.route,
+            "reason": decision.reason,
+            "result": result,
+        }
+    )
+    turn = turn_from_result(query, result)
+    if turn is not None:
+        st.session_state["sql_history"].append(turn)
+    if decision.route is not Route.UNKNOWN:
+        st.session_state["last_route"] = decision.route
 
 
 main()

@@ -28,6 +28,8 @@ from wiser.agents.similarity_query_agent import SimilarityQueryAgent  # noqa: E4
 from wiser.agents.sql_ai_agent import SqlValidationError  # noqa: E402
 from wiser.agents.storm_weather_analytics_agent import StormWeatherAnalyticsAgent  # noqa: E402
 from wiser.agents.task_routing_agent import Route  # noqa: E402
+from wiser.external_sources import ExternalSourceIndexSummary  # noqa: E402
+from wiser.rag import initialize_rag_schema  # noqa: E402
 from wiser.handlers import (  # noqa: E402
     ROUTE_HANDLERS,
     AnalyticsResult,
@@ -96,6 +98,7 @@ def _make_ctx(query: str, conn: sqlite3.Connection, **overrides) -> SimpleNamesp
         use_openai_summary=False,
         sql_model=None,
         dry_run_sql=False,
+        history=None,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -333,6 +336,64 @@ class TestHandleRagKnowledge(unittest.TestCase):
         result = handle_rag_knowledge(ctx)
         self.assertFalse(result.has_results)
         self.assertFalse(result.used_external)
+
+    def _index_external_chunk(self):
+        initialize_rag_schema(self.conn)
+        cursor = self.conn.execute(
+            "INSERT INTO RagDocument(path, title, checksum, indexedAt)"
+            " VALUES(?, ?, ?, datetime('now'))",
+            ("https://example.gov/report", "Storm Report", "abc123"),
+        )
+        self.conn.execute(
+            "INSERT INTO RagChunk(documentId, chunkIndex, content, tokenCount)"
+            " VALUES(?, ?, ?, ?)",
+            (
+                cursor.lastrowid,
+                0,
+                "Tropical Storm Isaias caused widespread power outages and "
+                "wind damage across Connecticut counties in August 2020.",
+                16,
+            ),
+        )
+        self.conn.commit()
+
+    def test_impact_query_reuses_indexed_external_context(self):
+        self._index_external_chunk()
+        ctx = _make_ctx(
+            "impact of the new storm in Connecticut",
+            self.conn,
+            rag_agent=self.rag_agent,
+        )
+        with patch("wiser.handlers.index_external_sources") as mock_crawl:
+            result = handle_rag_knowledge(ctx)
+        mock_crawl.assert_not_called()
+        self.assertTrue(result.used_external)
+        self.assertTrue(result.has_results)
+        self.assertIsNone(result.external_summary)
+        self.assertTrue(
+            any("previously indexed" in notice.text for notice in result.notices)
+        )
+
+    def test_impact_query_crawls_when_no_external_context(self):
+        ctx = _make_ctx(
+            "impact of the new storm in Connecticut",
+            self.conn,
+            rag_agent=self.rag_agent,
+        )
+        empty_summary = ExternalSourceIndexSummary(
+            documents_seen=0,
+            documents_indexed=0,
+            chunks_indexed=0,
+            total_documents=0,
+            total_chunks=0,
+            failures=(),
+        )
+        with patch(
+            "wiser.handlers.index_external_sources", return_value=empty_summary
+        ) as mock_crawl:
+            result = handle_rag_knowledge(ctx)
+        mock_crawl.assert_called_once()
+        self.assertIs(result.external_summary, empty_summary)
 
 
 # ---------------------------------------------------------------------------

@@ -512,6 +512,20 @@ def search_external_context(
     return results
 
 
+def has_external_context(conn: sqlite3.Connection) -> bool:
+    """True when at least one crawled web chunk is already indexed."""
+    initialize_rag_schema(conn)
+    row = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM RagChunk c
+        JOIN RagDocument d ON d.id = c.documentId
+        WHERE d.path LIKE 'http://%' OR d.path LIKE 'https://%'
+        """
+    ).fetchone()
+    return int(row[0]) > 0
+
+
 def answer_storm_impact(
     conn: sqlite3.Connection,
     query: str,

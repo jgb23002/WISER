@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
@@ -21,7 +22,8 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from find_similar_storms import print_results  # noqa: E402
 
-from wiser.agents.task_routing_agent import TaskRoutingAgent
+from wiser.agents.task_routing_agent import Route, TaskRoutingAgent
+from wiser.conversation import ConversationTurn, resolve_route
 from wiser.database import connect
 from wiser.integrations.eagleeye import parse_eagleeye_csv
 from wiser.integrations.external_outage import (
@@ -42,6 +44,7 @@ from wiser.handlers import (
     UnknownRouteResult,
     build_context,
     dispatch_route,
+    turn_from_result,
 )
 from wiser.evaluation import (  # noqa: E402
     evaluate_routing_cases,
@@ -231,6 +234,108 @@ def render_result(
 
 
 # ---------------------------------------------------------------------------
+# Query execution (shared by one-shot and interactive modes)
+# ---------------------------------------------------------------------------
+
+
+def run_query_once(
+    query: str,
+    args: argparse.Namespace,
+    routing_agent: TaskRoutingAgent,
+    *,
+    history: Sequence[ConversationTurn] = (),
+    last_route: Route | None = None,
+) -> tuple[ConversationTurn | None, Route | None]:
+    """Route, dispatch, and render one query.
+
+    Returns (turn to append to the conversation history or None, updated
+    last route for sticky follow-up routing).
+    """
+    decision = resolve_route(routing_agent.route(query), last_route)
+    print(f"Route: {decision.route.value} ({decision.reason})")
+
+    ctx = build_context(
+        query,
+        input_csv=args.input,
+        db_path=args.db,
+        limit=args.limit,
+        county=args.county,
+        rag_sources=args.rag_source or None,
+        rebuild_rag=args.rebuild_rag,
+        web_sources=args.web_source or None,
+        crawl_web_sources=args.crawl_web_sources,
+        include_linked_pdfs=not args.no_linked_pdfs,
+        max_linked_pdfs=args.max_linked_pdfs,
+        similarity_backend=args.similarity_backend,
+        openai_model=args.openai_model,
+        use_openai_summary=not args.no_openai_summary,
+        sql_model=args.sql_model,
+        dry_run_sql=args.dry_run_sql,
+        history=tuple(history),
+    )
+    try:
+        result = dispatch_route(decision.route, ctx)
+        render_result(
+            result,
+            show_sql=args.show_sql,
+            show_rag_context=args.show_rag_context,
+        )
+    finally:
+        # Handlers may replace ctx.conn (e.g. a database rebuild); close
+        # whichever connection is current.
+        ctx.conn.close()
+
+    new_last_route = decision.route if decision.route is not Route.UNKNOWN else last_route
+    return turn_from_result(query, result), new_last_route
+
+
+_REPL_EXIT_WORDS = {"exit", "quit", "q"}
+
+
+def run_repl(
+    args: argparse.Namespace,
+    routing_agent: TaskRoutingAgent,
+    *,
+    initial_query: str | None = None,
+) -> None:
+    """Interactive multi-turn session; follow-ups reuse conversation context."""
+    print("WISER interactive session. Type 'exit' to leave, 'clear' to reset the conversation.")
+    history: list[ConversationTurn] = []
+    last_route: Route | None = None
+    pending = initial_query
+
+    while True:
+        if pending is not None:
+            query, pending = pending, None
+        else:
+            try:
+                query = input("wiser> ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+        query = query.strip()
+        if not query:
+            continue
+        if query.lower() in _REPL_EXIT_WORDS:
+            return
+        if query.lower() == "clear":
+            history.clear()
+            last_route = None
+            print("Conversation cleared.")
+            continue
+
+        try:
+            turn, last_route = run_query_once(
+                query, args, routing_agent, history=history, last_route=last_route
+            )
+        except Exception as exc:  # noqa: BLE001 — a failed turn must not kill the session
+            print(f"Error: {type(exc).__name__}: {exc}")
+            continue
+        if turn is not None:
+            history.append(turn)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -241,6 +346,16 @@ def main() -> None:
         "query",
         nargs="?",
         help="Natural language query for the routing agent.",
+    )
+    parser.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help=(
+            "Start an interactive multi-turn session; follow-up questions "
+            "reuse the conversation context. A positional query becomes the "
+            "first turn."
+        ),
     )
     parser.add_argument(
         "--input",
@@ -425,42 +540,16 @@ def main() -> None:
             raise SystemExit(1)
         return
 
-    if not args.query:
-        parser.error("query is required unless an evaluation flag is used")
+    if not args.query and not args.interactive:
+        parser.error("query is required unless --interactive or an evaluation flag is used")
 
     routing_agent = TaskRoutingAgent()
-    decision = routing_agent.route(args.query)
-    print(f"Route: {decision.route.value} ({decision.reason})")
 
-    ctx = build_context(
-        args.query,
-        input_csv=args.input,
-        db_path=args.db,
-        limit=args.limit,
-        county=args.county,
-        rag_sources=args.rag_source or None,
-        rebuild_rag=args.rebuild_rag,
-        web_sources=args.web_source or None,
-        crawl_web_sources=args.crawl_web_sources,
-        include_linked_pdfs=not args.no_linked_pdfs,
-        max_linked_pdfs=args.max_linked_pdfs,
-        similarity_backend=args.similarity_backend,
-        openai_model=args.openai_model,
-        use_openai_summary=not args.no_openai_summary,
-        sql_model=args.sql_model,
-        dry_run_sql=args.dry_run_sql,
-    )
-    try:
-        result = dispatch_route(decision.route, ctx)
-        render_result(
-            result,
-            show_sql=args.show_sql,
-            show_rag_context=args.show_rag_context,
-        )
-    finally:
-        # Handlers may replace ctx.conn (e.g. a database rebuild); close
-        # whichever connection is current.
-        ctx.conn.close()
+    if args.interactive:
+        run_repl(args, routing_agent, initial_query=args.query)
+        return
+
+    run_query_once(args.query, args, routing_agent)
 
 
 if __name__ == "__main__":
