@@ -137,6 +137,27 @@
     "notes": "Outage/storm analytics."
   },
   {
+    "id": "analytics_013",
+    "query": "which county was affected the most overall?",
+    "expected_route": "weather_analytics",
+    "category": "storm_reasoning",
+    "notes": "Affected-most interpretation should use weather/outage analytics."
+  },
+  {
+    "id": "analytics_014",
+    "query": "why did Hartford have more outages despite lower wind?",
+    "expected_route": "weather_analytics",
+    "category": "storm_reasoning",
+    "notes": "Why/despite comparison should retrieve analytics rows for reasoning."
+  },
+  {
+    "id": "analytics_015",
+    "query": "normalize outages by population",
+    "expected_route": "weather_analytics",
+    "category": "storm_reasoning",
+    "notes": "Normalization questions belong to analytics; the reasoning layer explains missing population data."
+  },
+  {
     "id": "rag_001",
     "query": "explain the storm similarity algorithm",
     "expected_route": "rag_knowledge",

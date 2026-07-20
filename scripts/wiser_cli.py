@@ -123,7 +123,12 @@ def _render_data_retrieval(result: DataRetrievalResult) -> None:
         print(f"  - {table_name}: {count}")
 
 
-def _render_analytics(result: AnalyticsResult, *, show_sql: bool) -> None:
+def _render_analytics(
+    result: AnalyticsResult,
+    *,
+    show_sql: bool,
+    show_reasoning_prompt: bool,
+) -> None:
     if result.dry_run_prompt is not None:
         print("--- SQL AI Agent dry-run prompt ---")
         print(result.dry_run_prompt)
@@ -136,6 +141,7 @@ def _render_analytics(result: AnalyticsResult, *, show_sql: bool) -> None:
         if result.fallback_title is not None:
             print(result.fallback_title)
             print_rows(result.rows or [])
+            _print_reasoning(result, show_prompt=show_reasoning_prompt)
         return
 
     if show_sql:
@@ -143,6 +149,23 @@ def _render_analytics(result: AnalyticsResult, *, show_sql: bool) -> None:
     if result.answer:
         print(result.answer)
     print_rows(result.rows or [])
+    _print_reasoning(result, show_prompt=show_reasoning_prompt)
+
+
+def _print_reasoning(
+    result: AnalyticsResult,
+    *,
+    show_prompt: bool,
+) -> None:
+    if not result.reasoning:
+        return
+    print("Analytical reasoning:")
+    print(result.reasoning)
+    if result.reasoning_mode:
+        print(f"Reasoning mode: {result.reasoning_mode}")
+    if show_prompt and result.reasoning_prompt:
+        print("Reasoning prompt:")
+        print(result.reasoning_prompt)
 
 
 def _render_similarity(result: SimilarityResult) -> None:
@@ -217,12 +240,17 @@ def render_result(
     *,
     show_sql: bool = False,
     show_rag_context: bool = False,
+    show_reasoning_prompt: bool = False,
 ) -> None:
     """Print a handler result exactly as the CLI has always formatted it."""
     if isinstance(result, DataRetrievalResult):
         _render_data_retrieval(result)
     elif isinstance(result, AnalyticsResult):
-        _render_analytics(result, show_sql=show_sql)
+        _render_analytics(
+            result,
+            show_sql=show_sql,
+            show_reasoning_prompt=show_reasoning_prompt,
+        )
     elif isinstance(result, SimilarityResult):
         _render_similarity(result)
     elif isinstance(result, RagKnowledgeResult):
@@ -279,6 +307,7 @@ def run_query_once(
             result,
             show_sql=args.show_sql,
             show_rag_context=args.show_rag_context,
+            show_reasoning_prompt=args.show_reasoning_prompt,
         )
     finally:
         # Handlers may replace ctx.conn (e.g. a database rebuild); close
@@ -442,7 +471,10 @@ def main() -> None:
     parser.add_argument(
         "--no-openai-summary",
         action="store_true",
-        help="Use the local extractive impact summary even if OPENAI_API_KEY is set.",
+        help=(
+            "Use local extractive summaries and local analytical reasoning even "
+            "if OPENAI_API_KEY is set."
+        ),
     )
     parser.add_argument(
         "--sql-model",
@@ -464,6 +496,11 @@ def main() -> None:
             "Print the prompt that would be sent to the SQL AI Agent, "
             "then exit without making an API call."
         ),
+    )
+    parser.add_argument(
+        "--show-reasoning-prompt",
+        action="store_true",
+        help="Print the analytical reasoning prompt built from the SQL result rows.",
     )
     parser.add_argument(
         "--evaluate-routing",

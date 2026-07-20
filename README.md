@@ -92,12 +92,18 @@ python scripts/bootstrap_wiser.py \
 |---|---|---|
 | Data / DB management | `load`, `csv`, `database`, `schema`, `ingest` … | `DataRetrievalProcessingAgent` |
 | RAG / knowledge retrieval | `rag`, `docs`, `explain`, `algorithm`, `reference`, `impact`, `hurricane`, `nhc`, `ncei` … | `RAGKnowledgeAgent` plus optional external web/PDF context |
-| Weather analytics | `outage`, `storm`, `county`, `top`, `trend` … | `SqlAiAgent` (LLM → validated read-only SELECT), falling back to `StormWeatherAnalyticsAgent` fixed query wrappers |
+| Weather analytics | `outage`, `storm`, `county`, `top`, `trend`, `affected`, `normalize`, `population` … | `SqlAiAgent` (LLM → validated read-only SELECT) plus `StormReasoningAgent`; falls back to fixed analytical query wrappers |
 | Similarity search | `similar`, `find similar`, `rank storms`, or parameter patterns (e.g., `wind=`) … | `SimilarityQueryAgent` |
 
 ```bash
 # Top counties by total outage
 python scripts/wiser_cli.py "top counties by outage" --limit 5
+
+# Reason over county impact, exposure, and normalization
+python scripts/wiser_cli.py "which county was affected the most overall?" --limit 8
+python scripts/wiser_cli.py "normalize outages by population" --limit 8
+python scripts/wiser_cli.py \
+  "for storm 2020080406, why did Hartford have more outages than New Haven despite lower wind?"
 
 # Top storms by total outage
 python scripts/wiser_cli.py "top storms by outage" --limit 5
@@ -122,7 +128,9 @@ The `--limit` flag controls how many rows are returned for top-N queries (defaul
 For RAG queries, `--limit` controls retrieved context chunks. Use `--rebuild-rag` to refresh the local index, `--show-rag-context` to print the full augmented prompt, and repeat `--rag-source <path>` to index a custom file or directory.
 For similarity searches, `--county` overrides county auto-detection from query text.
 
-Weather-analytics queries are answered by the **SqlAiAgent**: an LLM generates a SQLite `SELECT`, which is validated (syntax + SELECT-only, via `sqlglot` when installed) and executed against a read-only connection. On validation or API failure, the CLI falls back to the fixed query wrappers. Related flags: `--sql-model <id>` picks the OpenAI model for SQL generation (default: `WISER_OPENAI_MODEL` or `gpt-4o-mini`), `--show-sql` prints the generated SQL alongside results, and `--dry-run-sql` prints the exact prompt without making an API call.
+Weather-analytics queries are answered in two stages. First, the **SqlAiAgent** generates a SQLite `SELECT`, which is validated (syntax + SELECT-only, via `sqlglot` when installed) and executed against a read-only connection. Then the **StormReasoningAgent** receives only the user question, validated SQL, and returned rows, and explains the pattern with concrete row values and caveats. On validation or API failure, the CLI falls back to fixed analytical query wrappers for top counties, top storms, county history, affected-most summaries, exposure normalization, and county comparisons. Related flags: `--sql-model <id>` picks the OpenAI model for SQL generation (default: `WISER_OPENAI_MODEL` or `gpt-4o-mini`), `--show-sql` prints the generated SQL alongside results, `--show-reasoning-prompt` prints the reasoning prompt built from result rows, and `--dry-run-sql` prints the exact SQL-generation prompt without making an API call.
+
+Population is not currently part of the WISER schema. If a user asks for per-capita normalization, WISER says that explicitly and shows the available infrastructure exposure normalization (`outage_per_million_ohline`) instead of inventing population values.
 
 **Conversational follow-ups.** `--interactive` (`-i`) starts a multi-turn session where analytics follow-ups reuse the conversation context — each successful turn's question, generated SQL, and answer are replayed to the LLM (last 5 turns), so *"what about Hartford?"* after *"top counties by outage"* resolves correctly. Follow-ups that match no routing keywords stick to the analytics route. Inside the session, `clear` resets the conversation and `exit`/`quit`/Ctrl-D leaves. The Streamlit app has the same behaviour through its chat interface.
 
@@ -135,7 +143,7 @@ wiser> exit
 
 Impact-style storm questions automatically crawl the default NOAA/NHC/NCEI context sources the first time (including linked National Hurricane Center Tropical Cyclone Report PDFs — roughly 60 downloads, so expect a minute or more). Later impact queries reuse the indexed chunks and answer in seconds; request a crawl (`--crawl-web-sources` / the Streamlit checkbox) or a RAG rebuild to refresh them. WISER stores extracted web/PDF paragraphs in the existing RAG tables, ranks them with optional Meta/Facebook FAISS similarity search when available, and falls back to a dependency-free exact text-vector ranking otherwise. See [docs/WISER_DOCUMENTATION.md](docs/WISER_DOCUMENTATION.md).
 
-If `OPENAI_API_KEY` is set in `.env` or the shell environment, WISER uses the OpenAI Responses API to generate short cited impact summaries from the retrieved paragraphs. Without a key, or with `--no-openai-summary`, it uses the local extractive summary.
+If `OPENAI_API_KEY` is set in `.env` or the shell environment, WISER uses the OpenAI Responses API to generate short cited impact summaries from the retrieved paragraphs, and OpenAI can also generate row-grounded analytics reasoning. Without a key, or with `--no-openai-summary`, it uses local extractive summaries and deterministic local analytical reasoning.
 
 Fixture-backed EagleEye and National Grid CSV loading is available through a neutral staging table (`ExternalOutageObservation`). These loaders do not require OpenAI and do not perform live API calls:
 
@@ -176,8 +184,9 @@ streamlit run streamlit_app.py
   implementation status panels, EagleEye/National Grid staging preview,
   agent demo queries, and architecture diagram for professor walkthroughs.
 - The sidebar covers the common CLI options: database/CSV paths, result
-  limit, county override, dry-run SQL, show SQL, show RAG context, rebuild
-  RAG, external crawling, OpenAI summary toggle, and similarity backend.
+  limit, county override, dry-run SQL, show SQL, show reasoning prompt, show
+  RAG context, rebuild RAG, external crawling, OpenAI summary/reasoning
+  toggle, and similarity backend.
   A few flags stay CLI-only: `--rag-source`, `--web-source`,
   `--max-linked-pdfs`, `--no-linked-pdfs`, `--openai-model`, and
   `--sql-model`. The OpenAI model comes from `WISER_OPENAI_MODEL` in the
@@ -186,8 +195,13 @@ streamlit run streamlit_app.py
   they route to; the submitted query and route decision are shown in the
   same color for every run.
 - The top tabs expose presentation-ready status: routing/SQL ground-truth
-  metrics, EagleEye/National Grid sample staging, and recent staged external
-  outage rows.
+  metrics, a county heat-map panel, EagleEye/National Grid sample staging,
+  and recent staged external outage rows.
+- County heat maps use the legacy 8-county Connecticut boundary layer in
+  `data/geography/ct_counties_legacy.geojson`, matching the county names in
+  the dataset rather than newer planning-region geography. The map can color
+  counties by outage totals, average/peak outage, average/maximum wind speed,
+  or outages normalized by overhead-line exposure, with an SVG legend.
 - Without an `OPENAI_API_KEY`, a banner explains that analytics fall back to
   fixed queries and impact summaries use the local extractive mode — the app
   keeps working, nothing crashes.
@@ -274,7 +288,7 @@ python3 scripts/wiser_cli.py --evaluate-routing --evaluate-sql
 Expected output:
 
 ```text
-routing: 43/43 passed (100.0%)
+routing: 46/46 passed (100.0%)
 sql: 27/27 passed (100.0%)
 ```
 
@@ -290,13 +304,15 @@ The test files cover the following functionality:
 | `tests/test_openai_summarizer.py` | Verifies OpenAI Responses API request construction, response parsing, and dotenv loading. |
 | `tests/test_sql_ai_agent.py` | Verifies SQL AI agent schema loading, fence stripping, SELECT-only validation, dry-run mode, mocked LLM pipeline, and handler fallback rendering. All LLM calls are mocked. |
 | `tests/test_sql_ai_ground_truth.py` | Runs the SQL AI ground-truth fixture against a deterministic SQLite seed DB and mocked `SqlAiAgent` responses. |
-| `tests/test_handlers.py` | Verifies the shared handler layer returns structured results (no printing): analytics LLM/fallback/dry-run paths, similarity validation errors, RAG answers, dispatch registry. |
+| `tests/test_storm_reasoning_agent.py` | Verifies row-grounded reasoning prompts, local fallback analysis, population caveats, and wind/outage comparison behavior. |
+| `tests/test_handlers.py` | Verifies the shared handler layer returns structured results (no printing): analytics LLM/fallback/dry-run/reasoning paths, similarity validation errors, RAG answers, dispatch registry. |
 | `tests/test_streamlit_app.py` | Headless Streamlit smoke tests (AppTest): app loads, similarity and dry-run analytics render, errors surface without crashing. Skipped when `streamlit` is not installed. |
 | `tests/test_similarity_algorithm.py` | Validates Z-score calculations, statistics, symmetry, and legacy single-dimension mathematical correctness. |
 | `tests/test_similarity_engine.py` | Verifies multi-dimensional Z-score calculations (parity, weight overrides, zero std dev, partial features). |
 | `tests/test_task_routing.py` | Tests keyword and pattern matching routing decisions (avoiding RAG collisions, rejecting unknown aliases). |
 | `tests/test_task_routing_ground_truth.py` | Runs the JSON task-routing ground-truth corpus and route-priority regression cases. |
 | `tests/test_wiser_cli.py` | Verifies similarity query parsing, county auto-detection, dispatch registry, and CLI rendering of handler results. |
+| `tests/test_visualization.py` | Validates county metric aggregation, legacy county GeoJSON loading, and SVG heat-map rendering. |
 | `tests/test_data_pipeline.py` | Validates parsing of CSV columns and correct extraction of state codes from event codes. |
 
 ---
@@ -306,6 +322,9 @@ The test files cover the following functionality:
 ```text
 WISER/
 ├── data/
+│   ├── geography/
+│   │   ├── README.md             # Source notes for the legacy CT county boundary asset
+│   │   └── ct_counties_legacy.geojson
 │   └── testdata.csv              # Raw input — 2,352 storm-county rows
 ├── docs/
 │   ├── WISER_DOCUMENTATION.md    # Combined architecture, agents, schema, similarity, RAG, integrations
@@ -328,6 +347,7 @@ WISER/
 │       ├── evaluation.py         # Ground-truth fixture evaluation helpers
 │       ├── integrations/         # EagleEye/National Grid CSV parser + outage staging helpers
 │       ├── openai_summarizer.py  # OpenAI Responses API wrapper for impact summaries
+│       ├── visualization.py      # County heat-map metrics and SVG rendering
 │       ├── query_engine.py       # SQL queries (top counties, storms, history, county count)
 │       ├── handlers.py           # Shared route handlers + result types (consumed by CLI and Streamlit)
 │       ├── rag.py                # RAG document indexing + lexical retrieval
@@ -339,6 +359,7 @@ WISER/
 │           ├── rag_knowledge_agent.py             # Builds/searches local RAG index
 │           ├── similarity_query_agent.py          # Performs similarity query & ranking
 │           ├── sql_ai_agent.py                    # NL → validated SELECT → read-only exec (LLM)
+│           ├── storm_reasoning_agent.py           # Row-grounded analytical reasoning
 │           └── storm_weather_analytics_agent.py   # Wraps query engine for analytics (fallback)
 ├── tests/
 │   ├── __init__.py
@@ -354,6 +375,7 @@ WISER/
 │   ├── test_external_integrations.py # EagleEye/National Grid fixture parser + staging tests
 │   ├── test_openai_summarizer.py     # OpenAI summarizer request/response tests
 │   ├── test_rag.py                   # RAG indexing/retrieval tests
+│   ├── test_storm_reasoning_agent.py # Row-grounded reasoning prompt/fallback tests
 │   ├── test_handlers.py              # Shared handler layer structured-result tests
 │   ├── test_schema.py                # 27 schema validation tests
 │   ├── test_sql_ai_agent.py          # SQL AI agent validation, pipeline, and fallback tests
@@ -363,6 +385,7 @@ WISER/
 │   ├── test_task_routing_ground_truth.py # Routing ground-truth fixture tests
 │   ├── test_similarity_algorithm.py  # Legacy similarity algorithm correctness tests
 │   ├── test_similarity_engine.py     # Multi-dimensional similarity engine tests
+│   ├── test_visualization.py         # County heat-map aggregation/rendering tests
 │   └── test_wiser_cli.py             # Similarity parsing and CLI rendering tests
 ├── .env.example                      # Template for OPENAI_API_KEY / WISER_OPENAI_MODEL
 ├── requirements.txt

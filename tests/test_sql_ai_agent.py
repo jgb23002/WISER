@@ -33,6 +33,7 @@ for _p in (str(SRC_DIR), str(SCRIPTS_DIR)):
 from wiser.agents.sql_ai_agent import (  # noqa: E402
     SqlAiAgent,
     SqlValidationError,
+    _add_generation_options,
     _clean_sql,
     _load_schema_ddl,
     _make_answer,
@@ -326,6 +327,26 @@ class TestDryRun(unittest.TestCase):
         query = "What is the total outage for Fairfield?"
         result = self.agent.run(query, self.conn)
         self.assertIn(query, result["sql"])
+
+
+class TestOpenAIRequestOptions(unittest.TestCase):
+    def test_gpt5_models_use_max_completion_tokens(self):
+        body = {"model": "gpt-5.5", "messages": []}
+
+        _add_generation_options(body, "gpt-5.5", max_tokens=512, temperature=0)
+
+        self.assertEqual(body["max_completion_tokens"], 512)
+        self.assertNotIn("max_tokens", body)
+        self.assertNotIn("temperature", body)
+
+    def test_legacy_chat_models_keep_max_tokens(self):
+        body = {"model": "gpt-4o-mini", "messages": []}
+
+        _add_generation_options(body, "gpt-4o-mini", max_tokens=512, temperature=0)
+
+        self.assertEqual(body["max_tokens"], 512)
+        self.assertEqual(body["temperature"], 0)
+        self.assertNotIn("max_completion_tokens", body)
 
 
 # ---------------------------------------------------------------------------

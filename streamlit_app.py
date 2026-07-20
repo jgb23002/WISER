@@ -13,6 +13,7 @@ widgets. The OpenAI key is read exactly the way the CLI reads it (repo-root
 
 from __future__ import annotations
 
+import base64
 import sys
 from pathlib import Path
 
@@ -51,6 +52,15 @@ from wiser.integrations.external_outage import (
 from wiser.integrations.national_grid import parse_national_grid_csv
 from wiser.openai_summarizer import openai_config
 from wiser.rag import format_excerpt
+from wiser.visualization import (
+    COUNTY_HEATMAP_METRICS,
+    CT_LEGACY_COUNTY_SOURCE_URL,
+    available_storm_options,
+    county_metric_rows,
+    load_county_geojson,
+    metric_display_name,
+    render_county_heatmap_svg,
+)
 
 ROUTE_COLORS = {
     Route.DATA_RETRIEVAL: "green",
@@ -75,6 +85,23 @@ EXTERNAL_SAMPLE_FEEDS = {
         parse_national_grid_csv,
     ),
 }
+APP_STATE_VERSION = "2026-07-20-openai-token-map-v2"
+
+
+def _reset_conversation_state() -> None:
+    st.session_state["messages"] = []
+    st.session_state["sql_history"] = []
+    st.session_state["last_route"] = None
+
+
+def _ensure_conversation_state() -> None:
+    st.session_state.setdefault("messages", [])
+    st.session_state.setdefault("sql_history", [])
+    st.session_state.setdefault("last_route", None)
+
+    if st.session_state.get("app_state_version") != APP_STATE_VERSION:
+        st.session_state["app_state_version"] = APP_STATE_VERSION
+        _reset_conversation_state()
 
 
 def _render_notices(notices: list[Notice]) -> None:
@@ -107,7 +134,12 @@ def _render_data_retrieval(result: DataRetrievalResult) -> None:
     )
 
 
-def _render_analytics(result: AnalyticsResult, *, show_sql: bool) -> None:
+def _render_analytics(
+    result: AnalyticsResult,
+    *,
+    show_sql: bool,
+    show_reasoning_prompt: bool,
+) -> None:
     if result.dry_run_prompt is not None:
         st.subheader("SQL AI Agent dry-run prompt")
         st.caption("No API call was made.")
@@ -121,6 +153,11 @@ def _render_analytics(result: AnalyticsResult, *, show_sql: bool) -> None:
         if result.fallback_title is not None:
             st.subheader(result.fallback_title.rstrip(":"))
             _render_rows(result.rows or [])
+            _render_analytics_heatmap(result)
+        _render_reasoning(
+            result,
+            show_reasoning_prompt=show_reasoning_prompt,
+        )
         return
 
     st.caption("Answered by the SQL AI Agent (LLM-generated SQL, read-only execution).")
@@ -129,6 +166,69 @@ def _render_analytics(result: AnalyticsResult, *, show_sql: bool) -> None:
     if show_sql and result.sql:
         st.code(result.sql, language="sql")
     _render_rows(result.rows or [])
+    _render_analytics_heatmap(result)
+    _render_reasoning(
+        result,
+        show_reasoning_prompt=show_reasoning_prompt,
+    )
+
+
+def _render_reasoning(
+    result: AnalyticsResult,
+    *,
+    show_reasoning_prompt: bool,
+) -> None:
+    if result.reasoning:
+        st.subheader("Analytical reasoning")
+        st.markdown(result.reasoning)
+        if result.reasoning_mode:
+            st.caption(f"Reasoning mode: {result.reasoning_mode}")
+        if show_reasoning_prompt and result.reasoning_prompt:
+            with st.expander("Reasoning prompt"):
+                st.code(result.reasoning_prompt, language="text")
+
+
+def _render_analytics_heatmap(result: AnalyticsResult) -> None:
+    rows = result.rows or []
+    metric_key = _heatmap_metric_for_result(result)
+    if metric_key is None:
+        return
+    try:
+        svg = render_county_heatmap_svg(
+            _county_geojson(),
+            rows,
+            metric_key,
+            title=f"{metric_display_name(metric_key)} · query result",
+        )
+    except Exception as exc:  # noqa: BLE001 - table is still the source of truth
+        st.warning(f"County heat map unavailable for this result: {type(exc).__name__}: {exc}")
+        return
+    st.subheader("County heat map")
+    _render_svg(svg)
+
+
+def _heatmap_metric_for_result(result: AnalyticsResult) -> str | None:
+    rows = result.rows or []
+    if not _has_columns(rows, "county"):
+        return None
+
+    title = (result.fallback_title or "").lower()
+    if "normalized" in title and _has_columns(rows, "outage_per_million_ohline"):
+        return "outage_per_million_ohline"
+    if "wind" in title and _has_columns(rows, "max_peak_wind"):
+        return "max_peak_wind"
+
+    for metric_key in (
+        "total_outage",
+        "outage_per_million_ohline",
+        "peak_outage",
+        "avg_outage",
+        "max_peak_wind",
+        "avg_peak_wind",
+    ):
+        if _has_columns(rows, metric_key):
+            return metric_key
+    return None
 
 
 def _render_rows(rows: list[dict[str, object]]) -> None:
@@ -339,16 +439,98 @@ def _render_external_preview(db_path: str, *, limit: int) -> None:
         _render_bar_chart(_chart_rows(rows, "sourceRecordId", "outageCount"))
 
 
+@st.cache_data(show_spinner=False)
+def _county_geojson() -> dict[str, object]:
+    return load_county_geojson()
+
+
+def _render_county_heatmaps(db_path: str) -> None:
+    st.subheader("County heat maps")
+    db_file = Path(db_path)
+    if not db_file.is_file():
+        st.info("Build or select a SQLite database before rendering county heat maps.")
+        return
+
+    try:
+        conn = connect(db_path, create=False)
+        try:
+            storm_options = available_storm_options(conn, limit=100)
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 - keep presentation panel resilient
+        st.warning(f"County heat map unavailable: {type(exc).__name__}: {exc}")
+        return
+
+    metric_key = st.selectbox(
+        "Map metric",
+        options=tuple(COUNTY_HEATMAP_METRICS),
+        format_func=metric_display_name,
+    )
+
+    storm_by_code = {row["stormCode"]: row for row in storm_options}
+    storm_scope = st.selectbox(
+        "Storm scope",
+        options=(None, *storm_by_code),
+        format_func=lambda code: (
+            "All storms"
+            if code is None
+            else f"{code} · {storm_by_code[code]['eventDateTime']} · {storm_by_code[code]['total_outage']:,} outages"
+        ),
+    )
+
+    try:
+        conn = connect(db_path, create=False)
+        try:
+            rows = county_metric_rows(conn, metric_key, storm_code=storm_scope)
+        finally:
+            conn.close()
+        geojson = _county_geojson()
+        title_suffix = "all storms" if storm_scope is None else f"storm {storm_scope}"
+        svg = render_county_heatmap_svg(
+            geojson,
+            rows,
+            metric_key,
+            title=f"{metric_display_name(metric_key)} · {title_suffix}",
+        )
+    except Exception as exc:  # noqa: BLE001 - keep presentation panel resilient
+        st.warning(f"County heat map unavailable: {type(exc).__name__}: {exc}")
+        return
+
+    _render_svg(svg)
+    st.dataframe(rows, hide_index=True, width="stretch")
+    st.caption(
+        "Boundary source: State of Connecticut CT Counties legacy 8-county layer. "
+        f"{CT_LEGACY_COUNTY_SOURCE_URL}"
+    )
+
+
+def _render_svg(svg: str) -> None:
+    html = (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        "<style>html,body{margin:0;padding:0;background:transparent;}</style>"
+        "</head><body>"
+        f"{svg}"
+        "</body></html>"
+    )
+    encoded = base64.b64encode(html.encode("utf-8")).decode("ascii")
+    st.iframe(f"data:text/html;base64,{encoded}", height=560)
+
+
 def render_result(
     result: HandlerResult,
     *,
     show_sql: bool,
     show_rag_context: bool,
+    show_reasoning_prompt: bool,
 ) -> None:
     if isinstance(result, DataRetrievalResult):
         _render_data_retrieval(result)
     elif isinstance(result, AnalyticsResult):
-        _render_analytics(result, show_sql=show_sql)
+        _render_analytics(
+            result,
+            show_sql=show_sql,
+            show_reasoning_prompt=show_reasoning_prompt,
+        )
     elif isinstance(result, SimilarityResult):
         _render_similarity(result)
     elif isinstance(result, RagKnowledgeResult):
@@ -376,6 +558,7 @@ def main() -> None:
         "Natural-language queries routed across four agents: data retrieval, "
         "SQL analytics, storm similarity, and RAG knowledge."
     )
+    _ensure_conversation_state()
 
     # Same key-loading path as the CLI: repo-root .env or the environment.
     llm_config = openai_config()
@@ -405,6 +588,7 @@ def main() -> None:
             help="Show the prompt that would be sent to the LLM without making an API call.",
         )
         show_sql = st.checkbox("Show generated SQL", value=True)
+        show_reasoning_prompt = st.checkbox("Show reasoning prompt", value=False)
 
         st.subheader("RAG / external context")
         show_rag_context = st.checkbox("Show augmented context", value=False)
@@ -415,9 +599,9 @@ def main() -> None:
             help="Fetch NOAA/NHC/NCEI pages before RAG retrieval (network).",
         )
         use_openai_summary = not st.checkbox(
-            "Disable OpenAI summaries",
+            "Disable OpenAI summaries/reasoning",
             value=False,
-            help="Force the local extractive impact summary even if a key is set.",
+            help="Force local extractive summaries and local analytical reasoning even if a key is set.",
         )
         similarity_backend = st.selectbox(
             "Text similarity backend", options=("auto", "faiss", "exact")
@@ -428,12 +612,25 @@ def main() -> None:
             f"model: {llm_config.model}",
             help="Set WISER_OPENAI_MODEL in the repo-root .env to change the model.",
         )
+        if st.button(
+            "Clear conversation",
+            key="clear_conversation",
+            width="stretch",
+            disabled=not bool(st.session_state["messages"]),
+            help="Clear saved chat results and SQL follow-up history.",
+        ):
+            _reset_conversation_state()
+            st.rerun()
 
     routing_agent = TaskRoutingAgent()
 
-    status_tab, external_tab = st.tabs(("Demo status", "External outage staging"))
+    status_tab, map_tab, external_tab = st.tabs(
+        ("Demo status", "County heat maps", "External outage staging")
+    )
     with status_tab:
         _render_demo_status(db_path)
+    with map_tab:
+        _render_county_heatmaps(db_path)
     with external_tab:
         _render_external_feed_loader(db_path)
 
@@ -458,17 +655,6 @@ def main() -> None:
                 width="stretch",
             )
 
-    # Conversation state: full display transcript, LLM history (successful SQL
-    # turns only), and the last dispatched route for sticky follow-up routing.
-    st.session_state.setdefault("messages", [])
-    st.session_state.setdefault("sql_history", [])
-    st.session_state.setdefault("last_route", None)
-
-    if st.session_state["messages"] and st.button("Clear conversation"):
-        st.session_state["messages"] = []
-        st.session_state["sql_history"] = []
-        st.session_state["last_route"] = None
-
     # Replay the transcript on every rerun.
     for message in st.session_state["messages"]:
         with st.chat_message(message["role"]):
@@ -482,6 +668,7 @@ def main() -> None:
                     message["result"],
                     show_sql=show_sql,
                     show_rag_context=show_rag_context,
+                    show_reasoning_prompt=show_reasoning_prompt,
                 )
 
     query = st.chat_input("e.g. top counties by outage") or st.session_state.pop(
@@ -529,7 +716,12 @@ def main() -> None:
             )
             return
 
-        render_result(result, show_sql=show_sql, show_rag_context=show_rag_context)
+        render_result(
+            result,
+            show_sql=show_sql,
+            show_rag_context=show_rag_context,
+            show_reasoning_prompt=show_reasoning_prompt,
+        )
 
     st.session_state["messages"].append(
         {

@@ -18,11 +18,15 @@ flowchart TD
     SQLAI --> VALIDATE[Read-only SQL validation]
     VALIDATE --> DB
     VALIDATE -->|failure| FALLBACK[StormWeatherAnalyticsAgent]
+    DB --> REASON[StormReasoningAgent]
+    FALLBACK --> REASON
+    GEO[data/geography/ct_counties_legacy.geojson] --> VIZ[County heat maps]
+    DB --> VIZ
     ROUTER -->|similarity_search| SIM[SimilarityQueryAgent]
     SIM --> DB
     ROUTER -->|rag_knowledge| RAG
-    DB --> OUT[Structured result]
-    FALLBACK --> OUT
+    REASON --> OUT[Structured result]
+    VIZ --> UI[Streamlit]
     RAG --> OUT
     OUT --> CLI[CLI]
     OUT --> UI[Streamlit]
@@ -95,9 +99,10 @@ python3 scripts/bootstrap_wiser.py
 
 | Agent | Responsibility | Guardrail |
 |---|---|---|
-| `TaskRoutingAgent` | Classifies user intent into route enums. | Ground-truth fixture with 43 route cases. |
+| `TaskRoutingAgent` | Classifies user intent into route enums. | Ground-truth fixture with 46 route cases. |
 | `DataRetrievalProcessingAgent` | Builds/refreshes normalized CSVs and SQLite DB. | Schema and table-count tests. |
 | `SqlAiAgent` | Converts natural language analytics questions into SQLite `SELECT` queries. | Read-only validation and semantic SQL tests. |
+| `StormReasoningAgent` | Explains validated SQL/fallback rows with row-grounded reasoning and caveats. | Prompt/fallback tests. |
 | `StormWeatherAnalyticsAgent` | Deterministic analytics fallback. | Fixed query wrappers. |
 | `SimilarityQueryAgent` | Finds similar historical storms for a county. | Feature parsing and math tests. |
 | `RAGKnowledgeAgent` | Answers grounded documentation/context questions. | Citations and context tests. |
@@ -106,7 +111,7 @@ Route priority:
 
 1. RAG explanation/documentation queries, unless numeric similarity parameters are present.
 2. Similarity search when query uses similarity wording or known feature aliases.
-3. Explicit data-management commands such as build, load, normalize, ingest, refresh, raw, or CSV.
+3. Explicit data-management commands such as build, load, file/database normalize, ingest, refresh, raw, or CSV.
 4. Weather analytics.
 5. Data/database metadata fallback.
 6. Unknown route with examples.
@@ -136,6 +141,19 @@ python3 scripts/wiser_cli.py --evaluate-sql
 
 The SQL ground-truth fixture has 27 semantic cases. Tests compare result rows, not just SQL strings.
 
+After rows are returned, `StormReasoningAgent` builds a second prompt from only
+the user question, validated SQL, and returned rows. It is tuned to answer
+analytical questions such as:
+
+- which county was affected most
+- why one county had higher outage despite lower wind
+- whether wind severity and outage severity rank the same
+- how results change under available normalization
+
+Population is not currently in the WISER schema. If a question asks for
+population-normalized results, WISER says that directly and uses the available
+`County.ohLine` exposure normalization only as an infrastructure proxy.
+
 Example:
 
 ```bash
@@ -150,6 +168,28 @@ WISER_OPENAI_MODEL=gpt-5.5
 ```
 
 Never commit API keys.
+
+## County Heat Maps
+
+The Streamlit app includes a `County heat maps` tab. It loads
+`data/geography/ct_counties_legacy.geojson`, the State of Connecticut legacy
+8-county boundary layer, so the map matches the dataset county names:
+
+`Fairfield`, `Hartford`, `Litchfield`, `Middlesex`, `New Haven`, `New London`,
+`Tolland`, `Windham`
+
+Supported heat-map metrics:
+
+- total outage trouble spots
+- average outage trouble spots
+- peak outage trouble spots
+- average peak wind speed
+- maximum peak wind speed
+- outage trouble spots per 1,000,000 `ohLine`
+
+The renderer is dependency-free: `src/wiser/visualization.py` loads GeoJSON,
+aggregates county metrics from SQLite, projects lon/lat coordinates into an
+inline SVG, and includes a legend plus county tooltips.
 
 ## Storm Similarity
 
@@ -284,6 +324,8 @@ Run analytics:
 python3 scripts/wiser_cli.py "top counties by outage" --limit 5
 python3 scripts/wiser_cli.py "top storms by outage" --limit 5
 python3 scripts/wiser_cli.py "history for county Hartford" --limit 10
+python3 scripts/wiser_cli.py "which county was affected the most overall?" --limit 8
+python3 scripts/wiser_cli.py "normalize outages by population" --limit 8
 ```
 
 Run SQL AI dry-run:
@@ -307,6 +349,7 @@ streamlit run streamlit_app.py
 The Streamlit interface includes presentation-ready tabs:
 
 - `Demo status`: routing and SQL ground-truth pass metrics, external feed readiness, and documentation location.
+- `County heat maps`: legacy CT county choropleths for outage, wind, and exposure-normalized metrics.
 - `External outage staging`: one-click loading for the EagleEye and National Grid sample CSVs plus a preview of staged rows.
 
 For a no-install professor walkthrough, open `mock_interface/index.html`. It
@@ -335,6 +378,8 @@ Important test areas:
 - data pipeline normalization
 - task routing ground truth
 - SQL AI validation and semantic ground truth
+- storm reasoning prompts and local fallback analysis
+- county heat-map aggregation and SVG rendering
 - handler dispatch and fallback behavior
 - storm similarity math
 - RAG retrieval and citations

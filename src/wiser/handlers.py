@@ -22,6 +22,7 @@ from wiser.agents.data_retrieval_processing_agent import DataRetrievalProcessing
 from wiser.agents.rag_knowledge_agent import RAGKnowledgeAgent
 from wiser.agents.similarity_query_agent import SimilarityQueryAgent
 from wiser.agents.sql_ai_agent import SqlAiAgent, SqlValidationError
+from wiser.agents.storm_reasoning_agent import StormReasoningAgent
 from wiser.agents.storm_weather_analytics_agent import StormWeatherAnalyticsAgent
 from wiser.agents.task_routing_agent import Route
 from wiser.cli_helpers import FEATURE_ALIASES, validate_wind_positive
@@ -39,6 +40,7 @@ from wiser.external_sources import (
 from wiser.openai_summarizer import openai_config
 from wiser.query_engine import county_historical_count
 from wiser.rag import DEFAULT_RAG_SOURCES, RagIndexSummary, RagResult
+from wiser.visualization import county_metric_rows
 
 # Shared defaults; the CLI argparse flags and the Streamlit sidebar both
 # reference these so interface defaults cannot drift apart.
@@ -49,7 +51,10 @@ DEFAULT_MAX_LINKED_PDFS = 50
 
 EXAMPLE_QUERIES: tuple[str, ...] = (
     "build database from csv",
+    "which county was affected the most overall?",
+    "for storm 2020080406, why did Hartford have more outages than New Haven despite lower wind?",
     "top counties by outage",
+    "normalize county outages by overhead line exposure",
     "top storms by outage",
     "history for county Hartford",
     "find storms similar to wind=9.2, precip=45 in Fairfield",
@@ -186,6 +191,9 @@ class AnalyticsResult:
     sql: str | None = None
     rows: list[dict[str, object]] | None = None
     answer: str = ""
+    reasoning: str = ""
+    reasoning_prompt: str | None = None
+    reasoning_mode: str | None = None
     dry_run_prompt: str | None = None
     used_fallback: bool = False
     fallback_title: str | None = None
@@ -327,11 +335,12 @@ def handle_weather_analytics(ctx: HandlerContext) -> AnalyticsResult:
 
     try:
         result = agent.run(ctx.query, ctx.conn, limit=ctx.limit, history=history)
-        return AnalyticsResult(
+        analytics = AnalyticsResult(
             sql=result["sql"],
             rows=result["rows"],
             answer=result["answer"],
         )
+        return _attach_reasoning(ctx, analytics)
     except SqlValidationError as exc:
         warning = f"SQL AI Agent validation failed ({exc}) — falling back to fixed queries"
     except Exception as exc:  # noqa: BLE001
@@ -341,12 +350,49 @@ def handle_weather_analytics(ctx: HandlerContext) -> AnalyticsResult:
 
     fallback = _weather_analytics_fallback(ctx)
     fallback.notices.insert(0, Notice(f"[Warning: {warning}]", level="warning"))
-    return fallback
+    return _attach_reasoning(ctx, fallback)
+
+
+def _attach_reasoning(
+    ctx: HandlerContext,
+    result: AnalyticsResult,
+) -> AnalyticsResult:
+    if result.dry_run_prompt is not None or not result.rows:
+        return result
+
+    reasoning_agent = StormReasoningAgent(
+        model=getattr(ctx, "openai_model", None) or getattr(ctx, "sql_model", None)
+    )
+    reasoning = reasoning_agent.run(
+        ctx.query,
+        sql=result.sql,
+        rows=result.rows,
+        use_openai=getattr(ctx, "use_openai_summary", True),
+    )
+    result.reasoning = reasoning.answer
+    result.reasoning_prompt = reasoning.prompt
+    result.reasoning_mode = reasoning.mode
+    if reasoning.openai_error:
+        result.notices.append(
+            Notice(
+                f"OpenAI reasoning failed ({reasoning.openai_error}); using local analytical fallback.",
+                level="warning",
+            )
+        )
+    return result
 
 
 def _weather_analytics_fallback(ctx: HandlerContext) -> AnalyticsResult:
     text = ctx.query.lower()
     county = parse_county_name(ctx.query)
+
+    comparison_rows = _reasoning_comparison_rows(ctx)
+    if comparison_rows is not None:
+        return AnalyticsResult(
+            used_fallback=True,
+            fallback_title="County comparison for analytical reasoning:",
+            rows=comparison_rows,
+        )
 
     if "top storm" in text:
         return AnalyticsResult(
@@ -355,6 +401,43 @@ def _weather_analytics_fallback(ctx: HandlerContext) -> AnalyticsResult:
             rows=ctx.analytics_agent.top_storms_by_outage_from_db(
                 ctx.conn, limit=ctx.limit
             ),
+        )
+
+    if "normal" in text or "per capita" in text or "per-capita" in text:
+        notices: list[Notice] = []
+        if "population" in text or "per capita" in text or "per-capita" in text:
+            notices.append(
+                Notice(
+                    "Population is not in the current WISER schema; showing "
+                    "outages normalized by overhead-line exposure instead."
+                )
+            )
+        return AnalyticsResult(
+            used_fallback=True,
+            fallback_title="County outages normalized by overhead-line exposure:",
+            rows=county_metric_rows(
+                ctx.conn,
+                "outage_per_million_ohline",
+            )[: ctx.limit],
+            notices=notices,
+        )
+
+    if "affected" in text and ("county" in text or "counties" in text):
+        return AnalyticsResult(
+            used_fallback=True,
+            fallback_title="County impact summary:",
+            rows=county_metric_rows(ctx.conn, "total_outage")[: ctx.limit],
+        )
+
+    if (
+        "wind" in text
+        and ("county" in text or "counties" in text)
+        and any(keyword in text for keyword in ("highest", "maximum", "max", "peak"))
+    ):
+        return AnalyticsResult(
+            used_fallback=True,
+            fallback_title="County wind and outage summary:",
+            rows=county_metric_rows(ctx.conn, "max_peak_wind")[: ctx.limit],
         )
 
     if "top" in text and ("county" in text or "counties" in text):
@@ -388,6 +471,104 @@ def _weather_analytics_fallback(ctx: HandlerContext) -> AnalyticsResult:
             )
         ],
     )
+
+
+def _reasoning_comparison_rows(ctx: HandlerContext) -> list[dict[str, object]] | None:
+    text = ctx.query.lower()
+    if not ("why" in text or "despite" in text or "compare" in text):
+        return None
+
+    counties = [
+        county
+        for county in _CT_COUNTIES
+        if re.search(rf"\b{re.escape(county)}\b", ctx.query, flags=re.IGNORECASE)
+    ]
+    if len(counties) < 2:
+        return None
+
+    storm_match = re.search(r"\b(\d{10})\b", ctx.query)
+    if storm_match:
+        placeholders = ", ".join("?" for _ in counties)
+        params: list[object] = [
+            int(storm_match.group(1)),
+            *[county.lower() for county in counties],
+        ]
+        rows = ctx.conn.execute(
+            f"""
+            SELECT
+                w.county,
+                w.stormCode,
+                w.outage,
+                ROUND(w.peakWSPD10, 2) AS peakWSPD10,
+                ROUND(w.sumAFWA_TOTPRECIP, 2) AS sumAFWA_TOTPRECIP,
+                w.wgt5,
+                w.wgt9,
+                w.wgt13,
+                w.wgt18,
+                c.ohLine,
+                ROUND(w.outage * 1000000.0 / c.ohLine, 2)
+                    AS outage_per_million_ohline
+            FROM WeatherData w
+            JOIN County c ON LOWER(c.county) = LOWER(w.county)
+            WHERE w.stormCode = ?
+              AND LOWER(w.county) IN ({placeholders})
+            ORDER BY w.outage DESC
+            """,
+            params,
+        ).fetchall()
+        return [_comparison_row(row) for row in rows]
+
+    placeholders = ", ".join("?" for _ in counties)
+    rows = ctx.conn.execute(
+        f"""
+        SELECT
+            w.county,
+            SUM(w.outage) AS total_outage,
+            ROUND(AVG(w.outage), 2) AS avg_outage,
+            MAX(w.outage) AS peak_outage,
+            ROUND(AVG(w.peakWSPD10), 2) AS avg_peak_wind,
+            ROUND(MAX(w.peakWSPD10), 2) AS max_peak_wind,
+            c.ohLine,
+            ROUND(SUM(w.outage) * 1000000.0 / c.ohLine, 2)
+                AS outage_per_million_ohline
+        FROM WeatherData w
+        JOIN County c ON LOWER(c.county) = LOWER(w.county)
+        WHERE LOWER(w.county) IN ({placeholders})
+        GROUP BY w.county, c.ohLine
+        ORDER BY total_outage DESC
+        """,
+        [county.lower() for county in counties],
+    ).fetchall()
+    return [_aggregate_comparison_row(row) for row in rows]
+
+
+def _comparison_row(row: Sequence[object]) -> dict[str, object]:
+    return {
+        "county": row[0],
+        "stormCode": int(row[1]),
+        "outage": int(row[2]),
+        "peakWSPD10": float(row[3]),
+        "sumAFWA_TOTPRECIP": float(row[4]),
+        "wgt5": int(row[5]),
+        "wgt9": int(row[6]),
+        "wgt13": int(row[7]),
+        "wgt18": int(row[8]),
+        "ohLine": int(row[9]),
+        "outage_per_million_ohline": float(row[10]),
+    }
+
+
+def _aggregate_comparison_row(row: Sequence[object]) -> dict[str, object]:
+    return {
+        "county": row[0],
+        "total_outage": int(row[1]),
+        "avg_outage": float(row[2]),
+        "peak_outage": int(row[3]),
+        "avg_peak_wind": float(row[4]),
+        "max_peak_wind": float(row[5]),
+        "ohLine": int(row[6]),
+        "outage_per_million_ohline": float(row[7]),
+    }
 
 
 def handle_similarity_search(ctx: HandlerContext) -> SimilarityResult:

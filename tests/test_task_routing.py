@@ -33,6 +33,16 @@ class TestTaskRoutingAgent(unittest.TestCase):
 
         self.assertEqual(decision.route, Route.WEATHER_ANALYTICS)
 
+    def test_routes_affected_most_to_weather_analytics(self):
+        decision = self.agent.route("which county was affected the most overall?")
+
+        self.assertEqual(decision.route, Route.WEATHER_ANALYTICS)
+
+    def test_routes_normalization_to_weather_analytics(self):
+        decision = self.agent.route("normalize outages by population")
+
+        self.assertEqual(decision.route, Route.WEATHER_ANALYTICS)
+
     def test_keeps_database_build_as_data_retrieval(self):
         decision = self.agent.route("build sqlite database from csv")
 

@@ -58,7 +58,16 @@ class TaskRoutingAgent:
     ANALYTICS_KEYWORDS = {
         "analyze",
         "analysis",
+        "affected",
+        "effect",
+        "effects",
+        "exposure",
         "predict",
+        "normalize",
+        "normalized",
+        "population",
+        "per capita",
+        "per-capita",
         "outage",
         "storm",
         "weather",
@@ -150,6 +159,26 @@ class TaskRoutingAgent:
         )
 
     def _looks_like_data_management(self, text: str) -> bool:
+        if (
+            "normalize" in text
+            and any(
+                keyword in text
+                for keyword in (
+                    "outage",
+                    "outages",
+                    "population",
+                    "per capita",
+                    "per-capita",
+                    "county",
+                    "counties",
+                )
+            )
+            and not any(
+                keyword in text
+                for keyword in ("csv", "raw", "source data", "database", "db", "sqlite")
+            )
+        ):
+            return False
         if any(keyword in text for keyword in self.DATA_ACTION_KEYWORDS):
             return True
         return "retrieve" in text and any(

@@ -155,6 +155,26 @@ class TestHandleWeatherAnalytics(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
+    def _insert_county_weather(
+        self,
+        county: str,
+        *,
+        oh_line: int,
+        outage: int,
+        wind: float,
+        storm_code: int = 2012102806,
+    ) -> None:
+        self.conn.execute(
+            "INSERT INTO County(county, ohLine) VALUES(?, ?)",
+            (county, oh_line),
+        )
+        self.conn.execute(
+            "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,"
+            " wgt5, wgt9, wgt13, wgt18, outage) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (storm_code, county, 45.0, wind, 4, 1, 0, 0, outage),
+        )
+        self.conn.commit()
+
     def test_llm_success_populates_sql_rows_answer(self):
         payload = {
             "sql": "SELECT 1;",
@@ -231,6 +251,74 @@ class TestHandleWeatherAnalytics(unittest.TestCase):
         self.assertIsNone(result.rows)
         self.assertEqual(len(result.notices), 2)
         self.assertIn("I can't answer this", result.notices[1].text)
+
+    def test_affected_most_fallback_returns_reasoning_rows(self):
+        ctx = _make_ctx("which county was affected the most overall?", self.conn)
+        with patch(
+            "wiser.agents.sql_ai_agent.SqlAiAgent.run",
+            side_effect=SqlValidationError("mock failure"),
+        ):
+            result = handle_weather_analytics(ctx)
+
+        self.assertTrue(result.used_fallback)
+        self.assertEqual(result.fallback_title, "County impact summary:")
+        self.assertEqual(result.rows[0]["county"], "Fairfield")
+        self.assertIn("total_outage", result.rows[0])
+        self.assertIn("Fairfield", result.reasoning)
+
+    def test_population_normalization_fallback_uses_line_exposure(self):
+        ctx = _make_ctx("normalize outages by population", self.conn)
+        with patch(
+            "wiser.agents.sql_ai_agent.SqlAiAgent.run",
+            side_effect=SqlValidationError("mock failure"),
+        ):
+            result = handle_weather_analytics(ctx)
+
+        self.assertTrue(result.used_fallback)
+        self.assertIn("normalized", result.fallback_title)
+        self.assertIn("outage_per_million_ohline", result.rows[0])
+        self.assertIn("Population is not in the current WISER schema", result.notices[1].text)
+        self.assertIn("Population is not present", result.reasoning)
+
+    def test_highest_wind_fallback_returns_wind_and_outage_summary(self):
+        ctx = _make_ctx(
+            "which county had the highest maximum wind and did it also have the highest outages?",
+            self.conn,
+        )
+        with patch(
+            "wiser.agents.sql_ai_agent.SqlAiAgent.run",
+            side_effect=SqlValidationError("mock failure"),
+        ):
+            result = handle_weather_analytics(ctx)
+
+        self.assertTrue(result.used_fallback)
+        self.assertEqual(result.fallback_title, "County wind and outage summary:")
+        self.assertIn("max_peak_wind", result.rows[0])
+        self.assertIn("total_outage", result.rows[0])
+
+    def test_why_despite_fallback_returns_county_comparison(self):
+        self._insert_county_weather(
+            "Hartford",
+            oh_line=5869550,
+            outage=500,
+            wind=9.0,
+        )
+        ctx = _make_ctx(
+            "for storm 2012102806, why did Hartford have more outages than "
+            "Fairfield despite lower wind?",
+            self.conn,
+        )
+        with patch(
+            "wiser.agents.sql_ai_agent.SqlAiAgent.run",
+            side_effect=SqlValidationError("mock failure"),
+        ):
+            result = handle_weather_analytics(ctx)
+
+        self.assertTrue(result.used_fallback)
+        self.assertEqual(result.fallback_title, "County comparison for analytical reasoning:")
+        self.assertEqual(result.rows[0]["county"], "Hartford")
+        self.assertEqual(result.rows[0]["stormCode"], 2012102806)
+        self.assertIn("non-linear outage relationship", result.reasoning)
 
 
 # ---------------------------------------------------------------------------

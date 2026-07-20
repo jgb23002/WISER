@@ -87,6 +87,20 @@ class TestStreamlitApp(unittest.TestCase):
     def test_loads_without_crashing(self):
         self._start_app()
 
+    def test_app_version_change_clears_stale_conversation(self):
+        at = self._start_app()
+        at.session_state["app_state_version"] = "old-build"
+        at.session_state["messages"] = [{"role": "user", "content": "old warning"}]
+        at.session_state["sql_history"] = ["old sql turn"]
+        at.session_state["last_route"] = "weather_analytics"
+
+        at.run()
+
+        self.assertFalse(at.exception, f"app crashed on rerun: {at.exception}")
+        self.assertEqual(at.session_state["messages"], [])
+        self.assertEqual(at.session_state["sql_history"], [])
+        self.assertIsNone(at.session_state["last_route"])
+
     def test_similarity_query_renders_results(self):
         at = self._start_app()
         self._run_query(at, "find storms similar to wind=9.2 in Fairfield")

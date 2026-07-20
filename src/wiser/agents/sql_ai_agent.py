@@ -49,7 +49,15 @@ RULES:
   "storms above 13 m/s" maps to wgt13 > 0. NOT peakWSPD10 > 13.
 - peakWSPD10 = actual peak wind speed at 10m height. "fastest storm" = MAX(peakWSPD10).
 - outage = number of trouble spots dispatched. "worst" = MAX or SUM(outage).
+- "affected most" means highest outage impact unless the question names another metric.
+- County.ohLine = overhead-line exposure. It can be used to normalize outages by
+  infrastructure exposure: outage per 1,000,000 ohLine = outage * 1000000.0 / ohLine.
+- Population is not present in the current schema. NEVER invent population columns
+  or values. If asked for population-normalized results, return outage totals and
+  available ohLine exposure-normalized values so the reasoning layer can explain
+  the missing population data.
 - JOIN WeatherData to Storm whenever eventDateTime or eventLength is needed.
+- JOIN WeatherData to County whenever ohLine or exposure-normalized values are needed.
 - LIMIT precedence: a number in the question ("top 5", "just 3") ALWAYS wins;
   otherwise, on a follow-up, keep the previous SQL's LIMIT; otherwise use the
   default row limit provided with the question.
@@ -98,6 +106,15 @@ A: SELECT stormCode, COUNT(DISTINCT county) AS county_count FROM WeatherData GRO
 
 Q: Which storms lasted longer than 48 hours?
 A: SELECT s.stormCode, s.eventDateTime, s.eventLength FROM Storm s WHERE s.eventLength > 48 ORDER BY s.eventLength DESC LIMIT 10;
+
+Q: Which county was affected the most overall?
+A: SELECT w.county, SUM(w.outage) AS total_outage, ROUND(AVG(w.peakWSPD10), 2) AS avg_peak_wind, c.ohLine, ROUND(SUM(w.outage) * 1000000.0 / c.ohLine, 2) AS outage_per_million_ohline FROM WeatherData w JOIN County c ON LOWER(c.county) = LOWER(w.county) GROUP BY w.county, c.ohLine ORDER BY total_outage DESC LIMIT 10;
+
+Q: Normalize county outages by overhead line exposure.
+A: SELECT w.county, SUM(w.outage) AS total_outage, c.ohLine, ROUND(SUM(w.outage) * 1000000.0 / c.ohLine, 2) AS outage_per_million_ohline FROM WeatherData w JOIN County c ON LOWER(c.county) = LOWER(w.county) GROUP BY w.county, c.ohLine ORDER BY outage_per_million_ohline DESC LIMIT 10;
+
+Q: For storm 2020080406, why did Hartford have more outages than New Haven despite lower wind?
+A: SELECT w.county, w.stormCode, w.outage, w.peakWSPD10, w.sumAFWA_TOTPRECIP, w.wgt5, w.wgt9, w.wgt13, w.wgt18, c.ohLine, ROUND(w.outage * 1000000.0 / c.ohLine, 2) AS outage_per_million_ohline FROM WeatherData w JOIN County c ON LOWER(c.county) = LOWER(w.county) WHERE w.stormCode = 2020080406 AND LOWER(w.county) IN ('hartford', 'new haven') ORDER BY w.outage DESC;
 
 FOLLOW-UP EXAMPLE (one conversation; each answer refines the previous SQL):
 Q: What were the top 5 storms by precipitation in Hartford?
@@ -275,9 +292,8 @@ def _call_chat_llm(
     body = {
         "model": model,
         "messages": messages,
-        "max_tokens": 512,
-        "temperature": 0,
     }
+    _add_generation_options(body, model, max_tokens=512, temperature=0)
     data = json.dumps(body).encode("utf-8")
     req = Request(
         OPENAI_CHAT_URL,
@@ -303,6 +319,25 @@ def _call_chat_llm(
         return payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise SqlValidationError(f"Unexpected OpenAI response shape: {exc}") from exc
+
+
+def _add_generation_options(
+    body: dict[str, Any],
+    model: str,
+    *,
+    max_tokens: int,
+    temperature: float,
+) -> None:
+    if _uses_completion_token_limit(model):
+        body["max_completion_tokens"] = max_tokens
+        return
+    body["max_tokens"] = max_tokens
+    body["temperature"] = temperature
+
+
+def _uses_completion_token_limit(model: str) -> bool:
+    normalized = model.lower()
+    return normalized.startswith(("gpt-5", "o1", "o3", "o4"))
 
 
 def _clean_sql(raw: str) -> str:
