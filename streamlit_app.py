@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 REPO_ROOT = Path(__file__).resolve().parent
 SRC_DIR = REPO_ROOT / "src"
@@ -504,16 +505,18 @@ def _render_county_heatmaps(db_path: str) -> None:
     )
 
 
-def _render_svg(svg: str) -> None:
-    html = (
-        "<!doctype html><html><head><meta charset=\"utf-8\">"
-        "<style>html,body{margin:0;padding:0;background:transparent;}</style>"
-        "</head><body>"
-        f"{svg}"
-        "</body></html>"
+def _render_svg(svg):
+    encoded = base64.b64encode(svg.encode("utf-8")).decode("utf-8")
+
+    components.iframe(
+        f"data:text/html;base64,{encoded}",
+        height=560
     )
-    encoded = base64.b64encode(html.encode("utf-8")).decode("ascii")
-    st.iframe(f"data:text/html;base64,{encoded}", height=560)
+    #encoded = base64.b64encode(html.encode("utf-8")).decode("ascii")
+    components.iframe(
+        f"data:text/html;base64,{encoded}",
+        height=560
+    )
 
 
 def render_result(
