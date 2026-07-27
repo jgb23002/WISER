@@ -286,6 +286,119 @@
     "notes": "Unknown wgt parameter should not route to similarity; storm wording remains analytics."
   },
   {
+    "id": "storm_summary_001",
+    "query": "storm summary for 2020080406",
+    "expected_route": "storm_summary",
+    "category": "storm_scoped",
+    "notes": "Canonical storm summary query.",
+    "expected_reason_contains": "storm"
+  },
+  {
+    "id": "storm_summary_002",
+    "query": "summarize storm 2020080406",
+    "expected_route": "storm_summary",
+    "category": "routing_priority",
+    "notes": "Storm identifier beats the RAG 'summarize' keyword."
+  },
+  {
+    "id": "storm_summary_003",
+    "query": "describe storm 2020080406",
+    "expected_route": "storm_summary",
+    "category": "routing_priority",
+    "notes": "Storm identifier beats the RAG 'describe' keyword."
+  },
+  {
+    "id": "storm_summary_004",
+    "query": "what was the impact of storm 2012102806",
+    "expected_route": "storm_summary",
+    "category": "routing_priority",
+    "notes": "Storm identifier beats the RAG 'impact' keyword."
+  },
+  {
+    "id": "storm_summary_005",
+    "query": "tell me about the storm on 2020-08-04",
+    "expected_route": "storm_summary",
+    "category": "storm_scoped",
+    "notes": "ISO date resolves as a storm identifier."
+  },
+  {
+    "id": "storm_summary_006",
+    "query": "storm 2020080406",
+    "expected_route": "storm_summary",
+    "category": "storm_scoped",
+    "notes": "Bare storm identifier defaults to the summary intent."
+  },
+  {
+    "id": "storm_summary_007",
+    "query": "storm summary for Hartford in 2020080406",
+    "expected_route": "storm_summary",
+    "category": "storm_scoped",
+    "notes": "County-scoped storm summary."
+  },
+  {
+    "id": "storm_rank_001",
+    "query": "how does storm 2020080406 rank",
+    "expected_route": "storm_ranking",
+    "category": "routing_priority",
+    "notes": "Storm identifier beats the RAG 'how does' keyword."
+  },
+  {
+    "id": "storm_rank_002",
+    "query": "where does storm 2020080406 rank out of all storms",
+    "expected_route": "storm_ranking",
+    "category": "storm_scoped",
+    "notes": "Ranking wording with an explicit total."
+  },
+  {
+    "id": "storm_rank_003",
+    "query": "what percentile is storm 2011082800 for wind",
+    "expected_route": "storm_ranking",
+    "category": "storm_scoped",
+    "notes": "Percentile wording selects the ranking intent."
+  },
+  {
+    "id": "storm_rank_004",
+    "query": "how does storm 2020080406 rank in Fairfield",
+    "expected_route": "storm_ranking",
+    "category": "storm_scoped",
+    "notes": "County-scoped ranking."
+  },
+  {
+    "id": "storm_compare_001",
+    "query": "compare storm 2020080406 and 2011082800",
+    "expected_route": "storm_comparison",
+    "category": "storm_scoped",
+    "notes": "Mode A: two storm codes plus a comparison cue."
+  },
+  {
+    "id": "storm_compare_002",
+    "query": "storm 2020080406 vs storm 2012102806",
+    "expected_route": "storm_comparison",
+    "category": "storm_scoped",
+    "notes": "Mode A via 'vs'."
+  },
+  {
+    "id": "storm_compare_003",
+    "query": "difference between 2020-08-04 and 2011-08-28 storms",
+    "expected_route": "storm_comparison",
+    "category": "storm_scoped",
+    "notes": "Mode A with two ISO dates."
+  },
+  {
+    "id": "routing_guard_001",
+    "query": "find storms similar to 2020080406 wind=9.2",
+    "expected_route": "similarity_search",
+    "category": "routing_priority",
+    "notes": "Numeric params and 'similar' both keep similarity ahead of the storm intents."
+  },
+  {
+    "id": "routing_guard_002",
+    "query": "explain the methodology behind storm 2020080406",
+    "expected_route": "storm_summary",
+    "category": "routing_priority",
+    "notes": "Documented behaviour change: naming a storm outranks a documentation verb."
+  },
+  {
     "id": "unknown_001",
     "query": "hello",
     "expected_route": "unknown",

@@ -27,7 +27,7 @@ class TestTaskRoutingGroundTruth(unittest.TestCase):
         cls.agent = TaskRoutingAgent()
 
     def test_fixture_has_acceptance_count(self):
-        self.assertGreaterEqual(len(self.cases), 40)
+        self.assertGreaterEqual(len(self.cases), 58)
 
     def test_fixture_ids_are_unique(self):
         ids = [case["id"] for case in self.cases]
