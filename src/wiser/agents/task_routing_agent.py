@@ -256,10 +256,9 @@ class TaskRoutingAgent:
         Ranking is checked before summary because "give me a summary of how
         storm X ranks" is a ranking request; summary is the general fallback.
         """
-        # Numeric feature parameters and "similar" phrasing belong to the
-        # similarity search, which keeps priority over the storm intents.
-        if self._NUMERIC_PARAM_PATTERN.search(query):
-            return None
+        # "similar" phrasing belongs to the similarity search unconditionally,
+        # even when a storm is named: "find storms similar to 2020080406" is a
+        # similarity request.
         if self._matches_word(text, ("similar",)):
             return None
 
@@ -268,6 +267,16 @@ class TaskRoutingAgent:
             return None
 
         has_comparison_cue = self._matches_word(text, self.STORM_COMPARISON_CUES)
+        has_forecast_params = bool(self._NUMERIC_PARAM_PATTERN.search(query))
+
+        # Numeric feature parameters normally hand the query to the similarity
+        # search. The one exception is Mode B: a forecast compared against a
+        # NAMED storm is a comparison, not a neighbour list. Comparing a
+        # forecast to the record as a whole names no storm and stays on the
+        # similarity route, where the handler renders it as a comparison —
+        # a presentation choice rather than a routing fight.
+        if has_forecast_params and not (has_comparison_cue and identifiers):
+            return None
 
         if len(identifiers) >= 2 and has_comparison_cue:
             return RouteDecision(
@@ -275,6 +284,15 @@ class TaskRoutingAgent:
                 reason=(
                     "Matched storm-scoped comparison intent "
                     "(two storm identifiers + comparison cue)."
+                ),
+            )
+
+        if len(identifiers) == 1 and has_comparison_cue and has_forecast_params:
+            return RouteDecision(
+                route=Route.STORM_COMPARISON,
+                reason=(
+                    "Matched storm-scoped comparison intent "
+                    "(forecast parameters + storm identifier)."
                 ),
             )
 

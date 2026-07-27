@@ -399,6 +399,48 @@
     "notes": "Documented behaviour change: naming a storm outranks a documentation verb."
   },
   {
+    "id": "storm_forecast_001",
+    "query": "compare an upcoming storm with wind=12ms to storm 2020080406",
+    "expected_route": "storm_comparison",
+    "category": "gate_boundary",
+    "notes": "Mode B: comparison cue plus a storm identifier makes the numeric-param gate yield."
+  },
+  {
+    "id": "storm_forecast_002",
+    "query": "how would a forecast storm with wind=12ms, precip=30mm compare to 2011082800 in Fairfield",
+    "expected_route": "storm_comparison",
+    "category": "gate_boundary",
+    "notes": "Mode B, county-scoped."
+  },
+  {
+    "id": "storm_forecast_003",
+    "query": "how does an upcoming storm with wind=12ms compare to the historical record",
+    "expected_route": "similarity_search",
+    "category": "gate_boundary",
+    "notes": "No storm named, so this stays similarity; the handler renders it as a comparison."
+  },
+  {
+    "id": "storm_forecast_004",
+    "query": "find storms similar to wind=12ms like storm 2020080406",
+    "expected_route": "similarity_search",
+    "category": "gate_boundary",
+    "notes": "'similar' keeps similarity priority even with an identifier present."
+  },
+  {
+    "id": "storm_forecast_005",
+    "query": "compare storms with wind=9.2ms",
+    "expected_route": "similarity_search",
+    "category": "gate_boundary",
+    "notes": "Comparison cue but no storm identifier, so the gate does not yield."
+  },
+  {
+    "id": "storm_forecast_006",
+    "query": "compare storm 2020080406 and storm 2011082800",
+    "expected_route": "storm_comparison",
+    "category": "gate_boundary",
+    "notes": "Mode A is unaffected by the gate revision."
+  },
+  {
     "id": "unknown_001",
     "query": "hello",
     "expected_route": "unknown",

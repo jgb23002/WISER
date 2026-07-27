@@ -162,3 +162,80 @@ class TestStormIntentsDoNotRegressExistingRoutes(unittest.TestCase):
                 self.assertIs(
                     self.agent.route(query).route, Route.SIMILARITY_SEARCH
                 )
+
+
+class TestGateZeroBoundary(unittest.TestCase):
+    """Where numeric feature params stop meaning "similarity search".
+
+    Mode B queries carry numeric params, a comparison cue, and often a storm
+    identifier. The boundary is drawn on whether a specific database storm is
+    NAMED: a forecast compared against one is a comparison; a forecast compared
+    against the record as a whole is the similarity search, rendered
+    differently by the handler.
+    """
+
+    def setUp(self):
+        self.agent = TaskRoutingAgent()
+
+    def test_forecast_against_a_named_storm_is_a_comparison(self):
+        for query in (
+            "compare an upcoming storm with wind=12ms to storm 2020080406",
+            "how would a forecast storm with wind=12ms compare to 2011082800",
+            "storm 2020080406 versus a forecast with precip=30mm",
+        ):
+            with self.subTest(query=query):
+                self.assertIs(
+                    self.agent.route(query).route, Route.STORM_COMPARISON
+                )
+
+    def test_forecast_against_the_record_stays_on_similarity(self):
+        """No storm named: this IS the similarity search. The handler upgrades
+        the presentation; the route does not change."""
+        for query in (
+            "how does an upcoming storm with wind=12ms compare to the historical record",
+            "compare storms with wind=9.2ms",
+            "what past storms match a forecast of wind=12ms",
+        ):
+            with self.subTest(query=query):
+                self.assertIs(
+                    self.agent.route(query).route, Route.SIMILARITY_SEARCH
+                )
+
+    def test_similar_phrasing_wins_even_with_an_identifier(self):
+        for query in (
+            "find storms similar to wind=12ms like storm 2020080406",
+            "find storms similar to 2020080406",
+            "storms similar to 2020080406 with wind=9.2ms",
+        ):
+            with self.subTest(query=query):
+                self.assertIs(
+                    self.agent.route(query).route, Route.SIMILARITY_SEARCH
+                )
+
+    def test_every_existing_similarity_fixture_is_unmoved(self):
+        """The gate revision must not pull a single existing query across."""
+        for query in (
+            "find storms similar to wind=9.2, precip=45 in Fairfield",
+            "rank storms similar to wind=6.5",
+            "find storm similarity wind=9.2",
+            "storms like wgt18=4 in Hartford",
+            "similar to precipitation=51.5 for New Haven",
+            "find storms with peakwspd10=10.2 and wgt9=2",
+            "similar to wind_speed=8.4 in Windham",
+            "find storms similar to wgt5=12 wgt13=1",
+        ):
+            with self.subTest(query=query):
+                self.assertIs(
+                    self.agent.route(query).route, Route.SIMILARITY_SEARCH
+                )
+
+    def test_mode_a_is_unaffected_by_the_gate_revision(self):
+        for query in (
+            "compare storm 2020080406 and 2011082800",
+            "storm 2020080406 vs storm 2012102806",
+            "difference between 2020-08-04 and 2011-08-28 storms",
+        ):
+            with self.subTest(query=query):
+                self.assertIs(
+                    self.agent.route(query).route, Route.STORM_COMPARISON
+                )
