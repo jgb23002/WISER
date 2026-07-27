@@ -30,6 +30,7 @@ from wiser.agents.storm_weather_analytics_agent import (  # noqa: E402
 )
 from wiser.agents.task_routing_agent import Route  # noqa: E402
 from wiser.handlers import (  # noqa: E402
+    OVERLAP_EXPLANATION,
     ROUTE_HANDLERS,
     AnalyticsResult,
     SimilarityResult,
@@ -215,6 +216,59 @@ class TestHandleStormSummary(unittest.TestCase):
         message = _errors(result)[0]
         self.assertIn("2021090100", message)
         self.assertIn("2021090112", message)
+
+    def test_summary_flags_a_same_date_sibling(self):
+        result = handle_storm_summary(
+            _make_ctx("summarize storm 2021090100", self.conn)
+        )
+        warnings = [n.text for n in result.notices if n.level == "warning"]
+        note = next(w for w in warnings if "shares its date" in w)
+
+        self.assertIn("2021090112", note)
+        self.assertIn("only part of the event", note)
+        # The summary still renders; nothing is withheld or merged.
+        self.assertIsNotNone(result.report)
+
+    def test_summary_is_silent_for_a_unique_date(self):
+        result = handle_storm_summary(
+            _make_ctx("summarize storm 2020080406", self.conn)
+        )
+        warnings = [n.text for n in result.notices if n.level == "warning"]
+        self.assertFalse([w for w in warnings if "shares its date" in w])
+
+    def test_disambiguation_explains_the_overlap_before_asking_a_choice(self):
+        """Without this the user picks arbitrarily between what may be two
+        records of the same weather system."""
+        result = handle_storm_summary(
+            _make_ctx("storm summary for 2021-09-01", self.conn)
+        )
+        message = _errors(result)[0]
+
+        self.assertIn("48-hour window", message)
+        self.assertIn("one weather system recorded twice", message)
+        self.assertIn("may not be a meaningful choice", message)
+        # And still offers the runnable options.
+        self.assertIn("storm summary for 2021090100", message)
+
+    def test_all_three_messages_share_one_overlap_explanation(self):
+        """One source of truth, so the three places cannot drift apart."""
+        summary = handle_storm_summary(
+            _make_ctx("summarize storm 2021090100", self.conn)
+        )
+        ranking = handle_storm_ranking(
+            _make_ctx("how does storm 2021090100 rank", self.conn)
+        )
+        ambiguous = handle_storm_summary(
+            _make_ctx("storm summary for 2021-09-01", self.conn)
+        )
+        texts = [
+            next(n.text for n in summary.notices if "shares its date" in n.text),
+            next(n.text for n in ranking.notices if "shares its date" in n.text),
+            _errors(ambiguous)[0],
+        ]
+        for text in texts:
+            with self.subTest(text=text[:40]):
+                self.assertIn(OVERLAP_EXPLANATION, text)
 
     def test_ambiguous_options_are_ready_to_run_queries(self):
         """The user should be able to copy a line, not retype the question."""

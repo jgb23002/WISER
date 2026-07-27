@@ -678,6 +678,18 @@ _MONTHS = {
 }
 
 
+# Every storm carries the same fixed 48-hour analysis window, so two storms
+# entered 6 or 12 hours apart overlap by 36-42 hours. Stated in one place
+# because three separate messages depend on it: the ranking note, the summary
+# note, and the disambiguation prompt.
+# Written as a standalone sentence so it reads correctly wherever it is
+# dropped in; callers append their own consequence after an em dash.
+OVERLAP_EXPLANATION = (
+    "Every storm carries the same fixed 48-hour window, so a same-date pair "
+    "overlaps and may be one weather system recorded twice"
+)
+
+
 def looks_like_forecast(query: str) -> bool:
     """True when the query is about a storm that has not happened yet."""
     text = query.lower()
@@ -779,9 +791,14 @@ def _resolve_single_storm(
             f"   ({_clock_time(match.event_datetime)})"
             for match in resolution.matches
         )
+        # The candidates are, by construction, storms sharing a calendar date —
+        # so they are the same-date siblings, and picking between them may not
+        # be a meaningful choice. Saying so here is worth more than saying it
+        # after the fact: without it the user picks one arbitrarily.
         return None, [
             Notice(
-                f"{token} matches more than one storm. "
+                f"{token} matches more than one storm. {OVERLAP_EXPLANATION} "
+                "— picking one of these may not be a meaningful choice. "
                 f"Re-ask with the full stormCode:\n{options}",
                 level="error",
             )
@@ -846,6 +863,17 @@ def handle_storm_summary(ctx: HandlerContext) -> AnalyticsResult:
             [Notice(str(exc), level="error")], REPORT_STORM_SUMMARY
         )
 
+    notices.extend(
+        _same_date_sibling_notices(
+            ctx,
+            storm_code,
+            consequence=(
+                "these figures may describe only part of the event, and the "
+                "sibling storm reports a near-identical outage total."
+            ),
+        )
+    )
+
     result = AnalyticsResult(
         rows=report.rows,
         display_rows=display_rows(report),
@@ -893,7 +921,16 @@ def handle_storm_ranking(ctx: HandlerContext) -> AnalyticsResult:
             [*notices, Notice(str(exc), level="error")], REPORT_STORM_RANKING
         )
 
-    notices.extend(_same_date_sibling_notices(ctx, storm_code))
+    notices.extend(
+        _same_date_sibling_notices(
+            ctx,
+            storm_code,
+            consequence=(
+                "expect adjacent ranks and near-identical outage figures for "
+                "the pair."
+            ),
+        )
+    )
     notices.append(Notice(DATASET_VINTAGE_NOTE))
     return AnalyticsResult(
         rows=report.rows,
@@ -908,13 +945,19 @@ def handle_storm_ranking(ctx: HandlerContext) -> AnalyticsResult:
 def _same_date_sibling_notices(
     ctx: HandlerContext,
     storm_code: int,
+    *,
+    consequence: str,
 ) -> list[Notice]:
-    """Warn that a ranked storm shares its date with another.
+    """Warn that a storm shares its calendar date with another.
 
     Such a pair sits at adjacent ranks with near-identical outage figures,
     which reads as a duplicate-row bug. Naming it turns "why are there two of
     these" into a stated data-quality observation. Nothing is deduplicated —
     that would be a data decision, and both rows are real.
+
+    ``consequence`` states what the overlap means for the report at hand; the
+    overlap itself is described by the shared OVERLAP_EXPLANATION so all three
+    places that mention it cannot drift apart.
     """
     try:
         siblings = same_date_siblings(ctx.conn, storm_code)
@@ -929,10 +972,8 @@ def _same_date_sibling_notices(
     )
     return [
         Notice(
-            f"Data note: {storm_code} shares its date with {listed}. Every storm "
-            "carries the same fixed 48-hour window, so these overlap and may be "
-            "one weather system recorded twice — expect adjacent ranks and "
-            "near-identical outage figures.",
+            f"Data note: {storm_code} shares its date with {listed}. "
+            f"{OVERLAP_EXPLANATION} — {consequence}",
             level="warning",
         )
     ]
