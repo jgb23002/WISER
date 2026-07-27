@@ -272,6 +272,69 @@ class StormComparison:
     state: str
 
 
+@dataclass(frozen=True)
+class ForecastPosition:
+    """Where a forecast value would sit in the historical record."""
+
+    metric: str
+    label: str
+    value: float
+    rank: int
+    total: int
+
+    @property
+    def percentile(self) -> float:
+        if not self.total:
+            return 0.0
+        return self.rank / self.total * 100.0
+
+
+@dataclass(frozen=True)
+class AnalogueStorm:
+    """A past storm with similar modelled conditions, and what it produced.
+
+    ``outage`` is that historical storm's recorded outcome. It is never a
+    prediction for the forecast storm, and the report layer must label it so.
+    """
+
+    storm_code: int
+    date: str
+    county: str
+    similarity: float
+    peak_wind_ms: float
+    precip_mm: float
+    outage: int
+
+
+@dataclass(frozen=True)
+class CountyAnalogues:
+    county: str
+    analogues: tuple[AnalogueStorm, ...]
+
+
+@dataclass(frozen=True)
+class ForecastComparison:
+    """A forecast storm positioned against the historical record.
+
+    Deliberately carries no outage value for the forecast itself: outage is an
+    outcome, and a forecast supplies only conditions. The analogues carry real
+    recorded outages; nothing here predicts one.
+    """
+
+    params: dict[str, float]
+    county_scope: str | None
+    state: str
+    total_storms: int
+    positions: tuple[ForecastPosition, ...]
+    analogue_groups: tuple[CountyAnalogues, ...]
+
+    @property
+    def scope_label(self) -> str:
+        if self.county_scope:
+            return f"{self.county_scope} County"
+        return f"statewide ({self.state})"
+
+
 class StormAnalysisError(ValueError):
     """Raised when a requested storm or metric cannot be analysed."""
 
@@ -642,6 +705,185 @@ def compare_storms(
         ranking_b=ranking_b,
         deltas=deltas,
         state=state,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Capability 3, Mode B — a forecast storm against the historical record
+# ---------------------------------------------------------------------------
+
+# Forecast parameters that can be positioned against the record. wgt* values
+# still feed the similarity search; they simply have no percentile row.
+_POSITIONABLE = {
+    "peakWSPD10": (METRIC_MAX_WIND, "maximum wind speed"),
+    "sumAFWA_TOTPRECIP": (METRIC_MAX_PRECIP, "maximum precipitation"),
+}
+
+_FORECAST_POSITION_SQL_TEMPLATE = """
+    WITH storm_scope AS ({scope})
+    SELECT
+        SUM(CASE WHEN max_wind > ? THEN 1 ELSE 0 END),
+        SUM(CASE WHEN max_precip > ? THEN 1 ELSE 0 END),
+        COUNT(*)
+    FROM storm_scope
+"""
+
+
+def state_counties(conn: DbConnection, *, state: str = DEFAULT_STATE) -> tuple[str, ...]:
+    """County names in a state, ordered."""
+    rows = _fetch(
+        conn,
+        "SELECT county FROM County WHERE LOWER(state) = LOWER(?) ORDER BY county ASC",
+        (state,),
+    )
+    return tuple(str(row[0]) for row in rows)
+
+
+def compare_forecast(
+    conn: DbConnection,
+    params: dict[str, float],
+    *,
+    county: str | None = None,
+    state: str = DEFAULT_STATE,
+    limit: int = 5,
+    similarity_agent: Any | None = None,
+) -> ForecastComparison:
+    """Position a forecast against the record and find its closest analogues.
+
+    Retrieval and scoring are delegated to ``SimilarityQueryAgent`` — this is
+    the existing similarity search with a comparison report on top, not a
+    parallel implementation of it.
+
+    Scope note: the similarity engine standardises features to Z-scores over
+    **one county's** history, so scores from different counties live in
+    different normalised spaces and are not comparable. A statewide request
+    therefore returns analogues grouped per county rather than a single merged
+    ranking, which would be arithmetic on incommensurable numbers.
+    """
+    if not params:
+        raise StormAnalysisError(
+            "a forecast comparison needs at least one weather parameter"
+        )
+
+    if similarity_agent is None:  # imported lazily: keeps the module importable
+        from wiser.agents.similarity_query_agent import SimilarityQueryAgent
+
+        similarity_agent = SimilarityQueryAgent()
+
+    counties = (county,) if county else state_counties(conn, state=state)
+    if not counties:
+        raise StormAnalysisError(f"no counties found for state {state!r}")
+
+    positions = _forecast_positions(conn, params, county=county, state=state)
+    total_storms = (
+        positions[0].total
+        if positions
+        else _scope_storm_total(conn, county=county, state=state)
+    )
+
+    groups: list[CountyAnalogues] = []
+    for scope_county in counties:
+        matches = similarity_agent.find_similar(conn, scope_county, params, limit=limit)
+        if not matches:
+            continue
+        groups.append(
+            CountyAnalogues(
+                county=scope_county,
+                analogues=tuple(
+                    _analogue_storm(match, scope_county) for match in matches
+                ),
+            )
+        )
+
+    return ForecastComparison(
+        params=dict(params),
+        county_scope=county,
+        state=state,
+        total_storms=total_storms,
+        positions=positions,
+        analogue_groups=tuple(groups),
+    )
+
+
+def _forecast_positions(
+    conn: DbConnection,
+    params: dict[str, float],
+    *,
+    county: str | None,
+    state: str,
+) -> tuple[ForecastPosition, ...]:
+    """Where each positionable forecast value would rank in the record."""
+    positionable = {
+        feature: value
+        for feature, value in params.items()
+        if feature in _POSITIONABLE
+    }
+    if not positionable:
+        return ()
+
+    if county:
+        sql = _FORECAST_POSITION_SQL_TEMPLATE.format(scope=_COUNTY_SCOPE_SQL)
+        scope_params: list[Any] = [state, county]
+    else:
+        sql = _FORECAST_POSITION_SQL_TEMPLATE.format(scope=_STATE_SCOPE_SQL)
+        scope_params = [state]
+
+    # Absent parameters bind a value that cannot be exceeded downward; their
+    # column is discarded below, so the bound value never reaches the report.
+    wind = float(positionable.get("peakWSPD10", 0.0))
+    precip = float(positionable.get("sumAFWA_TOTPRECIP", 0.0))
+
+    rows = _fetch(conn, sql, [*scope_params, wind, precip])
+    if not rows or rows[0][2] in (None, 0):
+        return ()
+
+    better_wind, better_precip, total = rows[0]
+    counts = {
+        "peakWSPD10": int(better_wind or 0),
+        "sumAFWA_TOTPRECIP": int(better_precip or 0),
+    }
+
+    return tuple(
+        ForecastPosition(
+            metric=_POSITIONABLE[feature][0],
+            label=_POSITIONABLE[feature][1],
+            value=float(value),
+            rank=counts[feature] + 1,
+            total=int(total),
+        )
+        for feature, value in positionable.items()
+    )
+
+
+def _scope_storm_total(
+    conn: DbConnection, *, county: str | None, state: str
+) -> int:
+    if not county:
+        return storm_count(conn, state=state)
+    rows = _fetch(
+        conn,
+        """
+        SELECT COUNT(DISTINCT w.stormCode)
+        FROM WeatherData w
+        JOIN County c ON LOWER(c.county) = LOWER(w.county)
+        WHERE LOWER(c.state) = LOWER(?)
+          AND LOWER(w.county) = LOWER(?)
+        """,
+        (state, county),
+    )
+    return int(rows[0][0]) if rows else 0
+
+
+def _analogue_storm(match: dict[str, Any], county: str) -> AnalogueStorm:
+    storm_code = int(match["stormCode"])
+    return AnalogueStorm(
+        storm_code=storm_code,
+        date=storm_code_to_date(storm_code),
+        county=county,
+        similarity=float(match.get("similarity", 0.0)),
+        peak_wind_ms=float(match["peakWSPD10"]),
+        precip_mm=float(match["sumAFWA_TOTPRECIP"]),
+        outage=int(match["outage"]),
     )
 
 

@@ -29,10 +29,12 @@ from wiser.storm_analysis import (  # noqa: E402
     METRIC_OUTAGE,
     RANKABLE_METRICS,
     StormAnalysisError,
+    compare_forecast,
     compare_storms,
     date_to_storm_code_range,
     resolve_storm,
     storm_code_to_date,
+    state_counties,
     storm_count,
     storm_ranking,
     storm_summary,
@@ -454,6 +456,163 @@ class TestCompareStorms(unittest.TestCase):
         self.assertEqual(
             comparison.ranking_a.total_storms, comparison.ranking_b.total_storms
         )
+
+
+class _RecordingSimilarityAgent:
+    """Captures find_similar calls so delegation can be asserted."""
+
+    def __init__(self, results=None):
+        self.calls = []
+        self._results = results
+
+    def find_similar(self, conn, county, query_params, limit=5):
+        self.calls.append((county, dict(query_params), limit))
+        if self._results is not None:
+            return self._results
+        from wiser.agents.similarity_query_agent import SimilarityQueryAgent
+
+        return SimilarityQueryAgent().find_similar(
+            conn, county, query_params, limit=limit
+        )
+
+
+class TestCompareForecast(unittest.TestCase):
+    """Mode B — a forecast storm against the historical record."""
+
+    def setUp(self):
+        self.conn = _make_conn()
+        self.addCleanup(self.conn.close)
+
+    def test_delegates_retrieval_to_the_similarity_agent(self):
+        """Mode B is the existing similarity search with a different report,
+        not a reimplementation of ranking."""
+        agent = _RecordingSimilarityAgent()
+        compare_forecast(
+            self.conn,
+            {"peakWSPD10": 12.07},
+            county="Fairfield",
+            similarity_agent=agent,
+            limit=3,
+        )
+        self.assertEqual(len(agent.calls), 1)
+        county, params, limit = agent.calls[0]
+        self.assertEqual(county, "Fairfield")
+        self.assertEqual(params, {"peakWSPD10": 12.07})
+        self.assertEqual(limit, 3)
+
+    def test_forecast_carries_no_outage_of_its_own(self):
+        """Outage is an outcome; a forecast supplies only conditions."""
+        comparison = compare_forecast(
+            self.conn, {"peakWSPD10": 12.07}, county="Fairfield"
+        )
+        self.assertFalse(hasattr(comparison, "outage"))
+        self.assertFalse(hasattr(comparison, "statewide_outage"))
+        self.assertNotIn("outage", comparison.params)
+
+    def test_position_is_where_the_forecast_would_rank(self):
+        """Seeded max winds are 11.0, 7.0, 5.5 statewide. A 12.07 m/s forecast
+        exceeds all of them, so it would rank first."""
+        comparison = compare_forecast(self.conn, {"peakWSPD10": 12.07})
+        wind = next(p for p in comparison.positions if p.metric == METRIC_MAX_WIND)
+        self.assertEqual(wind.rank, 1)
+        self.assertEqual(wind.total, storm_count(self.conn))
+
+    def test_position_ranks_below_stronger_historical_storms(self):
+        comparison = compare_forecast(self.conn, {"peakWSPD10": 6.0})
+        wind = next(p for p in comparison.positions if p.metric == METRIC_MAX_WIND)
+        # Two seeded storms have a higher statewide max wind (11.0 and 7.0).
+        self.assertEqual(wind.rank, 3)
+
+    def test_positions_cover_only_the_supplied_parameters(self):
+        wind_only = compare_forecast(self.conn, {"peakWSPD10": 9.0})
+        self.assertEqual(
+            [p.metric for p in wind_only.positions], [METRIC_MAX_WIND]
+        )
+
+        precip_only = compare_forecast(self.conn, {"sumAFWA_TOTPRECIP": 30.0})
+        self.assertEqual(
+            [p.metric for p in precip_only.positions], [METRIC_MAX_PRECIP]
+        )
+
+    def test_threshold_only_input_still_finds_analogues_without_positions(self):
+        comparison = compare_forecast(self.conn, {"wgt5": 12}, county="Fairfield")
+        self.assertEqual(comparison.positions, ())
+        self.assertTrue(comparison.analogue_groups)
+        self.assertEqual(comparison.total_storms, storm_count(self.conn))
+
+    def test_analogues_carry_real_recorded_outages(self):
+        comparison = compare_forecast(
+            self.conn, {"peakWSPD10": 9.4}, county="Fairfield", limit=5
+        )
+        analogues = comparison.analogue_groups[0].analogues
+        self.assertTrue(analogues)
+        seeded_outages = {600, 200, 50}
+        for analogue in analogues:
+            with self.subTest(storm=analogue.storm_code):
+                self.assertIn(analogue.outage, seeded_outages)
+                self.assertEqual(analogue.date, storm_code_to_date(analogue.storm_code))
+
+    def test_statewide_groups_analogues_per_county(self):
+        """Z-scores are computed within a county, so scores from different
+        counties are not comparable and must not be merged into one ranking."""
+        comparison = compare_forecast(self.conn, {"peakWSPD10": 9.0}, limit=2)
+        self.assertIsNone(comparison.county_scope)
+        self.assertEqual(
+            [group.county for group in comparison.analogue_groups],
+            list(state_counties(self.conn)),
+        )
+        for group in comparison.analogue_groups:
+            with self.subTest(county=group.county):
+                self.assertTrue(
+                    all(a.county == group.county for a in group.analogues),
+                    "an analogue must stay in the county it was scored against",
+                )
+
+    def test_county_scope_queries_only_that_county(self):
+        agent = _RecordingSimilarityAgent()
+        compare_forecast(
+            self.conn, {"peakWSPD10": 9.0}, county="Hartford", similarity_agent=agent
+        )
+        self.assertEqual([call[0] for call in agent.calls], ["Hartford"])
+
+    def test_statewide_scope_queries_every_county_in_the_state(self):
+        agent = _RecordingSimilarityAgent()
+        compare_forecast(self.conn, {"peakWSPD10": 9.0}, similarity_agent=agent)
+        self.assertEqual(
+            [call[0] for call in agent.calls], list(state_counties(self.conn))
+        )
+
+    def test_state_parameter_scopes_the_county_list(self):
+        conn = _make_conn(
+            counties=[
+                ("Fairfield", "CT", 4_000_000),
+                ("Providence", "RI", 4_000_000),
+            ],
+            weather=[
+                (2020080406, "Fairfield", 10.0, 5.0, 1, 0, 0, 0, 100),
+                (2020080406, "Providence", 99.0, 20.0, 9, 9, 9, 9, 9999),
+            ],
+            storms=_DEFAULT_STORMS[:1],
+        )
+        self.addCleanup(conn.close)
+        agent = _RecordingSimilarityAgent()
+        compare_forecast(conn, {"peakWSPD10": 9.0}, state="RI", similarity_agent=agent)
+        self.assertEqual([call[0] for call in agent.calls], ["Providence"])
+
+    def test_empty_parameters_raise(self):
+        with self.assertRaises(StormAnalysisError):
+            compare_forecast(self.conn, {})
+
+    def test_unknown_state_raises_rather_than_returning_empty(self):
+        with self.assertRaises(StormAnalysisError):
+            compare_forecast(self.conn, {"peakWSPD10": 9.0}, state="ZZ")
+
+    def test_counties_without_history_are_skipped_not_rendered_empty(self):
+        agent = _RecordingSimilarityAgent(results=[])
+        comparison = compare_forecast(
+            self.conn, {"peakWSPD10": 9.0}, similarity_agent=agent
+        )
+        self.assertEqual(comparison.analogue_groups, ())
 
 
 if __name__ == "__main__":
