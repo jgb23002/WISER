@@ -37,7 +37,6 @@ if str(SRC_DIR) not in sys.path:
 
 from wiser.agents.sql_ai_agent import SqlValidationError  # noqa: E402
 from wiser.agents.storm_reasoning_agent import (  # noqa: E402
-    _as_float,
     _format_value,
     _lower_wind_higher_outage_observation,
     reason_locally,
@@ -283,6 +282,12 @@ class TestReasoningFailureKeepsSqlResult(unittest.TestCase):
 
 class TestNullToleranceInReasoning(unittest.TestCase):
     def test_as_float_handles_none_and_defaults(self):
+        # Imported inside the test, not at module scope: reverting the fix
+        # removes this private helper, and a module-level import would turn
+        # every behavioural test below into an ImportError instead of letting
+        # them fail on the TypeError that is the actual defect.
+        from wiser.agents.storm_reasoning_agent import _as_float
+
         self.assertEqual(_as_float(None), float("-inf"))
         self.assertEqual(_as_float(None, 0.0), 0.0)
         self.assertEqual(_as_float(3), 3.0)
