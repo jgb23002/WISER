@@ -54,6 +54,86 @@ class StormReasoningResult:
     openai_error: str | None = None
 
 
+# Metric names the divergence helper looks for, in preference order.
+RAW_IMPACT_METRICS: tuple[str, ...] = ("total_outage", "outage")
+NORMALIZED_IMPACT_METRICS: tuple[str, ...] = ("outage_per_million_ohline",)
+
+
+@dataclass(frozen=True)
+class RankingDivergence:
+    """Which row leads on a raw metric versus an exposure-normalized one.
+
+    Normalizing outages by overhead-line exposure can reorder a ranking: the
+    county with the most trouble spots is not always the worst hit per mile of
+    line. Both the local reasoning fallback and the storm comparison report
+    need that observation, so it is computed here once.
+    """
+
+    normalized_metric: str
+    normalized_leader: dict[str, object]
+    raw_metric: str | None = None
+    raw_leader: dict[str, object] | None = None
+
+    @property
+    def flipped(self) -> bool:
+        """True when normalizing changes which row leads."""
+        if self.raw_leader is None:
+            return False
+        return _row_label(self.raw_leader) != _row_label(self.normalized_leader)
+
+
+def normalized_ranking_divergence(
+    rows: Sequence[dict[str, object]],
+    *,
+    raw_metrics: Sequence[str] = RAW_IMPACT_METRICS,
+    normalized_metrics: Sequence[str] = NORMALIZED_IMPACT_METRICS,
+    require_all: bool = False,
+) -> RankingDivergence | None:
+    """Find the raw and exposure-normalized leaders in a set of result rows.
+
+    Args:
+        rows: result rows to inspect.
+        raw_metrics: candidate raw metric column names, in preference order.
+        normalized_metrics: candidate normalized column names.
+        require_all: when True, every row must carry a numeric value for the
+            normalized metric. Comparing a specific pair of rows needs this —
+            a claim that one of two counties is "higher when normalized" is
+            not supportable if only one of them was measured.
+
+    Returns:
+        A RankingDivergence, or None when no normalized metric is available.
+    """
+    row_list = list(rows)
+    if not row_list:
+        return None
+
+    normalized_metric = _first_present_key(row_list, normalized_metrics)
+    if normalized_metric is None:
+        return None
+    if require_all and not all(
+        _is_number(row.get(normalized_metric)) for row in row_list
+    ):
+        return None
+
+    normalized_leader = max(
+        row_list, key=lambda row: _as_float(row.get(normalized_metric))
+    )
+
+    raw_metric = _first_present_key(row_list, raw_metrics)
+    raw_leader = (
+        max(row_list, key=lambda row: _as_float(row.get(raw_metric)))
+        if raw_metric is not None
+        else None
+    )
+
+    return RankingDivergence(
+        normalized_metric=normalized_metric,
+        normalized_leader=normalized_leader,
+        raw_metric=raw_metric,
+        raw_leader=raw_leader,
+    )
+
+
 UrlOpener = Callable[..., Any]
 
 
@@ -228,18 +308,14 @@ def reason_locally(query: str, rows: Sequence[dict[str, object]]) -> str:
                 f" Exposure may matter: ohLine is {_format_value(higher.get('ohLine'))} "
                 f"versus {_format_value(lower.get('ohLine'))}."
             )
-        if _is_number(higher.get("outage_per_million_ohline")) and _is_number(
-            lower.get("outage_per_million_ohline")
-        ):
-            normalized_top = (
-                higher
-                if float(higher["outage_per_million_ohline"])
-                >= float(lower["outage_per_million_ohline"])
-                else lower
-            )
+        # require_all: naming one of the pair as "higher when normalized" is
+        # only supportable when both sides were measured.
+        divergence = normalized_ranking_divergence([higher, lower], require_all=True)
+        if divergence is not None:
+            normalized_top = divergence.normalized_leader
             detail += (
                 f" Normalized by ohLine, {_row_label(normalized_top)} is higher at "
-                f"{_format_value(normalized_top.get('outage_per_million_ohline'))}, "
+                f"{_format_value(normalized_top.get(divergence.normalized_metric))}, "
                 "so the exposure-adjusted interpretation differs from the raw outage ranking."
             )
         bullets.append(detail)
@@ -254,12 +330,10 @@ def reason_locally(query: str, rows: Sequence[dict[str, object]]) -> str:
             "- Population is not present in the current WISER schema, so a per-capita answer would need an added population table or input values."
         )
     elif "normal" in lower_query or "per" in lower_query:
-        normalized_key = _first_present_key(row_list, ("outage_per_million_ohline",))
-        if normalized_key:
-            normalized_top = max(
-                row_list,
-                key=lambda row: _as_float(row.get(normalized_key)),
-            )
+        divergence = normalized_ranking_divergence(row_list)
+        if divergence is not None:
+            normalized_key = divergence.normalized_metric
+            normalized_top = divergence.normalized_leader
             bullets.append(
                 f"- Normalized view: {_row_label(normalized_top)} is highest by {normalized_key} at {_format_value(normalized_top.get(normalized_key))}, which can change the interpretation from raw outage totals."
             )

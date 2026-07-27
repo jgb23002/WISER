@@ -12,6 +12,7 @@ from wiser.agents.storm_reasoning_agent import (  # noqa: E402
     StormReasoningAgent,
     _add_generation_options,
     build_reasoning_prompt,
+    normalized_ranking_divergence,
     reason_locally,
 )
 
@@ -129,6 +130,108 @@ class TestStormReasoningAgent(unittest.TestCase):
         self.assertEqual(body["max_tokens"], 700)
         self.assertEqual(body["temperature"], 0.2)
         self.assertNotIn("max_completion_tokens", body)
+
+
+class TestNormalizedRankingDivergence(unittest.TestCase):
+    """The shared raw-vs-normalized leader logic.
+
+    Extracted from reason_locally so the storm comparison report can reuse it
+    instead of duplicating it. tests/test_reasoning_characterization.py proves
+    the extraction changed no reason_locally output.
+    """
+
+    def test_detects_a_flip_when_normalization_reorders_the_leaders(self):
+        rows = [
+            {"county": "Hartford", "outage": 4792, "outage_per_million_ohline": 816.4},
+            {"county": "New Haven", "outage": 2958, "outage_per_million_ohline": 915.0},
+        ]
+        divergence = normalized_ranking_divergence(rows)
+
+        self.assertIsNotNone(divergence)
+        self.assertEqual(divergence.raw_metric, "outage")
+        self.assertEqual(divergence.normalized_metric, "outage_per_million_ohline")
+        self.assertEqual(divergence.raw_leader["county"], "Hartford")
+        self.assertEqual(divergence.normalized_leader["county"], "New Haven")
+        self.assertTrue(divergence.flipped)
+
+    def test_no_flip_when_the_same_row_leads_both(self):
+        rows = [
+            {"county": "Fairfield", "outage": 600, "outage_per_million_ohline": 150.0},
+            {"county": "Hartford", "outage": 400, "outage_per_million_ohline": 50.0},
+        ]
+        divergence = normalized_ranking_divergence(rows)
+
+        self.assertIsNotNone(divergence)
+        self.assertEqual(divergence.raw_leader["county"], "Fairfield")
+        self.assertEqual(divergence.normalized_leader["county"], "Fairfield")
+        self.assertFalse(divergence.flipped)
+
+    def test_prefers_total_outage_over_outage_as_the_raw_metric(self):
+        rows = [
+            {
+                "county": "Fairfield",
+                "total_outage": 43475,
+                "outage": 1,
+                "outage_per_million_ohline": 8894.5,
+            },
+        ]
+        self.assertEqual(normalized_ranking_divergence(rows).raw_metric, "total_outage")
+
+    def test_returns_none_without_a_normalized_column(self):
+        rows = [{"county": "Fairfield", "total_outage": 43475}]
+        self.assertIsNone(normalized_ranking_divergence(rows))
+
+    def test_returns_none_for_empty_rows(self):
+        self.assertIsNone(normalized_ranking_divergence([]))
+
+    def test_normalized_leader_without_a_raw_metric_does_not_claim_a_flip(self):
+        rows = [
+            {"county": "Fairfield", "outage_per_million_ohline": 8894.5},
+            {"county": "Hartford", "outage_per_million_ohline": 6644.3},
+        ]
+        divergence = normalized_ranking_divergence(rows)
+
+        self.assertEqual(divergence.normalized_leader["county"], "Fairfield")
+        self.assertIsNone(divergence.raw_leader)
+        self.assertFalse(divergence.flipped)
+
+    def test_require_all_rejects_a_partially_measured_pair(self):
+        """Naming one of two counties "higher when normalized" is not
+        supportable when only one of them was measured."""
+        rows = [
+            {"county": "Hartford", "outage": 4792, "outage_per_million_ohline": 816.4},
+            {"county": "New Haven", "outage": 2958},
+        ]
+        self.assertIsNone(normalized_ranking_divergence(rows, require_all=True))
+        self.assertIsNotNone(normalized_ranking_divergence(rows))
+
+    def test_require_all_rejects_a_null_normalized_value(self):
+        rows = [
+            {"county": "Hartford", "outage": 4792, "outage_per_million_ohline": 816.4},
+            {"county": "New Haven", "outage": 2958, "outage_per_million_ohline": None},
+        ]
+        self.assertIsNone(normalized_ranking_divergence(rows, require_all=True))
+
+    def test_ties_resolve_to_the_first_row(self):
+        rows = [
+            {"county": "Fairfield", "outage": 100, "outage_per_million_ohline": 50.0},
+            {"county": "Hartford", "outage": 100, "outage_per_million_ohline": 50.0},
+        ]
+        divergence = normalized_ranking_divergence(rows)
+        self.assertEqual(divergence.normalized_leader["county"], "Fairfield")
+        self.assertFalse(divergence.flipped)
+
+    def test_custom_metric_names_are_honoured(self):
+        rows = [
+            {"county": "Fairfield", "peak": 10, "per_mile": 1.0},
+            {"county": "Hartford", "peak": 5, "per_mile": 9.0},
+        ]
+        divergence = normalized_ranking_divergence(
+            rows, raw_metrics=("peak",), normalized_metrics=("per_mile",)
+        )
+        self.assertEqual(divergence.raw_leader["county"], "Fairfield")
+        self.assertEqual(divergence.normalized_leader["county"], "Hartford")
+        self.assertTrue(divergence.flipped)
 
 
 if __name__ == "__main__":
