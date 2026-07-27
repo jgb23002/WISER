@@ -327,6 +327,9 @@ def _render_similarity(result: SimilarityResult) -> None:
     _render_notices(result.notices)
     if result.report is not None:
         _render_storm_report(result)
+        if result.display_rows:
+            st.dataframe(result.display_rows, hide_index=True, width="stretch")
+        return
     params = ", ".join(f"{name}={value:g}" for name, value in result.params.items())
     st.subheader(f"Similar storms — {result.county}")
     st.caption(

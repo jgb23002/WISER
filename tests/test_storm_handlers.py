@@ -522,7 +522,7 @@ class TestSimilarityPresentationSwitch(unittest.TestCase):
         )
         forecast = handle_similarity_search(
             _make_ctx(
-                "how does an upcoming storm with wind=9.2 compare in Fairfield",
+                "how does an upcoming storm with wind=9.2ms compare in Fairfield",
                 self.conn,
             )
         )
@@ -532,10 +532,62 @@ class TestSimilarityPresentationSwitch(unittest.TestCase):
         self.assertEqual(forecast.params, plain.params)
         self.assertEqual(forecast.county, plain.county)
 
+    def test_statewide_forecast_needs_no_county(self):
+        """A forecast compared against the whole record is legitimately
+        statewide; compare_forecast groups analogues per county. Requiring a
+        county here made the query error instead of rendering."""
+        result = handle_similarity_search(
+            _make_ctx(
+                "how does an upcoming storm with wind=27mph compare to the record",
+                self.conn,
+            )
+        )
+        self.assertTrue(result.ok)
+        self.assertIsNone(result.county)
+        self.assertIsNotNone(result.report)
+        self.assertEqual(result.report_kind, REPORT_FORECAST_COMPARISON)
+
+    def test_plain_similarity_without_a_county_still_errors(self):
+        result = handle_similarity_search(
+            _make_ctx("find storms similar to wind=9.2", self.conn)
+        )
+        self.assertFalse(result.ok)
+        self.assertIn("County required", _errors(result)[0])
+
+    def test_forecast_units_are_honoured_on_the_similarity_route(self):
+        """parse_similarity_params drops the suffix, so "wind=27mph" would be
+        read as 27 m/s — 60 mph, a fivefold error."""
+        result = handle_similarity_search(
+            _make_ctx(
+                "how does an upcoming storm with wind=27mph compare to the record",
+                self.conn,
+            )
+        )
+        self.assertAlmostEqual(result.params["peakWSPD10"], 12.070, places=2)
+        self.assertIn("27.0 mph", result.report)
+        self.assertNotIn("60.4 mph", result.report)
+
+    def test_a_bare_forecast_number_is_rejected_on_this_route_too(self):
+        result = handle_similarity_search(
+            _make_ctx(
+                "how does an upcoming storm with wind=27 compare to the record",
+                self.conn,
+            )
+        )
+        self.assertFalse(result.ok)
+        self.assertIn("has no unit", _errors(result)[0])
+
+    def test_plain_similarity_keeps_the_unit_free_convention(self):
+        result = handle_similarity_search(
+            _make_ctx("find storms similar to wind=9.2 in Fairfield", self.conn)
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.params["peakWSPD10"], 9.2)
+
     def test_forecast_report_keeps_the_not_a_prediction_line(self):
         result = handle_similarity_search(
             _make_ctx(
-                "how does an upcoming storm with wind=9.2 compare in Fairfield",
+                "how does an upcoming storm with wind=9.2ms compare in Fairfield",
                 self.conn,
             )
         )

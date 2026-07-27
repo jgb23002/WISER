@@ -1109,7 +1109,19 @@ def _handle_forecast_comparison(
 
 
 def handle_similarity_search(ctx: HandlerContext) -> SimilarityResult:
-    query_params = parse_similarity_params(ctx.query)
+    # A forecast query is parsed with unit awareness even on this route.
+    # parse_similarity_params drops the suffix, so "wind=27mph" would be read
+    # as 27 m/s — 60 mph, a fivefold error and exactly what requiring explicit
+    # units exists to prevent. Plain similarity queries keep the historical
+    # unit-free convention.
+    unit_notices: list[Notice] = []
+    if looks_like_forecast(ctx.query):
+        query_params, unit_notices = parse_forecast_params(ctx.query)
+        if unit_notices and not query_params:
+            return SimilarityResult(ok=False, params={}, notices=unit_notices)
+    else:
+        query_params = parse_similarity_params(ctx.query)
+
     if not query_params:
         return SimilarityResult(
             ok=False,
@@ -1128,6 +1140,11 @@ def handle_similarity_search(ctx: HandlerContext) -> SimilarityResult:
 
     county = parse_similarity_county(ctx.query, ctx.county)
     if not county:
+        # A forecast compared against the whole record is legitimately
+        # statewide: compare_forecast groups analogues per county, so unlike a
+        # plain similarity search it does not need one naming a county.
+        if looks_like_forecast(ctx.query):
+            return _statewide_forecast_result(ctx, query_params, unit_notices)
         return SimilarityResult(
             ok=False,
             params=query_params,
@@ -1158,8 +1175,40 @@ def handle_similarity_search(ctx: HandlerContext) -> SimilarityResult:
         params=query_params,
         rows=results,
         total_historical=total,
+        notices=list(unit_notices),
     )
     return _attach_forecast_report(ctx, result)
+
+
+def _statewide_forecast_result(
+    ctx: HandlerContext,
+    params: dict[str, float],
+    notices: list[Notice] | None = None,
+) -> SimilarityResult:
+    """A forecast positioned against the whole record, no county named."""
+    try:
+        comparison = compare_forecast(ctx.conn, params)
+        report = render_forecast_comparison(comparison)
+    except StormAnalysisError as exc:
+        return SimilarityResult(
+            ok=False,
+            params=params,
+            notices=[Notice(str(exc), level="error")],
+        )
+
+    return SimilarityResult(
+        ok=True,
+        county=None,
+        params=params,
+        notices=list(notices or []),
+        rows=report.rows,
+        total_historical=comparison.total_storms,
+        report=report.text,
+        report_kind=report.kind,
+        display_rows=display_rows(
+            report, forecast_wind_ms=params.get("peakWSPD10")
+        ),
+    )
 
 
 def _attach_forecast_report(
