@@ -384,13 +384,23 @@ _FORECAST_INPUT_LABELS = {
 }
 
 
-def render_forecast_comparison(comparison: ForecastComparison) -> StormReport:
+def render_forecast_comparison(
+    comparison: ForecastComparison,
+    *,
+    reference_summary: StormSummary | None = None,
+    reference_ranking: StormRanking | None = None,
+) -> StormReport:
     """Render the Mode B report: a forecast positioned against the record.
 
     Two rules this renderer exists to enforce. The forecast column is labelled
     a projection everywhere it appears, and no outage value is ever placed in
     it — the analogue outages are historical outcomes, labelled as such, and
     the report says in as many words that they are not a prediction.
+
+    ``reference_summary``/``reference_ranking`` name a specific storm the user
+    asked to compare against ("compare a forecast with wind=12ms to storm
+    2020080406"). It is rendered as another measured historical storm, with the
+    same (actual) labelling as the analogues — never as a forecast outcome.
     """
     lines = [
         f"Forecast Comparison: upcoming storm vs historical record"
@@ -399,6 +409,12 @@ def render_forecast_comparison(comparison: ForecastComparison) -> StormReport:
         f"Forecast input {PROJECTION_LABEL}:",
     ]
     lines.extend(_forecast_input_lines(comparison))
+
+    if reference_summary is not None:
+        lines.extend(
+            ["", f"Named reference storm {ACTUAL_LABEL}"]
+            + _reference_storm_lines(reference_summary, reference_ranking)
+        )
 
     lines.extend(["", "Position in the record"])
     if comparison.positions:
@@ -424,6 +440,30 @@ def render_forecast_comparison(comparison: ForecastComparison) -> StormReport:
         text="\n".join(lines),
         rows=forecast_rows(comparison),
     )
+
+
+def _reference_storm_lines(
+    summary: StormSummary,
+    ranking: StormRanking | None,
+) -> list[str]:
+    """The named storm, rendered as measured history — never as an outcome."""
+    lines = [
+        f"  {'Date:':<16} {summary.storm.date}",
+        f"  {'Wind:':<16} {_county_measure(summary.max_wind, format_mph)}"
+        f"  {MODELED_WIND_LABEL}",
+        f"  {'Precipitation:':<16} {_county_measure(summary.max_precip, format_inches)}"
+        f"  {MODELED_PRECIP_LABEL}",
+        f"  {'Outages:':<16} {format_count(summary.statewide_outage)} {ACTUAL_LABEL}",
+    ]
+    if ranking is not None:
+        outage_rank = ranking.metric(METRIC_OUTAGE)
+        if outage_rank is not None:
+            lines.append(
+                f"  {'Rank:':<16} {_ordinal(outage_rank.rank)} of "
+                f"{format_count(outage_rank.total)} storms by "
+                f"{outage_rank.label}"
+            )
+    return lines
 
 
 def _forecast_input_lines(comparison: ForecastComparison) -> list[str]:

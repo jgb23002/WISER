@@ -88,12 +88,8 @@ class TestParseSimilarityCounty(unittest.TestCase):
 
 class TestRouteRegistry(unittest.TestCase):
     def test_all_routes_have_handlers_except_unknown(self):
-        expected = {
-            Route.DATA_RETRIEVAL,
-            Route.WEATHER_ANALYTICS,
-            Route.SIMILARITY_SEARCH,
-            Route.RAG_KNOWLEDGE,
-        }
+        # Derived from Route so a newly added route fails here until wired up.
+        expected = set(Route) - {Route.UNKNOWN}
         self.assertEqual(set(ROUTE_HANDLERS.keys()), expected)
 
     def test_similarity_search_handler_registered(self):

@@ -40,6 +40,28 @@ from wiser.external_sources import (
 from wiser.openai_summarizer import openai_config
 from wiser.query_engine import county_historical_count
 from wiser.rag import DEFAULT_RAG_SOURCES, RagIndexSummary, RagResult
+from wiser import units
+from wiser.storm_analysis import (
+    DEFAULT_STATE,
+    StormAnalysisError,
+    compare_forecast,
+    compare_storms,
+    resolve_storm,
+    state_counties,
+    storm_count,
+    storm_ranking,
+    storm_summary,
+)
+from wiser.storm_reports import (
+    REPORT_FORECAST_COMPARISON,
+    REPORT_STORM_COMPARISON,
+    REPORT_STORM_RANKING,
+    REPORT_STORM_SUMMARY,
+    render_forecast_comparison,
+    render_storm_comparison,
+    render_storm_ranking,
+    render_storm_summary,
+)
 from wiser.visualization import county_metric_rows
 
 # Shared defaults; the CLI argparse flags and the Streamlit sidebar both
@@ -198,6 +220,10 @@ class AnalyticsResult:
     used_fallback: bool = False
     fallback_title: str | None = None
     notices: list[Notice] = field(default_factory=list)
+    # Set only by the storm-scoped routes: a rendered report block and which
+    # report produced it. Interfaces show the block above the rows.
+    report: str | None = None
+    report_kind: str | None = None
 
 
 @dataclass
@@ -208,6 +234,11 @@ class SimilarityResult:
     rows: list[dict[str, object]] = field(default_factory=list)
     total_historical: int = 0
     notices: list[Notice] = field(default_factory=list)
+    # Populated only when the query reads as a forecast comparison. Without a
+    # forecast cue these stay None and the result is identical to before the
+    # storm-scoped work landed.
+    report: str | None = None
+    report_kind: str | None = None
 
 
 @dataclass
@@ -588,6 +619,387 @@ def _aggregate_comparison_row(row: Sequence[object]) -> dict[str, object]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Storm-scoped handlers
+# ---------------------------------------------------------------------------
+
+# Words that mean "this is about a storm that has not happened yet". They never
+# change the route on their own; they only select a report.
+FORECAST_CUES: tuple[str, ...] = (
+    "upcoming",
+    "forecast",
+    "forecasted",
+    "expected",
+    "projected",
+    "incoming",
+    "predicted",
+)
+
+# Feature column → the dimension its value is measured in, for unit parsing.
+_FEATURE_DIMENSIONS: dict[str, str] = {
+    "peakWSPD10": units.SPEED,
+    "sumAFWA_TOTPRECIP": units.DEPTH,
+    "wgt5": units.COUNT,
+    "wgt9": units.COUNT,
+    "wgt13": units.COUNT,
+    "wgt18": units.COUNT,
+}
+
+# alias=value with the unit attached: wind=27mph, precip=1.2in, wgt5=12.
+#
+# The unit must touch the number. Allowing a space would make "wind=12 to storm
+# 2020080406" read "to" as a unit, and worse, "precip=1.2 in Fairfield" would
+# read the preposition as inches. An attached suffix is also exactly what the
+# unit-convention decision specified.
+_FORECAST_PARAM_PATTERN = re.compile(
+    r"(?P<name>[a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"
+    r"(?P<value>[0-9]+(?:\.[0-9]*)?)(?P<unit>[a-zA-Z/\"']*)"
+)
+
+_ISO_DATE_PATTERN = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+_STORM_CODE_PATTERN = re.compile(r"\b(\d{10})\b")
+_US_DATE_PATTERN = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
+_MONTH_NAME_PATTERN = re.compile(
+    r"\b(january|february|march|april|may|june|july|august|september|october"
+    r"|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b",
+    re.IGNORECASE,
+)
+_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
+    "december": 12,
+}
+
+
+def looks_like_forecast(query: str) -> bool:
+    """True when the query is about a storm that has not happened yet."""
+    text = query.lower()
+    return any(
+        re.search(rf"\b{re.escape(cue)}\b", text) for cue in FORECAST_CUES
+    )
+
+
+def parse_storm_tokens(query: str) -> list[str]:
+    """Storm codes and dates named in the query, normalised and deduplicated.
+
+    Accepts looser date forms than the router does. The router stays strict to
+    avoid false positives; by the time a query reaches a handler the intent is
+    settled, so a friendlier parse is safe and a failure can be explained.
+    """
+    tokens: list[str] = [m.group(1) for m in _STORM_CODE_PATTERN.finditer(query)]
+    tokens.extend(m.group(1) for m in _ISO_DATE_PATTERN.finditer(query))
+    tokens.extend(
+        f"{int(m.group(3)):04d}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+        for m in _US_DATE_PATTERN.finditer(query)
+    )
+    tokens.extend(
+        f"{int(m.group(3)):04d}-{_MONTHS[m.group(1).lower()]:02d}-{int(m.group(2)):02d}"
+        for m in _MONTH_NAME_PATTERN.finditer(query)
+    )
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for token in tokens:
+        if token not in seen:
+            seen.add(token)
+            ordered.append(token)
+    return ordered
+
+
+def parse_forecast_params(query: str) -> tuple[dict[str, float], list[Notice]]:
+    """Parse unit-suffixed forecast parameters into stored (metric) units.
+
+    Bare numbers are rejected rather than guessed: 12 m/s and 12 mph differ by
+    a factor of five, both are in range for this dataset, and the error is
+    largest at exactly the values people are most likely to type.
+    """
+    params: dict[str, float] = {}
+    notices: list[Notice] = []
+
+    for match in _FORECAST_PARAM_PATTERN.finditer(" ".join(query.split())):
+        feature = FEATURE_ALIASES.get(match.group("name").lower())
+        if feature is None:
+            continue
+        dimension = _FEATURE_DIMENSIONS.get(feature, units.COUNT)
+        raw = f"{match.group('value')}{match.group('unit')}"
+        try:
+            params[feature] = units.parse_measurement(raw, dimension=dimension)
+        except units.AmbiguousUnitError as exc:
+            notices.append(Notice(str(exc), level="error"))
+        except (units.UnknownUnitError, ValueError) as exc:
+            notices.append(Notice(str(exc), level="error"))
+
+    return params, notices
+
+
+def parse_storm_county(ctx: HandlerContext, state: str = DEFAULT_STATE) -> str | None:
+    """County named in the query, matched against the counties in this state.
+
+    Strict on purpose: unlike the similarity parser this has no free-text
+    fallback, because a storm query's trailing words are far more likely to be
+    a date or a metric than a county name.
+    """
+    if ctx.county:
+        return ctx.county
+    try:
+        candidates = state_counties(ctx.conn, state=state)
+    except Exception:  # noqa: BLE001 - county scoping is optional
+        candidates = _CT_COUNTIES
+    for county in candidates:
+        if re.search(rf"\b{re.escape(county)}\b", ctx.query, flags=re.IGNORECASE):
+            return county
+    return None
+
+
+def _resolve_single_storm(
+    ctx: HandlerContext,
+    token: str,
+) -> tuple[int | None, list[Notice]]:
+    """Resolve one token, turning ambiguity and misses into notices."""
+    try:
+        resolution = resolve_storm(ctx.conn, token)
+    except StormAnalysisError as exc:
+        return None, [Notice(str(exc), level="error")]
+
+    if resolution.ok:
+        return resolution.storm.storm_code, []
+
+    if resolution.ambiguous:
+        listed = ", ".join(
+            f"{match.storm_code} ({match.event_datetime})"
+            for match in resolution.matches
+        )
+        return None, [
+            Notice(
+                f"{token} matches more than one storm: {listed}. "
+                "Re-ask with the full stormCode to pick one.",
+                level="error",
+            )
+        ]
+
+    return None, [
+        Notice(f"No storm in the database matches {token!r}.", level="error")
+    ]
+
+
+def _storm_notice_result(notices: list[Notice], kind: str) -> AnalyticsResult:
+    return AnalyticsResult(rows=[], notices=notices, report_kind=kind)
+
+
+def _missing_storm_result(kind: str) -> AnalyticsResult:
+    return _storm_notice_result(
+        [
+            Notice(
+                "No storm identifier found. Name a storm by code (2020080406) "
+                "or by date (2020-08-04).",
+                level="error",
+            )
+        ],
+        kind,
+    )
+
+
+def handle_storm_summary(ctx: HandlerContext) -> AnalyticsResult:
+    """Capability 1 — a summary report for one storm."""
+    tokens = parse_storm_tokens(ctx.query)
+    if not tokens:
+        return _missing_storm_result(REPORT_STORM_SUMMARY)
+
+    storm_code, notices = _resolve_single_storm(ctx, tokens[0])
+    if storm_code is None:
+        return _storm_notice_result(notices, REPORT_STORM_SUMMARY)
+
+    county = parse_storm_county(ctx)
+    try:
+        summary = storm_summary(ctx.conn, storm_code, county=county)
+        report = render_storm_summary(
+            summary, total_storms=storm_count(ctx.conn, state=summary.state)
+        )
+    except StormAnalysisError as exc:
+        return _storm_notice_result(
+            [Notice(str(exc), level="error")], REPORT_STORM_SUMMARY
+        )
+
+    result = AnalyticsResult(
+        rows=report.rows,
+        report=report.text,
+        report_kind=report.kind,
+        answer=(
+            f"Storm {storm_code} on {summary.storm.date}: "
+            f"{summary.statewide_outage:,} outages across "
+            f"{len(summary.counties)} counties."
+        ),
+        notices=notices,
+    )
+    # Reasoning is attached here and nowhere else in the storm routes: these
+    # rows are county-shaped, which is what the reasoning layer reads. The
+    # ranking and comparison reports already carry their interpretation,
+    # computed deterministically.
+    return _attach_reasoning(ctx, result)
+
+
+def handle_storm_ranking(ctx: HandlerContext) -> AnalyticsResult:
+    """Capability 2 — where a storm sits in the historical record."""
+    tokens = parse_storm_tokens(ctx.query)
+    if not tokens:
+        return _missing_storm_result(REPORT_STORM_RANKING)
+
+    storm_code, notices = _resolve_single_storm(ctx, tokens[0])
+    if storm_code is None:
+        return _storm_notice_result(notices, REPORT_STORM_RANKING)
+
+    if re.search(r"\bdurations?\b|\blongest\b|\bhow long\b", ctx.query, re.IGNORECASE):
+        notices.append(
+            Notice(
+                "Duration cannot be ranked: Storm.eventLength is a fixed "
+                "analysis window, identical for every storm in the database.",
+                level="warning",
+            )
+        )
+
+    county = parse_storm_county(ctx)
+    try:
+        ranking = storm_ranking(ctx.conn, storm_code, county=county)
+        report = render_storm_ranking(ranking)
+    except StormAnalysisError as exc:
+        return _storm_notice_result(
+            [*notices, Notice(str(exc), level="error")], REPORT_STORM_RANKING
+        )
+
+    return AnalyticsResult(
+        rows=report.rows,
+        report=report.text,
+        report_kind=report.kind,
+        answer=report.text.split("\n", 1)[0],
+        notices=notices,
+    )
+
+
+def handle_storm_comparison(ctx: HandlerContext) -> AnalyticsResult:
+    """Capability 3 — Mode A (two stored storms) or Mode B (a forecast)."""
+    params, param_notices = parse_forecast_params(ctx.query)
+    tokens = parse_storm_tokens(ctx.query)
+
+    if params or looks_like_forecast(ctx.query):
+        return _handle_forecast_comparison(ctx, params, param_notices, tokens)
+
+    if len(tokens) < 2:
+        return _storm_notice_result(
+            [
+                Notice(
+                    "A storm comparison needs two storms. Name both by code "
+                    "(2020080406) or date (2020-08-04), or describe a forecast "
+                    "with parameters such as wind=27mph.",
+                    level="error",
+                )
+            ],
+            REPORT_STORM_COMPARISON,
+        )
+
+    notices: list[Notice] = []
+    codes: list[int] = []
+    for token in tokens[:2]:
+        code, token_notices = _resolve_single_storm(ctx, token)
+        notices.extend(token_notices)
+        if code is not None:
+            codes.append(code)
+
+    if len(codes) < 2:
+        return _storm_notice_result(notices, REPORT_STORM_COMPARISON)
+
+    try:
+        comparison = compare_storms(ctx.conn, codes[0], codes[1])
+        report = render_storm_comparison(comparison)
+    except StormAnalysisError as exc:
+        return _storm_notice_result(
+            [*notices, Notice(str(exc), level="error")], REPORT_STORM_COMPARISON
+        )
+
+    return AnalyticsResult(
+        rows=report.rows,
+        report=report.text,
+        report_kind=report.kind,
+        answer=report.text.split("\n", 1)[0],
+        notices=notices,
+    )
+
+
+def _handle_forecast_comparison(
+    ctx: HandlerContext,
+    params: dict[str, float],
+    param_notices: list[Notice],
+    tokens: list[str],
+) -> AnalyticsResult:
+    """Mode B — a forecast positioned against the historical record."""
+    if not params:
+        notices = param_notices or [
+            Notice(
+                "A forecast comparison needs weather parameters with explicit "
+                "units, such as wind=27mph or precip=1.2in.",
+                level="error",
+            )
+        ]
+        return _storm_notice_result(notices, REPORT_FORECAST_COMPARISON)
+
+    if err := validate_wind_positive(params):
+        return _storm_notice_result(
+            [*param_notices, Notice(err, level="error")], REPORT_FORECAST_COMPARISON
+        )
+
+    notices = list(param_notices)
+    county = parse_storm_county(ctx)
+
+    reference_summary = None
+    reference_ranking = None
+    if tokens:
+        storm_code, reference_notices = _resolve_single_storm(ctx, tokens[0])
+        if storm_code is None:
+            # The forecast half still stands on its own; say what was dropped.
+            notices.extend(reference_notices)
+        else:
+            try:
+                reference_summary = storm_summary(ctx.conn, storm_code)
+                reference_ranking = storm_ranking(ctx.conn, storm_code)
+            except StormAnalysisError as exc:
+                notices.append(Notice(str(exc), level="warning"))
+                reference_summary = None
+                reference_ranking = None
+
+    if len(params) == 1 and "peakWSPD10" not in params:
+        notices.append(
+            Notice(
+                "Only one non-wind parameter was supplied, so the match is "
+                "constrained on that feature alone."
+            )
+        )
+
+    try:
+        comparison = compare_forecast(
+            ctx.conn, params, county=county, limit=ctx.limit
+        )
+        report = render_forecast_comparison(
+            comparison,
+            reference_summary=reference_summary,
+            reference_ranking=reference_ranking,
+        )
+    except StormAnalysisError as exc:
+        return _storm_notice_result(
+            [*notices, Notice(str(exc), level="error")], REPORT_FORECAST_COMPARISON
+        )
+
+    return AnalyticsResult(
+        rows=report.rows,
+        report=report.text,
+        report_kind=report.kind,
+        answer=(
+            "Forecast positioned against "
+            f"{comparison.total_storms:,} historical storms; "
+            "outages shown are historical actuals, not a prediction."
+        ),
+        notices=notices,
+    )
+
+
 def handle_similarity_search(ctx: HandlerContext) -> SimilarityResult:
     query_params = parse_similarity_params(ctx.query)
     if not query_params:
@@ -632,13 +1044,44 @@ def handle_similarity_search(ctx: HandlerContext) -> SimilarityResult:
     results = ctx.similarity_agent.find_similar(
         ctx.conn, county, query_params, limit=ctx.limit
     )
-    return SimilarityResult(
+    result = SimilarityResult(
         ok=True,
         county=county,
         params=query_params,
         rows=results,
         total_historical=total,
     )
+    return _attach_forecast_report(ctx, result)
+
+
+def _attach_forecast_report(
+    ctx: HandlerContext,
+    result: SimilarityResult,
+) -> SimilarityResult:
+    """Render a forecast comparison over a similarity result, when asked.
+
+    Comparing a forecast to the whole record names no storm, so it stays on the
+    similarity route rather than fighting for a storm-scoped one. What changes
+    is only the presentation: with a forecast cue the result gains a report
+    block; without one it is returned exactly as before.
+    """
+    if not looks_like_forecast(ctx.query):
+        return result
+
+    try:
+        comparison = compare_forecast(
+            ctx.conn, result.params, county=result.county, limit=ctx.limit
+        )
+        report = render_forecast_comparison(comparison)
+    except StormAnalysisError as exc:
+        result.notices.append(
+            Notice(f"Forecast comparison unavailable ({exc}).", level="warning")
+        )
+        return result
+
+    result.report = report.text
+    result.report_kind = report.kind
+    return result
 
 
 def handle_rag_knowledge(ctx: HandlerContext) -> RagKnowledgeResult:
@@ -726,6 +1169,9 @@ ROUTE_HANDLERS: dict[Route, RouteHandler] = {
     Route.WEATHER_ANALYTICS: handle_weather_analytics,
     Route.SIMILARITY_SEARCH: handle_similarity_search,
     Route.RAG_KNOWLEDGE: handle_rag_knowledge,
+    Route.STORM_SUMMARY: handle_storm_summary,
+    Route.STORM_RANKING: handle_storm_ranking,
+    Route.STORM_COMPARISON: handle_storm_comparison,
 }
 
 DEFAULT_ROUTE_HANDLER: RouteHandler = handle_unknown

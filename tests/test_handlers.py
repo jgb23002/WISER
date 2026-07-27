@@ -491,12 +491,10 @@ class TestHandleRagKnowledge(unittest.TestCase):
 
 class TestDispatch(unittest.TestCase):
     def test_registry_covers_all_concrete_routes(self):
-        expected = {
-            Route.DATA_RETRIEVAL,
-            Route.WEATHER_ANALYTICS,
-            Route.SIMILARITY_SEARCH,
-            Route.RAG_KNOWLEDGE,
-        }
+        # Derived from Route rather than frozen as a list: the invariant is
+        # "every route except UNKNOWN has a handler", so adding a route should
+        # fail here until it is wired up, not require editing this expectation.
+        expected = set(Route) - {Route.UNKNOWN}
         self.assertEqual(set(ROUTE_HANDLERS.keys()), expected)
 
     def test_unknown_route_returns_suggestions(self):
