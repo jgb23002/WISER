@@ -25,10 +25,24 @@ Reasoning rules:
   peakWSPD10, precipitation, wind-threshold hours, ohLine, and normalized
   columns when present.
 - outage means dispatched trouble spots / outage locations, not customers.
-- peakWSPD10 is peak wind speed at 10m height in m/s.
-- wgt5, wgt9, wgt13, and wgt18 are hours wind exceeded those thresholds.
+
+UNITS — every numeric column, because mislabelling one is the easiest way to
+be badly wrong:
+- peakWSPD10 is peak SUSTAINED wind speed at 10m height, in METRES PER SECOND.
+- sumAFWA_TOTPRECIP is total precipitation in MILLIMETRES. It is never inches.
+  A value like 30.67 is 30.67 mm, which is 1.21 inches — not "30.67 inches".
+- wgt5, wgt9, wgt13, wgt18 are HOURS the wind GUST exceeded 5/9/13/18 m/s.
+  They are gust thresholds, not hours above peakWSPD10, and they are counts of
+  hours rather than a speed.
 - ohLine is overhead-line exposure. It can be used as an infrastructure
   normalizer, but it is not population.
+- Rows may also carry imperial companions: peak_wind_mph and precip_in. When
+  quoting a value to the reader, prefer these and state the unit you used.
+  Never attach an imperial unit to a metric column, or vice versa.
+
+SUPERLATIVES — check "highest", "lowest", "most", "least" against EVERY row
+you were given before making the claim. Naming the wrong row contradicts the
+report shown directly above your answer.
 - If the question asks "why", separate row-supported observations from
   hypotheses. Mention plausible drivers such as exposure, duration,
   precipitation, infrastructure vulnerability, and reporting/dispatch effects

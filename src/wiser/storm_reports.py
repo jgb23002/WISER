@@ -60,6 +60,13 @@ REPORT_STORM_COMPARISON = "storm_comparison"
 REPORT_FORECAST_COMPARISON = "forecast_comparison"
 
 
+# Reports are pasted into slides and screenshotted, where nothing re-wraps for
+# you. Prose is wrapped here so a caveat is a paragraph rather than one 400
+# character line running off the edge. Table rows and aligned columns are left
+# alone — wrapping those would destroy the alignment they depend on.
+REPORT_WIDTH = 96
+
+
 @dataclass(frozen=True)
 class StormReport:
     """A rendered report block plus the rows behind it."""
@@ -67,6 +74,35 @@ class StormReport:
     kind: str
     text: str
     rows: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _wrap(lines: Sequence[str], width: int = REPORT_WIDTH) -> str:
+    """Join report lines, wrapping prose and preserving aligned rows.
+
+    A line is treated as prose only when it has no run of two or more spaces
+    after its leading indent — that run is what column alignment is made of.
+    """
+    import textwrap
+
+    out: list[str] = []
+    for line in lines:
+        stripped = line.lstrip(" ")
+        indent = line[: len(line) - len(stripped)]
+        is_aligned = "  " in stripped.rstrip()
+        if len(line) <= width or is_aligned:
+            out.append(line)
+            continue
+        out.extend(
+            textwrap.wrap(
+                stripped,
+                width=width,
+                initial_indent=indent,
+                subsequent_indent=indent + "  ",
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
+        )
+    return "\n".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +156,7 @@ def render_storm_summary(
 
     return StormReport(
         kind=REPORT_STORM_SUMMARY,
-        text="\n".join(lines),
+        text=_wrap(lines),
         rows=county_rows(summary),
     )
 
@@ -219,7 +255,7 @@ def render_storm_ranking(ranking: StormRanking) -> StormReport:
     lines.extend(["", _ranking_caveat()])
     return StormReport(
         kind=REPORT_STORM_RANKING,
-        text="\n".join(lines),
+        text=_wrap(lines),
         rows=ranking_rows(ranking),
     )
 
@@ -314,7 +350,7 @@ def render_storm_comparison(comparison: StormComparison) -> StormReport:
 
     return StormReport(
         kind=REPORT_STORM_COMPARISON,
-        text="\n".join(lines),
+        text=_wrap(lines),
         rows=comparison_rows(comparison),
     )
 
@@ -611,7 +647,7 @@ def render_forecast_comparison(
 
     return StormReport(
         kind=REPORT_FORECAST_COMPARISON,
-        text="\n".join(lines),
+        text=_wrap(lines),
         rows=forecast_rows(comparison),
     )
 

@@ -9,6 +9,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from wiser.agents.storm_reasoning_agent import (  # noqa: E402
+    _SYSTEM_PROMPT,
     StormReasoningAgent,
     _add_generation_options,
     build_reasoning_prompt,
@@ -130,6 +131,38 @@ class TestStormReasoningAgent(unittest.TestCase):
         self.assertEqual(body["max_tokens"], 700)
         self.assertEqual(body["temperature"], 0.2)
         self.assertNotIn("max_completion_tokens", body)
+
+
+class TestSystemPromptStatesUnits(unittest.TestCase):
+    """A live run mislabelled 30.67 mm as "30.67 inches" — a 26x error, printed
+    directly under a report that said 1.21 in. The prompt named units for
+    peakWSPD10 but not for precipitation."""
+
+    def test_every_numeric_column_has_its_unit_stated(self):
+        for column, unit in (
+            ("peakWSPD10", "METRES PER SECOND"),
+            ("sumAFWA_TOTPRECIP", "MILLIMETRES"),
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, _SYSTEM_PROMPT)
+                self.assertIn(unit, _SYSTEM_PROMPT)
+
+    def test_prompt_warns_against_cross_unit_labelling(self):
+        self.assertIn("never attach an imperial unit", _SYSTEM_PROMPT.lower())
+
+    def test_prompt_names_the_imperial_companion_columns(self):
+        self.assertIn("peak_wind_mph", _SYSTEM_PROMPT)
+        self.assertIn("precip_in", _SYSTEM_PROMPT)
+
+    def test_prompt_requires_superlatives_to_be_checked(self):
+        lowered = _SYSTEM_PROMPT.lower()
+        self.assertIn("superlative", lowered)
+        self.assertIn("every row", lowered)
+
+    def test_wgt_columns_are_described_as_gusts(self):
+        """The schema evidence says wgt* cannot be hours above peakWSPD10."""
+        self.assertIn("GUST", _SYSTEM_PROMPT)
+        self.assertIn("not hours above peakWSPD10", _SYSTEM_PROMPT)
 
 
 class TestNormalizedRankingDivergence(unittest.TestCase):

@@ -83,6 +83,16 @@ def _make_conn() -> sqlite3.Connection:
     return conn
 
 
+def _flat(text: str) -> str:
+    """Whitespace-collapsed, so assertions on prose survive line wrapping.
+
+    Report prose is wrapped to a fixed width for slides and screenshots, so a
+    sentence may span lines. Tests assert on the sentence, not on where the
+    wrap happened to fall.
+    """
+    return " ".join(text.split())
+
+
 def _order_of(text: str, *fragments: str) -> list[int]:
     return [text.index(fragment) for fragment in fragments]
 
@@ -243,8 +253,8 @@ class TestStormRankingReport(unittest.TestCase):
         report = render_storm_ranking(
             storm_ranking(self.conn, 2020080406, metrics=[METRIC_OUTAGE])
         )
-        self.assertIn("That places it in the top", report.text)
-        self.assertNotIn("metrics disagree", report.text)
+        self.assertIn("That places it in the top", _flat(report.text))
+        self.assertNotIn("metrics disagree", _flat(report.text))
 
     def test_percentile_never_claims_better_than_one_percent(self):
         self.assertNotIn("top 0%", self.report.text)
@@ -365,8 +375,8 @@ class TestForecastComparisonReport(unittest.TestCase):
                 self.assertEqual(row["outage_basis"], "historical actual")
 
     def test_report_states_it_is_not_a_prediction(self):
-        self.assertIn(NOT_A_PREDICTION, self.report.text)
-        self.assertIn("NOT a prediction", self.report.text)
+        self.assertIn(_flat(NOT_A_PREDICTION), _flat(self.report.text))
+        self.assertIn("NOT a prediction", _flat(self.report.text))
 
     def test_no_outage_value_appears_on_the_forecast_side(self):
         """The single most important assertion in this suite: whatever the
@@ -391,7 +401,7 @@ class TestForecastComparisonReport(unittest.TestCase):
 
     def test_section_order(self):
         positions = _order_of(
-            self.report.text,
+            _flat(self.report.text),
             "Forecast Comparison:",
             f"Forecast input {PROJECTION_LABEL}",
             "Position in the record",
@@ -402,14 +412,14 @@ class TestForecastComparisonReport(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
 
     def test_caveat_says_the_forecast_is_not_a_record(self):
-        self.assertIn("not a database record", self.report.text)
-        self.assertIn("no outage figure is attributed to it", self.report.text)
+        self.assertIn("not a database record", _flat(self.report.text))
+        self.assertIn("no outage figure is attributed to it", _flat(self.report.text))
 
     def test_statewide_report_warns_scores_are_within_county(self):
         statewide = render_forecast_comparison(
             compare_forecast(self.conn, {"peakWSPD10": 9.0}, limit=2)
         )
-        self.assertIn("not comparable between counties", statewide.text)
+        self.assertIn("not comparable between counties", _flat(statewide.text))
         self.assertIn("Fairfield County", statewide.text)
         self.assertIn("Hartford County", statewide.text)
 
@@ -417,7 +427,7 @@ class TestForecastComparisonReport(unittest.TestCase):
         report = render_forecast_comparison(
             compare_forecast(self.conn, {"wgt5": 12}, county="Fairfield")
         )
-        self.assertIn("No positionable values supplied", report.text)
+        self.assertIn("No positionable values supplied", _flat(report.text))
         self.assertIn("Closest historical analogues", report.text)
 
 

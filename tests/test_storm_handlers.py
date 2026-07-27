@@ -591,7 +591,7 @@ class TestSimilarityPresentationSwitch(unittest.TestCase):
                 self.conn,
             )
         )
-        self.assertIn("NOT a prediction", result.report)
+        self.assertIn("NOT a prediction", " ".join(result.report.split()))
 
 
 class TestRegistryAndHistory(unittest.TestCase):
