@@ -23,6 +23,7 @@ from typing import Any, Sequence
 
 from wiser.agents.storm_reasoning_agent import normalized_ranking_divergence
 from wiser.storm_analysis import (
+    COMPARISON_THRESHOLD_MS,
     METRIC_MAX_PRECIP,
     METRIC_MAX_WIND,
     METRIC_OUTAGE,
@@ -375,14 +376,25 @@ def _metric_difference_bullets(comparison: StormComparison) -> list[str]:
     The section used to report structural observations only, which meant it
     could describe two storms as alike while the table directly above showed
     precipitation differing by 86%.
+
+    A metric with a zero on either side is described rather than scored. Every
+    such gap is "100% higher" no matter how small it is in absolute terms, so
+    scoring one lets a two-county difference outrank a fivefold difference in
+    rainfall. Describing it keeps the observation without the false precision,
+    and without needing a taxonomy of which metrics may be ranked.
     """
     scored: list[tuple[float, str]] = []
+    described: list[str] = []
+
     for delta in comparison.deltas:
         larger, smaller = delta.value_a, delta.value_b
         if larger is None or smaller is None:
             continue
         high, low = max(larger, smaller), min(larger, smaller)
         if high == 0:
+            continue  # both sides zero: nothing happened, nothing to report
+        if low == 0:
+            described.append(_zero_baseline_sentence(delta, high))
             continue
         relative = (high - low) / high
         if relative < _MATERIAL_DIFFERENCE:
@@ -390,7 +402,29 @@ def _metric_difference_bullets(comparison: StormComparison) -> list[str]:
         scored.append((relative, _difference_sentence(delta, relative)))
 
     scored.sort(key=lambda item: -item[0])
-    return [f"  - {sentence}" for _, sentence in scored]
+    return [f"  - {sentence}" for _, sentence in scored] + [
+        f"  - {sentence}" for sentence in described
+    ]
+
+
+def _zero_baseline_sentence(delta, high: float) -> str:
+    """Qualitative, because the percentage would be 100% regardless of size."""
+    leader = "A" if (delta.value_a or 0) >= (delta.value_b or 0) else "B"
+    trailer = "B" if leader == "A" else "A"
+
+    if delta.metric == "counties_above_threshold":
+        counties = int(high)
+        return (
+            f"Storm {leader} had wind hours above {COMPARISON_THRESHOLD_MS} m/s in "
+            f"{counties} {'county' if counties == 1 else 'counties'}; "
+            f"Storm {trailer} had none."
+        )
+
+    formatter = _COMPARISON_FORMATTERS.get(delta.metric, (format_count, None))[0]
+    return (
+        f"{delta.label}: Storm {leader} recorded {formatter(high)}; "
+        f"Storm {trailer} recorded none."
+    )
 
 
 def _difference_sentence(delta, relative: float) -> str:

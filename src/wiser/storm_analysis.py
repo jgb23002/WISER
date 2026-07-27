@@ -54,8 +54,11 @@ COUNTY_METRIC_LABELS: dict[str, str] = {
 # The wind-threshold column used for the comparison table's "counties above
 # threshold" row. wgt13 is near-zero for most storms in this dataset, so wgt9
 # is the threshold with usable spread.
-COMPARISON_THRESHOLD_COLUMN = "wgt9"
-COMPARISON_THRESHOLD_LABEL = "Counties with 9+ m/s wind hours"
+COMPARISON_THRESHOLD_MS = 9
+COMPARISON_THRESHOLD_COLUMN = f"wgt{COMPARISON_THRESHOLD_MS}"
+COMPARISON_THRESHOLD_LABEL = (
+    f"Counties with {COMPARISON_THRESHOLD_MS}+ m/s wind hours"
+)
 
 
 class DbConnection(Protocol):
@@ -436,6 +439,32 @@ def resolve_storm(conn: DbConnection, token: str) -> StormResolution:
         (lower, upper),
     )
     return StormResolution(token=text, matches=tuple(_storm_ref(row) for row in rows))
+
+
+def same_date_siblings(conn: DbConnection, storm_code: int) -> tuple[StormRef, ...]:
+    """Other storms sharing this storm's calendar date.
+
+    Every storm carries the same fixed 48-hour analysis window, so two storms
+    entered 6 or 12 hours apart have windows overlapping by 36-42 hours. In the
+    current dataset such pairs report near-identical county outages while their
+    weather aggregates differ, which is what one weather system recorded twice
+    looks like.
+
+    Reported, never merged: deduplicating would be a data decision, and the
+    pairs are real rows.
+    """
+    lower, upper = date_to_storm_code_range(storm_code_to_date(storm_code))
+    rows = _fetch(
+        conn,
+        """
+        SELECT stormCode, eventDateTime, eventLength
+        FROM Storm
+        WHERE stormCode >= ? AND stormCode < ? AND stormCode <> ?
+        ORDER BY stormCode ASC
+        """,
+        (lower, upper, int(storm_code)),
+    )
+    return tuple(_storm_ref(row) for row in rows)
 
 
 def storm_count(conn: DbConnection, *, state: str = DEFAULT_STATE) -> int:

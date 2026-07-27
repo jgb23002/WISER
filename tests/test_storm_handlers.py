@@ -298,6 +298,35 @@ class TestHandleStormRanking(unittest.TestCase):
         self.assertTrue(_errors(result))
         self.assertIsNone(result.report)
 
+    def test_same_date_sibling_is_flagged_on_the_ranking(self):
+        """A same-date pair sits at adjacent ranks with near-identical outage
+        figures, which reads as a duplicate-row bug unless it is named."""
+        result = handle_storm_ranking(
+            _make_ctx("how does storm 2021090100 rank", self.conn)
+        )
+        warnings = [n.text for n in result.notices if n.level == "warning"]
+        note = next(w for w in warnings if "shares its date" in w)
+
+        self.assertIn("2021090112", note)
+        self.assertIn("2021-09-01 12:00", note)
+        self.assertIn("48-hour", note)
+        # Both storms stay in the ranking; nothing is deduplicated.
+        self.assertIsNotNone(result.report)
+
+    def test_the_sibling_notice_is_symmetric(self):
+        result = handle_storm_ranking(
+            _make_ctx("how does storm 2021090112 rank", self.conn)
+        )
+        warnings = [n.text for n in result.notices if n.level == "warning"]
+        self.assertTrue(any("2021090100" in w for w in warnings))
+
+    def test_no_sibling_notice_for_a_storm_with_a_unique_date(self):
+        result = handle_storm_ranking(
+            _make_ctx("how does storm 2020080406 rank", self.conn)
+        )
+        warnings = [n.text for n in result.notices if n.level == "warning"]
+        self.assertFalse([w for w in warnings if "shares its date" in w])
+
 
 class TestHandleStormComparisonModeA(unittest.TestCase):
     def setUp(self):

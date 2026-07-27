@@ -47,6 +47,7 @@ from wiser.storm_analysis import (
     compare_forecast,
     compare_storms,
     resolve_storm,
+    same_date_siblings,
     state_counties,
     storm_count,
     storm_ranking,
@@ -892,6 +893,7 @@ def handle_storm_ranking(ctx: HandlerContext) -> AnalyticsResult:
             [*notices, Notice(str(exc), level="error")], REPORT_STORM_RANKING
         )
 
+    notices.extend(_same_date_sibling_notices(ctx, storm_code))
     notices.append(Notice(DATASET_VINTAGE_NOTE))
     return AnalyticsResult(
         rows=report.rows,
@@ -901,6 +903,39 @@ def handle_storm_ranking(ctx: HandlerContext) -> AnalyticsResult:
         answer=report.text.split("\n", 1)[0],
         notices=notices,
     )
+
+
+def _same_date_sibling_notices(
+    ctx: HandlerContext,
+    storm_code: int,
+) -> list[Notice]:
+    """Warn that a ranked storm shares its date with another.
+
+    Such a pair sits at adjacent ranks with near-identical outage figures,
+    which reads as a duplicate-row bug. Naming it turns "why are there two of
+    these" into a stated data-quality observation. Nothing is deduplicated —
+    that would be a data decision, and both rows are real.
+    """
+    try:
+        siblings = same_date_siblings(ctx.conn, storm_code)
+    except Exception:  # noqa: BLE001 - an advisory notice must never break a report
+        return []
+    if not siblings:
+        return []
+
+    listed = ", ".join(
+        f"{sibling.storm_code} ({_clock_time(sibling.event_datetime)})"
+        for sibling in siblings
+    )
+    return [
+        Notice(
+            f"Data note: {storm_code} shares its date with {listed}. Every storm "
+            "carries the same fixed 48-hour window, so these overlap and may be "
+            "one weather system recorded twice — expect adjacent ranks and "
+            "near-identical outage figures.",
+            level="warning",
+        )
+    ]
 
 
 def handle_storm_comparison(ctx: HandlerContext) -> AnalyticsResult:

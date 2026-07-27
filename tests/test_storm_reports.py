@@ -522,6 +522,62 @@ class TestComparisonLeadsWithTheLargestDifference(unittest.TestCase):
             section.index("Geographic concentration:"),
         )
 
+    def test_a_zero_baseline_metric_is_described_not_scored(self):
+        """Every zero-baseline gap is "100% higher" regardless of size, so
+        scoring one lets a two-county difference outrank a fivefold difference
+        in rainfall."""
+        self._seed(
+            [
+                # Precipitation differs 4x. Threshold counties go 2 -> 0, which
+                # would score 100% and top the list if it were ranked.
+                (2020080406, "Fairfield", 20.0, 9.5, 5, 4, 0, 0, 500),
+                (2020080406, "Hartford", 20.0, 9.5, 5, 4, 0, 0, 500),
+                (2021090100, "Fairfield", 80.0, 9.5, 5, 0, 0, 0, 500),
+                (2021090100, "Hartford", 80.0, 9.5, 5, 0, 0, 0, 500),
+            ]
+        )
+        report = render_storm_comparison(
+            compare_storms(self.conn, 2020080406, 2021090100)
+        )
+        bullets = _metric_bullets(report.text)
+
+        self.assertIn("precipitation", bullets[0].lower())
+        self.assertNotIn("100% higher", report.text)
+
+        described = bullets[-1]
+        self.assertIn("wind hours above 9 m/s in 2 counties", described)
+        self.assertIn("had none", described)
+
+    def test_a_zero_baseline_metric_sorts_after_every_ranked_one(self):
+        self._seed(
+            [
+                (2020080406, "Fairfield", 20.0, 9.5, 5, 4, 0, 0, 500),
+                (2020080406, "Hartford", 20.0, 9.5, 5, 4, 0, 0, 500),
+                (2021090100, "Fairfield", 21.0, 9.5, 5, 0, 0, 0, 100),
+                (2021090100, "Hartford", 21.0, 9.5, 5, 0, 0, 0, 100),
+            ]
+        )
+        report = render_storm_comparison(
+            compare_storms(self.conn, 2020080406, 2021090100)
+        )
+        bullets = _metric_bullets(report.text)
+        self.assertGreater(len(bullets), 1)
+        self.assertIn("had none", bullets[-1])
+        for bullet in bullets[:-1]:
+            self.assertNotIn("had none", bullet)
+
+    def test_both_sides_zero_is_not_reported_as_a_difference(self):
+        self._seed(
+            [
+                (2020080406, "Fairfield", 20.0, 9.5, 5, 0, 0, 0, 500),
+                (2021090100, "Fairfield", 80.0, 9.5, 5, 0, 0, 0, 500),
+            ]
+        )
+        report = render_storm_comparison(
+            compare_storms(self.conn, 2020080406, 2021090100)
+        )
+        self.assertNotIn("had none", report.text)
+
     def test_a_dominant_precipitation_gap_leads_the_section(self):
         """The defect this section was rewritten for: the table showed
         precipitation differing ~7x while every bullet said the storms were
