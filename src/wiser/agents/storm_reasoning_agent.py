@@ -178,7 +178,7 @@ def reason_locally(query: str, rows: Sequence[dict[str, object]]) -> str:
 
     ranked = sorted(
         row_list,
-        key=lambda row: float(row.get(primary_metric, float("-inf"))),
+        key=lambda row: _as_float(row.get(primary_metric)),
         reverse=True,
     )
     top = ranked[0]
@@ -190,10 +190,14 @@ def reason_locally(query: str, rows: Sequence[dict[str, object]]) -> str:
     ]
     if len(ranked) > 1:
         runner_up = ranked[1]
-        diff = float(top[primary_metric]) - float(runner_up[primary_metric])
-        bullets.append(
-            f"- Next highest is {_row_label(runner_up)} at {_format_value(runner_up.get(primary_metric))}, a gap of {_format_value(diff)}."
-        )
+        detail = f"- Next highest is {_row_label(runner_up)} at {_format_value(runner_up.get(primary_metric))}"
+        # A gap is only meaningful when both sides are measured values.
+        if _is_number(top.get(primary_metric)) and _is_number(
+            runner_up.get(primary_metric)
+        ):
+            diff = float(top[primary_metric]) - float(runner_up[primary_metric])
+            detail += f", a gap of {_format_value(diff)}"
+        bullets.append(f"{detail}.")
 
     outage_metric = _first_present_key(row_list, ("total_outage", "outage"))
     if (
@@ -202,7 +206,7 @@ def reason_locally(query: str, rows: Sequence[dict[str, object]]) -> str:
     ):
         outage_top = max(
             row_list,
-            key=lambda row: float(row.get(outage_metric, float("-inf"))),
+            key=lambda row: _as_float(row.get(outage_metric)),
         )
         if _row_label(outage_top) != top_label:
             bullets.append(
@@ -254,7 +258,7 @@ def reason_locally(query: str, rows: Sequence[dict[str, object]]) -> str:
         if normalized_key:
             normalized_top = max(
                 row_list,
-                key=lambda row: float(row.get(normalized_key, float("-inf"))),
+                key=lambda row: _as_float(row.get(normalized_key)),
             )
             bullets.append(
                 f"- Normalized view: {_row_label(normalized_top)} is highest by {normalized_key} at {_format_value(normalized_top.get(normalized_key))}, which can change the interpretation from raw outage totals."
@@ -394,7 +398,9 @@ def _lower_wind_higher_outage_observation(
 ) -> tuple[dict[str, object], dict[str, object]] | None:
     if not _has_columns(rows, "outage", "peakWSPD10"):
         return None
-    for candidate in sorted(rows, key=lambda row: float(row.get("outage", 0)), reverse=True):
+    for candidate in sorted(
+        rows, key=lambda row: _as_float(row.get("outage"), 0.0), reverse=True
+    ):
         for other in rows:
             if candidate is other:
                 continue
@@ -420,6 +426,8 @@ def _has_columns(rows: Sequence[dict[str, object]], *columns: str) -> bool:
 
 
 def _format_value(value: object) -> str:
+    if value is None:
+        return "not reported"
     if not _is_number(value):
         return str(value)
     number = float(value)
@@ -430,6 +438,11 @@ def _format_value(value: object) -> str:
 
 def _is_number(value: object) -> bool:
     return isinstance(value, (int, float)) and math.isfinite(float(value))
+
+
+def _as_float(value: object, default: float = float("-inf")) -> float:
+    """Ordering key tolerant of SQL NULLs, which LEFT JOIN aggregates can emit."""
+    return float(value) if _is_number(value) else default
 
 
 def _dedupe(items: Sequence[str]) -> list[str]:

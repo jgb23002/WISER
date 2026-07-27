@@ -512,11 +512,6 @@ def _render_svg(svg):
         f"data:text/html;base64,{encoded}",
         height=560
     )
-    #encoded = base64.b64encode(html.encode("utf-8")).decode("ascii")
-    components.iframe(
-        f"data:text/html;base64,{encoded}",
-        height=560
-    )
 
 
 def render_result(

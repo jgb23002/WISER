@@ -33,6 +33,8 @@ class ExternalLoadSummary:
     rows_seen: int
     rows_loaded: int
     table_count: int
+    # Existing rows refreshed by an upsert rather than newly inserted.
+    rows_updated: int = 0
 
 
 CSV_ALIASES: dict[str, tuple[str, ...]] = {
@@ -209,6 +211,19 @@ def load_external_observations(
     observations: Sequence[ExternalOutageObservation],
 ) -> ExternalLoadSummary:
     ensure_external_outage_schema(conn)
+    if not observations:
+        # Without a batch there is no source to scope a count to; reporting the
+        # table-wide total here would attribute every other source's rows to it.
+        return ExternalLoadSummary(
+            source_system="",
+            rows_seen=0,
+            rows_loaded=0,
+            table_count=0,
+        )
+
+    # Counted table-wide so a mixed-source batch still yields a correct insert
+    # delta; only table_count is scoped to the batch's source.
+    count_before = external_observation_count(conn)
     conn.executemany(
         """
         INSERT INTO ExternalOutageObservation(
@@ -248,11 +263,24 @@ def load_external_observations(
     )
     conn.commit()
 
-    source_system = observations[0].source_system if observations else ""
+    source_system = observations[0].source_system
+    # Rows the upsert actually added; a pure-duplicate batch inserts nothing.
+    rows_inserted = external_observation_count(conn) - count_before
+    distinct_keys = len(
+        {
+            (
+                observation.source_system,
+                observation.source_record_id,
+                observation.observed_at,
+            )
+            for observation in observations
+        }
+    )
     return ExternalLoadSummary(
         source_system=source_system,
         rows_seen=len(observations),
-        rows_loaded=len(observations),
+        rows_loaded=rows_inserted,
+        rows_updated=distinct_keys - rows_inserted,
         table_count=external_observation_count(conn, source_system=source_system),
     )
 

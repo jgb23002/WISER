@@ -101,6 +101,7 @@ def load_external_source(
     print(f"  - file: {file_path}")
     print(f"  - rows parsed: {summary.rows_seen}")
     print(f"  - rows loaded: {summary.rows_loaded}")
+    print(f"  - rows updated: {summary.rows_updated}")
     print(f"  - source table count: {summary.table_count}")
     if preview_rows:
         print("Recent loaded observations:")

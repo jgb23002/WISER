@@ -333,6 +333,9 @@ def handle_weather_analytics(ctx: HandlerContext) -> AnalyticsResult:
         result = agent.run(ctx.query, ctx.conn, limit=ctx.limit, history=history)
         return AnalyticsResult(dry_run_prompt=result["sql"])
 
+    # Reasoning is attached after the try/except so a reasoning-layer failure is
+    # never misreported as an SQL agent error, nor discards a valid SQL result.
+    analytics = None
     try:
         result = agent.run(ctx.query, ctx.conn, limit=ctx.limit, history=history)
         analytics = AnalyticsResult(
@@ -340,13 +343,15 @@ def handle_weather_analytics(ctx: HandlerContext) -> AnalyticsResult:
             rows=result["rows"],
             answer=result["answer"],
         )
-        return _attach_reasoning(ctx, analytics)
     except SqlValidationError as exc:
         warning = f"SQL AI Agent validation failed ({exc}) — falling back to fixed queries"
     except Exception as exc:  # noqa: BLE001
         warning = (
             f"SQL AI Agent error ({type(exc).__name__}: {exc}) — falling back to fixed queries"
         )
+
+    if analytics is not None:
+        return _attach_reasoning(ctx, analytics)
 
     fallback = _weather_analytics_fallback(ctx)
     fallback.notices.insert(0, Notice(f"[Warning: {warning}]", level="warning"))
@@ -363,12 +368,22 @@ def _attach_reasoning(
     reasoning_agent = StormReasoningAgent(
         model=getattr(ctx, "openai_model", None) or getattr(ctx, "sql_model", None)
     )
-    reasoning = reasoning_agent.run(
-        ctx.query,
-        sql=result.sql,
-        rows=result.rows,
-        use_openai=getattr(ctx, "use_openai_summary", True),
-    )
+    try:
+        reasoning = reasoning_agent.run(
+            ctx.query,
+            sql=result.sql,
+            rows=result.rows,
+            use_openai=getattr(ctx, "use_openai_summary", True),
+        )
+    except Exception as exc:  # noqa: BLE001 - reasoning is additive; keep the rows
+        result.notices.append(
+            Notice(
+                f"Storm reasoning unavailable ({type(exc).__name__}: {exc}).",
+                level="warning",
+            )
+        )
+        return result
+
     result.reasoning = reasoning.answer
     result.reasoning_prompt = reasoning.prompt
     result.reasoning_mode = reasoning.mode
@@ -386,8 +401,10 @@ def _weather_analytics_fallback(ctx: HandlerContext) -> AnalyticsResult:
     text = ctx.query.lower()
     county = parse_county_name(ctx.query)
 
+    # An empty match (e.g. a storm code absent from the database) is a miss, not a
+    # hit — otherwise it short-circuits every branch below and returns a bare table.
     comparison_rows = _reasoning_comparison_rows(ctx)
-    if comparison_rows is not None:
+    if comparison_rows:
         return AnalyticsResult(
             used_fallback=True,
             fallback_title="County comparison for analytical reasoning:",

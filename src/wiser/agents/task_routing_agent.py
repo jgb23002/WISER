@@ -55,6 +55,20 @@ class TaskRoutingAgent:
         "db",
         "sqlite",
     }
+    # A data-management action only counts as ETL when it acts on a named data
+    # artifact; "biggest outage load" is an analytics phrase, not a load command.
+    DATA_ARTIFACT_KEYWORDS = {
+        "csv",
+        "database",
+        "db",
+        "sqlite",
+        "schema",
+        "table",
+        "tables",
+        "source data",
+        "raw data",
+        "raw",
+    }
     ANALYTICS_KEYWORDS = {
         "analyze",
         "analysis",
@@ -158,12 +172,22 @@ class TaskRoutingAgent:
             reason="No strong keyword match; needs manual decision.",
         )
 
+    @staticmethod
+    def _matches_word(text: str, keywords) -> bool:
+        """Whole-word match so "crawl" does not read as "raw"."""
+        return any(
+            re.search(rf"\b{re.escape(keyword)}\b", text) for keyword in keywords
+        )
+
     def _looks_like_data_management(self, text: str) -> bool:
+        # Naming the database as a source does not make a normalization question
+        # ETL; only raw-file wording does. Keeps "normalize outages by population
+        # using the database" in analytics.
         if (
             "normalize" in text
-            and any(
-                keyword in text
-                for keyword in (
+            and self._matches_word(
+                text,
+                (
                     "outage",
                     "outages",
                     "population",
@@ -171,16 +195,15 @@ class TaskRoutingAgent:
                     "per-capita",
                     "county",
                     "counties",
-                )
+                ),
             )
-            and not any(
-                keyword in text
-                for keyword in ("csv", "raw", "source data", "database", "db", "sqlite")
-            )
+            and not self._matches_word(text, ("csv", "raw", "source data"))
         ):
             return False
-        if any(keyword in text for keyword in self.DATA_ACTION_KEYWORDS):
+        if self._matches_word(text, self.DATA_ACTION_KEYWORDS) and self._matches_word(
+            text, self.DATA_ARTIFACT_KEYWORDS
+        ):
             return True
-        return "retrieve" in text and any(
-            keyword in text for keyword in self.DATA_METADATA_KEYWORDS
+        return "retrieve" in text and self._matches_word(
+            text, self.DATA_METADATA_KEYWORDS
         )
