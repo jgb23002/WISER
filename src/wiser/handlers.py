@@ -55,6 +55,7 @@ from wiser.storm_analysis import (
 )
 from wiser.storm_reports import (
     DATASET_VINTAGE_NOTE,
+    comparison_map_panels,
     REPORT_FORECAST_COMPARISON,
     REPORT_STORM_COMPARISON,
     REPORT_STORM_RANKING,
@@ -230,6 +231,9 @@ class AnalyticsResult:
     # rows with human labels and rounded values, for display. `rows` keeps
     # machine column names and full precision for maps and reasoning.
     display_rows: list[dict[str, object]] | None = None
+    # Two or more county maps meant to be read together, already sharing
+    # one colour scale. Surfaces that can show maps render them side by side.
+    map_panels: list[object] | None = None
 
 
 @dataclass
@@ -1022,6 +1026,8 @@ def handle_storm_comparison(ctx: HandlerContext) -> AnalyticsResult:
     return AnalyticsResult(
         rows=report.rows,
         display_rows=display_rows(report),
+        # Two county maps on one shared scale, for surfaces that can show them.
+        map_panels=comparison_map_panels(comparison),
         report=report.text,
         report_kind=report.kind,
         answer=report.text.split("\n", 1)[0],

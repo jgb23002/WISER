@@ -221,7 +221,45 @@ def _render_reasoning(
                 st.code(result.reasoning_prompt, language="text")
 
 
+def _render_map_panels(result: AnalyticsResult) -> bool:
+    """Render a set of county maps side by side. Returns True if it drew any.
+
+    Every panel is drawn with the SAME colour range, computed across all of
+    them. Scaled independently, a storm with a tenth of the outages would paint
+    just as red as the larger one and invert the comparison being made.
+    """
+    panels = getattr(result, "map_panels", None)
+    if not panels:
+        return False
+
+    st.subheader("County heat maps")
+    st.caption(
+        "Both maps share one colour scale, so the same shade means the same "
+        "number of outages in each."
+    )
+    columns = st.columns(len(panels))
+    for column, panel in zip(columns, panels):
+        with column:
+            st.markdown(f"**{panel.title}**")
+            st.caption(panel.subtitle)
+            try:
+                svg = render_county_heatmap_svg(
+                    _county_geojson(),
+                    panel.rows,
+                    panel.metric,
+                    title=panel.title,
+                    value_range=panel.value_range,
+                )
+            except Exception as exc:  # noqa: BLE001 - the table remains the source of truth
+                st.warning(f"Map unavailable: {type(exc).__name__}: {exc}")
+                continue
+            _render_svg(svg, height=460)
+    return True
+
+
 def _render_analytics_heatmap(result: AnalyticsResult) -> None:
+    if _render_map_panels(result):
+        return
     rows = result.rows or []
     metric_key = _heatmap_metric_for_result(result)
     if metric_key is None:

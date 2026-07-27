@@ -28,6 +28,13 @@ class CountyHeatmapMetric:
 
 
 COUNTY_HEATMAP_METRICS: dict[str, CountyHeatmapMetric] = {
+    "outage": CountyHeatmapMetric(
+        key="outage",
+        label="Outages",
+        value_label="Outages",
+        unit="trouble spots",
+        help_text="Outage trouble spots for a single storm, by county.",
+    ),
     "total_outage": CountyHeatmapMetric(
         key="total_outage",
         label="Total outages",
@@ -166,8 +173,15 @@ def render_county_heatmap_svg(
     title: str | None = None,
     width: int = 860,
     height: int = 560,
+    value_range: tuple[float, float] | None = None,
 ) -> str:
-    """Render an inline SVG choropleth for the legacy CT county polygons."""
+    """Render an inline SVG choropleth for the legacy CT county polygons.
+
+    ``value_range`` pins the colour scale instead of deriving it from these
+    rows. Two maps shown side by side MUST share a range: scaled
+    independently, a storm with 975 outages paints the same deep red as one
+    with 21,557, which inverts the comparison the reader is making.
+    """
     if metric_key not in COUNTY_HEATMAP_METRICS:
         supported = ", ".join(COUNTY_HEATMAP_METRICS)
         raise ValueError(f"Unsupported county heat-map metric: {metric_key}. {supported}")
@@ -188,8 +202,11 @@ def render_county_heatmap_svg(
         if isinstance(row.get(metric_key), (int, float))
         and math.isfinite(float(row[metric_key]))
     ]
-    min_value = min(values) if values else 0.0
-    max_value = max(values) if values else 0.0
+    if value_range is not None:
+        min_value, max_value = float(value_range[0]), float(value_range[1])
+    else:
+        min_value = min(values) if values else 0.0
+        max_value = max(values) if values else 0.0
     bbox = _feature_bbox(features)
 
     paths: list[str] = []

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+import re
 import unittest
 from pathlib import Path
 
@@ -13,6 +14,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from wiser.visualization import (  # noqa: E402
+    COUNTY_HEATMAP_METRICS,
     county_metric_rows,
     load_county_geojson,
     normalize_county_name,
@@ -100,3 +102,48 @@ class TestCountyVisualization(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSharedColourScale(unittest.TestCase):
+    """Two maps shown together must be comparable by colour."""
+
+    def setUp(self):
+        self.geojson = load_county_geojson()
+        self.strong = [
+            {"county": "Fairfield", "outage": 6000},
+            {"county": "Hartford", "outage": 3000},
+        ]
+        self.weak = [
+            {"county": "Fairfield", "outage": 600},
+            {"county": "Hartford", "outage": 300},
+        ]
+
+    def _fills(self, rows, value_range=None):
+        """County polygon fills only.
+
+        Matching every fill would also catch the legend swatches, which always
+        render the whole palette and would make any two maps look identical.
+        """
+        svg = render_county_heatmap_svg(
+            self.geojson, rows, "outage", value_range=value_range
+        )
+        return re.findall(r'<path [^>]*fill="(#[0-9a-fA-F]{6})"', svg)
+
+    def test_independent_scales_paint_the_weak_storm_as_darkly_as_the_strong(self):
+        """The defect a shared range exists to prevent."""
+        self.assertEqual(
+            max(self._fills(self.strong)), max(self._fills(self.weak))
+        )
+
+    def test_a_shared_range_keeps_the_weak_storm_lighter(self):
+        shared = (300.0, 6000.0)
+        strong = set(self._fills(self.strong, shared))
+        weak = set(self._fills(self.weak, shared))
+
+        self.assertIn("#bd0026", strong, "the strongest county should be hottest")
+        self.assertNotIn(
+            "#bd0026", weak, "the weaker storm must not use the hottest colour"
+        )
+
+    def test_outage_is_a_supported_metric(self):
+        self.assertIn("outage", COUNTY_HEATMAP_METRICS)

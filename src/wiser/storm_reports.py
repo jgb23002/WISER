@@ -820,6 +820,64 @@ def comparison_rows(comparison: StormComparison) -> list[dict[str, Any]]:
     ]
 
 
+@dataclass(frozen=True)
+class MapPanel:
+    """One county map in a set that is meant to be read together."""
+
+    title: str
+    subtitle: str
+    metric: str
+    rows: list[dict[str, Any]]
+    #: Shared across every panel in the set, so colour means the same thing in
+    #: each. Derived from all panels together, never per panel.
+    value_range: tuple[float, float]
+
+
+def comparison_map_panels(
+    comparison: StormComparison,
+    *,
+    metric: str = "outage",
+) -> list[MapPanel]:
+    """Two county maps for a storm comparison, on one shared colour scale.
+
+    Scaling each map to its own rows would paint the weaker storm as deep red
+    as the stronger one and invert the comparison being made, so the range
+    spans both storms.
+    """
+    panels: list[tuple[str, str, list[dict[str, Any]]]] = []
+    for label, summary in (
+        ("Storm A", comparison.summary_a),
+        ("Storm B", comparison.summary_b),
+    ):
+        rows = county_rows(summary)
+        panels.append(
+            (
+                f"{label} — {summary.storm.date}",
+                f"{format_count(summary.statewide_outage)} {OUTAGE_UNIT_NOTE}",
+                rows,
+            )
+        )
+
+    values = [
+        float(row[metric])
+        for _, _, rows in panels
+        for row in rows
+        if isinstance(row.get(metric), (int, float))
+    ]
+    shared = (min(values), max(values)) if values else (0.0, 0.0)
+
+    return [
+        MapPanel(
+            title=title,
+            subtitle=subtitle,
+            metric=metric,
+            rows=rows,
+            value_range=shared,
+        )
+        for title, subtitle, rows in panels
+    ]
+
+
 def forecast_rows(comparison: ForecastComparison) -> list[dict[str, Any]]:
     """Analogue rows. Every outage here is a recorded historical outcome.
 

@@ -39,6 +39,7 @@ from wiser.storm_reports import (  # noqa: E402
     REPORT_STORM_COMPARISON,
     REPORT_STORM_RANKING,
     REPORT_STORM_SUMMARY,
+    comparison_map_panels,
     display_rows,
     render_forecast_comparison,
     render_storm_comparison,
@@ -639,6 +640,55 @@ class TestComparisonLeadsWithTheLargestDifference(unittest.TestCase):
         )
         self.assertEqual(report.text.count("Normalized divergence:"), 1)
         self.assertIn("for both storms", report.text)
+
+
+class TestComparisonMapPanels(unittest.TestCase):
+    """Two county maps for a comparison, read together."""
+
+    def setUp(self):
+        self.conn = _make_conn()
+        self.addCleanup(self.conn.close)
+        self.panels = comparison_map_panels(
+            compare_storms(self.conn, 2020080406, 2021090100)
+        )
+
+    def test_one_panel_per_storm_labelled_with_its_date(self):
+        self.assertEqual(len(self.panels), 2)
+        self.assertIn("2020-08-04", self.panels[0].title)
+        self.assertIn("2021-09-01", self.panels[1].title)
+
+    def test_panels_carry_county_rows_for_their_own_storm(self):
+        a_outages = {row["county"]: row["outage"] for row in self.panels[0].rows}
+        b_outages = {row["county"]: row["outage"] for row in self.panels[1].rows}
+        self.assertEqual(a_outages["Fairfield"], 600)
+        self.assertEqual(b_outages["Fairfield"], 200)
+
+    def test_both_panels_share_one_colour_scale(self):
+        """Scaled independently, the weaker storm paints as red as the stronger
+        one and inverts the comparison the reader is making."""
+        self.assertEqual(self.panels[0].value_range, self.panels[1].value_range)
+
+    def test_the_shared_scale_spans_both_storms(self):
+        every_value = [
+            row["outage"] for panel in self.panels for row in panel.rows
+        ]
+        self.assertEqual(
+            self.panels[0].value_range, (min(every_value), max(every_value))
+        )
+
+    def test_the_shared_scale_is_wider_than_either_storm_alone(self):
+        b_values = [row["outage"] for row in self.panels[1].rows]
+        low, high = self.panels[1].value_range
+        self.assertGreater(high, max(b_values))
+
+    def test_subtitle_states_the_storm_total_in_its_own_unit(self):
+        self.assertIn("1,000", self.panels[0].subtitle)
+        self.assertIn("trouble spots dispatched", self.panels[0].subtitle)
+
+    def test_metric_is_raw_outage_not_a_normalized_value(self):
+        for panel in self.panels:
+            with self.subTest(panel=panel.title):
+                self.assertEqual(panel.metric, "outage")
 
 
 class TestDisplayRows(unittest.TestCase):

@@ -247,3 +247,35 @@ class TestHeatMapFraming(unittest.TestCase):
     def test_storm_report_path_uses_display_rows(self):
         source = self.ast.dump(self.functions["_render_analytics"])
         self.assertIn("display_rows", source)
+
+
+class TestSideBySideMaps(unittest.TestCase):
+    """Comparison results carry two map panels; the app draws them together."""
+
+    @classmethod
+    def setUpClass(cls):
+        import ast
+
+        cls.ast = ast
+        cls.source = APP_PATH.read_text(encoding="utf-8")
+        cls.functions = {
+            node.name: node
+            for node in ast.walk(ast.parse(cls.source))
+            if isinstance(node, ast.FunctionDef)
+        }
+
+    def test_map_panel_renderer_exists(self):
+        self.assertIn("_render_map_panels", self.functions)
+
+    def test_panels_are_laid_out_in_columns(self):
+        source = self.ast.dump(self.functions["_render_map_panels"])
+        self.assertIn("columns", source)
+
+    def test_each_panel_is_drawn_with_the_shared_range(self):
+        """Passing value_range is what makes the two maps comparable."""
+        source = self.ast.dump(self.functions["_render_map_panels"])
+        self.assertIn("value_range", source)
+
+    def test_the_single_map_path_runs_only_when_there_are_no_panels(self):
+        source = self.ast.dump(self.functions["_render_analytics_heatmap"])
+        self.assertIn("_render_map_panels", source)
