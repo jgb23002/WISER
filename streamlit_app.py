@@ -149,10 +149,13 @@ def _render_analytics(
 
     _render_notices(result.notices)
 
-    # Storm-scoped routes render a report block above the rows and heat map.
+    # Storm-scoped routes render a report block above the table and heat map.
+    # The table uses display_rows — human labels and rounded values — while the
+    # heat map keeps the machine-named rows it needs.
     if result.report is not None:
         _render_storm_report(result)
-        _render_rows(result.rows or [])
+        if result.display_rows:
+            st.dataframe(result.display_rows, hide_index=True, width="stretch")
         _render_analytics_heatmap(result)
         _render_reasoning(
             result,
@@ -228,7 +231,7 @@ def _render_analytics_heatmap(result: AnalyticsResult) -> None:
             _county_geojson(),
             rows,
             metric_key,
-            title=f"{metric_display_name(metric_key)} · query result",
+            title=metric_display_name(metric_key),
         )
     except Exception as exc:  # noqa: BLE001 - table is still the source of truth
         st.warning(f"County heat map unavailable for this result: {type(exc).__name__}: {exc}")
@@ -271,16 +274,31 @@ def _render_rows(rows: list[dict[str, object]]) -> None:
 
 def _render_result_chart(rows: list[dict[str, object]]) -> None:
     if _has_columns(rows, "county", "total_outage"):
-        _render_bar_chart(_chart_rows(rows, "county", "total_outage"))
+        _render_bar_chart(
+            _chart_rows(rows, "county", "total_outage"), "County", "Total outages"
+        )
     elif _has_columns(rows, "stormCode", "total_outage"):
-        _render_bar_chart(_chart_rows(rows, "stormCode", "total_outage"))
+        _render_bar_chart(
+            _chart_rows(rows, "stormCode", "total_outage"), "Storm", "Total outages"
+        )
     elif _has_columns(rows, "stormCode", "outage"):
-        _render_bar_chart(_chart_rows(rows, "stormCode", "outage"))
+        _render_bar_chart(
+            _chart_rows(rows, "stormCode", "outage"), "Storm", "Outages"
+        )
 
 
-def _render_bar_chart(chart_rows: list[dict[str, object]]) -> None:
-    if chart_rows:
-        st.bar_chart(chart_rows, x="label", y="value")
+def _render_bar_chart(
+    chart_rows: list[dict[str, object]],
+    x_label: str,
+    y_label: str,
+) -> None:
+    # A bar chart of one bar says nothing; a single-storm view is a table and a
+    # map, not a chart.
+    if len(chart_rows) < 2:
+        return
+    st.bar_chart(
+        chart_rows, x="label", y="value", x_label=x_label, y_label=y_label
+    )
 
 
 def _has_columns(rows: list[dict[str, object]], *columns: str) -> bool:
@@ -330,7 +348,11 @@ def _render_similarity(result: SimilarityResult) -> None:
         },
     )
     if _has_columns(result.rows, "stormCode", "similarity"):
-        _render_bar_chart(_chart_rows(result.rows, "stormCode", "similarity"))
+        _render_bar_chart(
+            _chart_rows(result.rows, "stormCode", "similarity"),
+            "Storm",
+            "Similarity",
+        )
 
 
 def _render_rag(result: RagKnowledgeResult, *, show_rag_context: bool) -> None:
@@ -537,12 +559,32 @@ def _render_county_heatmaps(db_path: str) -> None:
     )
 
 
-def _render_svg(svg):
-    encoded = base64.b64encode(svg.encode("utf-8")).decode("utf-8")
+_SVG_FRAME_HEIGHT = 620
 
+# The SVG is served to the iframe as an HTML document. Two things have to be
+# right or the map breaks:
+#   charset — without it the browser decodes the data URI as latin-1 and every
+#     non-ASCII character in the map (the "·" separator, county labels) renders
+#     as mojibake. This is separate from any console codepage issue.
+#   sizing  — the SVG carries width:100%;height:auto, so in a wide column its
+#     height grows past the fixed iframe and the bottom of the map is clipped.
+#     Pinning it to 100% of the frame and letting viewBox scale it keeps the
+#     whole map visible at any width.
+_SVG_FRAME_TEMPLATE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>County heat map</title>
+<style>
+  html, body {{ margin: 0; padding: 0; height: 100%; background: transparent; }}
+  svg {{ display: block; width: 100% !important; height: 100% !important; }}
+</style></head>
+<body>{svg}</body></html>"""
+
+
+def _render_svg(svg, *, height: int = _SVG_FRAME_HEIGHT):
+    document = _SVG_FRAME_TEMPLATE.format(svg=svg)
+    encoded = base64.b64encode(document.encode("utf-8")).decode("ascii")
     components.iframe(
-        f"data:text/html;base64,{encoded}",
-        height=560
+        f"data:text/html;charset=utf-8;base64,{encoded}",
+        height=height,
     )
 
 

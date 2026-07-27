@@ -199,3 +199,51 @@ class TestStormReportRendering(unittest.TestCase):
     def test_heatmap_is_still_rendered_once_on_the_report_path(self):
         source = self.ast.dump(self.functions["_render_analytics"])
         self.assertEqual(source.count("_render_analytics_heatmap"), 3)
+
+
+class TestHeatMapFraming(unittest.TestCase):
+    """The SVG is delivered to an iframe as an HTML document. Two things have
+    to be right or the map is broken in the browser."""
+
+    @classmethod
+    def setUpClass(cls):
+        import ast
+
+        cls.ast = ast
+        cls.source = APP_PATH.read_text(encoding="utf-8")
+        cls.tree = ast.parse(cls.source)
+        cls.functions = {
+            node.name: node
+            for node in ast.walk(cls.tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+
+    def test_data_uri_declares_utf8(self):
+        """Without a charset the browser decodes the data URI as latin-1 and
+        every non-ASCII character in the map renders as mojibake."""
+        self.assertIn("charset=utf-8;base64,", self.source)
+
+    def test_frame_document_has_a_meta_charset(self):
+        self.assertIn('<meta charset="utf-8">', self.source)
+
+    def test_svg_is_pinned_to_the_frame_so_it_cannot_clip(self):
+        """The SVG carries width:100%;height:auto, so in a wide column its
+        height outgrows the fixed iframe and the bottom is cut off."""
+        self.assertIn("height: 100% !important", self.source)
+
+    def test_heat_map_title_has_no_query_result_suffix(self):
+        self.assertNotIn("query result", self.source)
+
+    def test_bar_charts_are_labelled(self):
+        source = self.ast.dump(self.functions["_render_bar_chart"])
+        self.assertIn("x_label", source)
+        self.assertIn("y_label", source)
+
+    def test_single_bar_charts_are_suppressed(self):
+        """One bar on the X axis conveys nothing."""
+        source = self.ast.dump(self.functions["_render_bar_chart"])
+        self.assertIn("Lt", source)  # a len(...) < N guard
+
+    def test_storm_report_path_uses_display_rows(self):
+        source = self.ast.dump(self.functions["_render_analytics"])
+        self.assertIn("display_rows", source)

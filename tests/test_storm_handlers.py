@@ -216,6 +216,46 @@ class TestHandleStormSummary(unittest.TestCase):
         self.assertIn("2021090100", message)
         self.assertIn("2021090112", message)
 
+    def test_ambiguous_options_are_ready_to_run_queries(self):
+        """The user should be able to copy a line, not retype the question."""
+        query = "storm summary for 2021-09-01"
+        result = handle_storm_summary(_make_ctx(query, self.conn))
+        message = _errors(result)[0]
+
+        self.assertIn("storm summary for 2021090100", message)
+        self.assertIn("storm summary for 2021090112", message)
+        self.assertIn("(2021-09-01 00:00)", message)
+
+    def test_a_suggested_requery_actually_resolves(self):
+        result = handle_storm_summary(
+            _make_ctx("storm summary for 2021-09-01", self.conn)
+        )
+        suggestion = next(
+            line.strip().split("   ")[0]
+            for line in _errors(result)[0].splitlines()
+            if "2021090100" in line
+        )
+        rerun = handle_storm_summary(_make_ctx(suggestion, self.conn))
+        self.assertIsNotNone(rerun.report)
+        self.assertEqual(rerun.report_kind, REPORT_STORM_SUMMARY)
+
+    def test_a_mid_sentence_token_keeps_the_sentence_intact(self):
+        result = handle_storm_ranking(
+            _make_ctx("how does the storm on 2021-09-01 rank", self.conn)
+        )
+        message = _errors(result)[0]
+        self.assertIn("how does the storm on 2021090100 rank", message)
+
+    def test_display_rows_carry_labels_not_metric_keys(self):
+        result = handle_storm_summary(
+            _make_ctx("summarize storm 2020080406", self.conn)
+        )
+        self.assertTrue(result.display_rows)
+        self.assertIn("County", result.display_rows[0])
+        self.assertNotIn("peakWSPD10", result.display_rows[0])
+        # The machine-named rows survive for maps and the reasoning layer.
+        self.assertIn("peakWSPD10", result.rows[0])
+
     def test_missing_identifier_explains_how_to_name_a_storm(self):
         result = handle_storm_summary(_make_ctx("storm summary please", self.conn))
         self.assertIn("No storm identifier", _errors(result)[0])

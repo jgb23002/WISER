@@ -165,6 +165,25 @@ class CountyValue:
     value: float
 
 
+# Gust thresholds, strongest first. wgt* counts HOURS above a threshold, so it
+# is exposure, never a peak magnitude — the highest crossed threshold is a
+# measured floor on the gust, not the gust itself.
+GUST_THRESHOLDS: tuple[int, ...] = (18, 13, 9, 5)
+
+
+@dataclass(frozen=True)
+class GustExposure:
+    """The strongest gust threshold this storm crossed, and for how long.
+
+    ``threshold_ms`` is a floor: the gust reached at least this speed for
+    ``hours`` hours. The actual peak gust is not in the schema.
+    """
+
+    threshold_ms: int
+    hours: int
+    county: str
+
+
 @dataclass(frozen=True)
 class StormSummary:
     storm: StormRef
@@ -177,10 +196,14 @@ class StormSummary:
     top_outage_counties: tuple[CountyValue, ...]
     top_normalized_counties: tuple[CountyValue, ...]
     counties_above_threshold: int
+    # Measured exposure, not a magnitude. None when no threshold was crossed.
+    gust_exposure: GustExposure | None = None
     # Phase 2 fields. Always None until the external metadata table lands;
     # never inferred, never defaulted to a number.
     storm_type: None = None
     peak_snowfall_mm: None = None
+    # Peak gust MAGNITUDE stays unavailable even though gust EXPOSURE is
+    # measured: hours above a threshold cannot yield a peak value.
     wind_gust_ms: None = None
 
     @property
@@ -327,6 +350,9 @@ class ForecastComparison:
     total_storms: int
     positions: tuple[ForecastPosition, ...]
     analogue_groups: tuple[CountyAnalogues, ...]
+    #: Counties in the state that were not shown, so the report can say so
+    #: rather than silently presenting a partial picture as the whole.
+    counties_omitted: int = 0
 
     @property
     def scope_label(self) -> str:
@@ -511,7 +537,30 @@ def storm_summary(
         counties_above_threshold=sum(
             1 for row in counties if row.threshold_hours(threshold_column) > 0
         ),
+        gust_exposure=_gust_exposure(counties),
     )
+
+
+def _gust_exposure(counties: Sequence[CountyStormRow]) -> GustExposure | None:
+    """Strongest gust threshold crossed, with the longest exposure at it."""
+    for threshold in GUST_THRESHOLDS:
+        crossing = [
+            row for row in counties if row.threshold_hours(f"wgt{threshold}") > 0
+        ]
+        if not crossing:
+            continue
+        # Same tiebreak as _argmax: most hours, then alphabetically first, so
+        # two equal counties always resolve the same way in both places.
+        leader = sorted(
+            crossing,
+            key=lambda row: (-row.threshold_hours(f"wgt{threshold}"), row.county),
+        )[0]
+        return GustExposure(
+            threshold_ms=threshold,
+            hours=leader.threshold_hours(f"wgt{threshold}"),
+            county=leader.county,
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -739,13 +788,20 @@ def state_counties(conn: DbConnection, *, state: str = DEFAULT_STATE) -> tuple[s
     return tuple(str(row[0]) for row in rows)
 
 
+#: Analogues shown per county, and counties shown when the scope is statewide.
+#: Eight counties at ten rows each is eighty rows of table for one question.
+DEFAULT_ANALOGUES_PER_COUNTY = 3
+DEFAULT_ANALOGUE_COUNTIES = 3
+
+
 def compare_forecast(
     conn: DbConnection,
     params: dict[str, float],
     *,
     county: str | None = None,
     state: str = DEFAULT_STATE,
-    limit: int = 5,
+    limit: int = DEFAULT_ANALOGUES_PER_COUNTY,
+    max_counties: int | None = DEFAULT_ANALOGUE_COUNTIES,
     similarity_agent: Any | None = None,
 ) -> ForecastComparison:
     """Position a forecast against the record and find its closest analogues.
@@ -770,9 +826,17 @@ def compare_forecast(
 
         similarity_agent = SimilarityQueryAgent()
 
-    counties = (county,) if county else state_counties(conn, state=state)
-    if not counties:
-        raise StormAnalysisError(f"no counties found for state {state!r}")
+    if county:
+        counties: tuple[str, ...] = (county,)
+        counties_omitted = 0
+    else:
+        # Statewide: rank counties by historical outage so the shown few are
+        # the ones that matter, and say how many were left out.
+        ranked = _counties_by_outage(conn, state=state)
+        if not ranked:
+            raise StormAnalysisError(f"no counties found for state {state!r}")
+        counties = tuple(ranked[:max_counties] if max_counties else ranked)
+        counties_omitted = len(ranked) - len(counties)
 
     positions = _forecast_positions(conn, params, county=county, state=state)
     total_storms = (
@@ -802,7 +866,27 @@ def compare_forecast(
         total_storms=total_storms,
         positions=positions,
         analogue_groups=tuple(groups),
+        counties_omitted=counties_omitted,
     )
+
+
+def _counties_by_outage(
+    conn: DbConnection, *, state: str = DEFAULT_STATE
+) -> list[str]:
+    """Counties in a state, worst-hit first across the whole record."""
+    rows = _fetch(
+        conn,
+        """
+        SELECT w.county, SUM(w.outage) AS total_outage
+        FROM WeatherData w
+        JOIN County c ON LOWER(c.county) = LOWER(w.county)
+        WHERE LOWER(c.state) = LOWER(?)
+        GROUP BY w.county
+        ORDER BY total_outage DESC, w.county ASC
+        """,
+        (state,),
+    )
+    return [str(row[0]) for row in rows]
 
 
 def _forecast_positions(

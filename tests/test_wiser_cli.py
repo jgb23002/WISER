@@ -193,18 +193,32 @@ class TestStormReportRendering(unittest.TestCase):
             render_result(result)
         return buffer.getvalue()
 
-    def test_report_block_prints_above_the_rows(self):
+    def test_report_replaces_the_raw_row_dump(self):
+        """The block already lays out every figure; printing machine column
+        names and full-precision floats underneath only buries the answer."""
         result = AnalyticsResult(
             report="Storm date:        2020-08-04\nStatewide outages:  21,557",
             report_kind="storm_summary",
-            rows=[{"county": "Fairfield", "outage": 5935}],
+            rows=[{"county": "Fairfield", "outage_per_million_ohline": 1214.2402661}],
             answer="ignored while a report is present",
         )
         output = self._render(result)
 
         self.assertIn("Storm date:", output)
-        self.assertIn("Fairfield", output)
-        self.assertLess(output.index("Storm date:"), output.index("Fairfield"))
+        self.assertNotIn("outage_per_million_ohline", output)
+        self.assertNotIn("1214.2402661", output)
+
+    def test_a_storm_route_with_only_notices_prints_no_row_placeholder(self):
+        result = AnalyticsResult(
+            report=None,
+            report_kind="storm_summary",
+            rows=[],
+            notices=[Notice("2021-09-01 matches more than one storm.", level="error")],
+        )
+        output = self._render(result)
+
+        self.assertIn("matches more than one storm", output)
+        self.assertNotIn("No results found", output)
 
     def test_notices_print_before_the_report(self):
         result = AnalyticsResult(
@@ -248,9 +262,9 @@ class TestStormReportRendering(unittest.TestCase):
         )
         output = self._render(result)
         self.assertIn("Forecast Comparison:", output)
-        self.assertLess(
-            output.index("Forecast Comparison:"), output.index("2020080406")
-        )
+        # The forecast report lays out its own analogue table, so the raw
+        # similarity table is not printed underneath it.
+        self.assertNotIn("Similarity Analysis", output)
 
 
 if __name__ == "__main__":

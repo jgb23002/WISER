@@ -138,12 +138,19 @@ def _render_analytics(
     for notice in result.notices:
         print(notice.text)
 
-    # Storm-scoped routes render a report block; the rows sit underneath it.
+    # Storm-scoped routes render a report block. The block already contains
+    # every figure in a laid-out form, so the rows are not printed again here —
+    # dumping machine column names and full-precision floats underneath it only
+    # buries the answer. Richer surfaces still get result.display_rows.
     if result.report is not None:
         print(result.report)
-        print()
-        print_rows(result.rows or [])
         _print_reasoning(result, show_prompt=show_reasoning_prompt)
+        return
+
+    # A storm route that produced only notices (unknown or ambiguous storm).
+    # The notices above are the whole answer; "No results found." under them
+    # adds nothing.
+    if result.report_kind is not None:
         return
 
     if result.used_fallback:
@@ -185,8 +192,9 @@ def _render_similarity(result: SimilarityResult) -> None:
     for notice in result.notices:
         print(notice.text)
     if result.report is not None:
+        # As above: the forecast report already lays out the analogues.
         print(result.report)
-        print()
+        return
     print_results(
         result.county,
         result.params,
@@ -383,7 +391,27 @@ def run_repl(
 # ---------------------------------------------------------------------------
 
 
+def _use_utf8_stdout() -> None:
+    """Print UTF-8 regardless of the console codepage.
+
+    Reports contain em dashes and other non-ASCII. On a Windows console still
+    running cp1252 (Git Bash, some CI shells) printing one raises
+    UnicodeEncodeError and takes the whole command down. Reconfiguring here
+    fixes the rendering; errors="replace" makes it degrade to a placeholder
+    instead of crashing if the stream cannot be reconfigured at all.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):  # pragma: no cover - stream not seekable
+            pass
+
+
 def main() -> None:
+    _use_utf8_stdout()
     parser = argparse.ArgumentParser(description="WISER command-line agent demo.")
     parser.add_argument(
         "query",

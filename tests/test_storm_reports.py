@@ -10,6 +10,7 @@ labelled actual, and no outage figure may ever appear on the forecast side.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import sys
 import unittest
@@ -38,6 +39,7 @@ from wiser.storm_reports import (  # noqa: E402
     REPORT_STORM_COMPARISON,
     REPORT_STORM_RANKING,
     REPORT_STORM_SUMMARY,
+    display_rows,
     render_forecast_comparison,
     render_storm_comparison,
     render_storm_ranking,
@@ -85,6 +87,20 @@ def _order_of(text: str, *fragments: str) -> list[int]:
     return [text.index(fragment) for fragment in fragments]
 
 
+_STRUCTURAL = ("Geographic concentration:", "Normalized divergence:")
+
+
+def _metric_bullets(text: str) -> list[str]:
+    """Bullets about the table's metrics, excluding structural observations."""
+    section = text.split("Where they differ most:")[1]
+    return [
+        line
+        for line in section.splitlines()
+        if line.strip().startswith("- ")
+        and not any(marker in line for marker in _STRUCTURAL)
+    ]
+
+
 class TestStormSummaryReport(unittest.TestCase):
     def setUp(self):
         self.conn = _make_conn()
@@ -117,7 +133,9 @@ class TestStormSummaryReport(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
 
     def test_phase_two_fields_render_as_explicitly_unavailable(self):
-        for field in ("Storm type:", "Peak snowfall:", "Peak wind gust:"):
+        # Gust is absent from this list on purpose: gust EXPOSURE is measured
+        # from the wgt thresholds. Only its magnitude is a Phase 2 field.
+        for field in ("Storm type:", "Peak snowfall:"):
             with self.subTest(field=field):
                 line = next(
                     l for l in self.report.text.splitlines() if l.strip().startswith(field)
@@ -210,9 +228,23 @@ class TestStormRankingReport(unittest.TestCase):
                 self.assertEqual(row["total"], total)
                 self.assertLessEqual(row["rank"], row["total"])
 
-    def test_sentence_names_the_date_and_a_percentile(self):
+    def test_sentence_names_the_date(self):
         self.assertIn("The storm on 2020-08-04 ranks", self.report.text)
-        self.assertIn("placing it in the top", self.report.text)
+
+    def test_percentile_is_scoped_when_metrics_disagree(self):
+        """An unqualified "top 1%" reads as a claim about the storm overall,
+        when the wind and precipitation ranks are far lower."""
+        self.assertIn("Its strongest placing is", self.report.text)
+        self.assertIn("the metrics disagree", self.report.text)
+
+    def test_single_metric_ranking_states_its_percentile_plainly(self):
+        from wiser.storm_analysis import METRIC_OUTAGE
+
+        report = render_storm_ranking(
+            storm_ranking(self.conn, 2020080406, metrics=[METRIC_OUTAGE])
+        )
+        self.assertIn("That places it in the top", report.text)
+        self.assertNotIn("metrics disagree", report.text)
 
     def test_percentile_never_claims_better_than_one_percent(self):
         self.assertNotIn("top 0%", self.report.text)
@@ -220,12 +252,15 @@ class TestStormRankingReport(unittest.TestCase):
     def test_scope_is_stated(self):
         self.assertIn("Scope: statewide (CT)", self.report.text)
 
-    def test_caveat_frames_counts_as_the_development_dataset(self):
-        self.assertIn("current development dataset", self.report.text)
-        self.assertNotIn("root cause unknown", self.report.text)
-
-    def test_caveat_explains_why_duration_is_absent(self):
-        self.assertIn("Duration is not rankable", self.report.text)
+    def test_caveat_is_one_line(self):
+        """The ranking sentence is the answer; a four-sentence caveat under it
+        buries the thing the reader came for. Dataset vintage and the duration
+        explanation are carried as notices instead."""
+        caveat = self.report.text.split("Caveat:")[1].strip()
+        self.assertEqual(caveat.count("."), 1, caveat)
+        self.assertIn("trouble spots dispatched", caveat)
+        self.assertNotIn("development dataset", caveat)
+        self.assertNotIn("Duration is not rankable", caveat)
 
     def test_county_scope_is_reported(self):
         scoped = render_storm_ranking(
@@ -384,6 +419,267 @@ class TestForecastComparisonReport(unittest.TestCase):
         )
         self.assertIn("No positionable values supplied", report.text)
         self.assertIn("Closest historical analogues", report.text)
+
+
+class TestGustExposureIsNeverAPeak(unittest.TestCase):
+    """wgt* counts HOURS above a threshold. It is exposure, and rendering it as
+    a peak gust would invent a magnitude the schema does not contain.
+
+    The data proves wgt* and peakWSPD10 are different quantities: rows exist
+    with wgt18 > 0 against a peakWSPD10 of 7.5 m/s, which is impossible if both
+    measured the same wind.
+    """
+
+    def setUp(self):
+        self.conn = _make_conn()
+        self.addCleanup(self.conn.close)
+
+    def _summary_text(self, weather) -> str:
+        self.conn.execute("DELETE FROM WeatherData")
+        self.conn.executemany(
+            "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP,"
+            " peakWSPD10, wgt5, wgt9, wgt13, wgt18, outage)"
+            " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            weather,
+        )
+        self.conn.commit()
+        return render_storm_summary(storm_summary(self.conn, 2020080406)).text
+
+    def test_exposure_states_the_threshold_as_a_floor(self):
+        text = self._summary_text(
+            [(2020080406, "Fairfield", 30.0, 9.5, 20, 8, 6, 0, 600)]
+        )
+        self.assertIn("Wind gust exposure:", text)
+        self.assertIn("exceeded 13 m/s", text)
+        self.assertIn("for 6 hours", text)
+
+    def test_no_wgt_value_is_ever_rendered_as_a_peak_gust(self):
+        text = self._summary_text(
+            [(2020080406, "Fairfield", 30.0, 9.5, 20, 8, 6, 2, 600)]
+        )
+        self.assertNotIn("Peak wind gust:", text)
+        self.assertNotIn("Peak gust", text)
+        self.assertIn("exceeded 18 m/s", text)
+
+    def test_strongest_crossed_threshold_wins(self):
+        text = self._summary_text(
+            [(2020080406, "Fairfield", 30.0, 9.5, 20, 8, 6, 2, 600)]
+        )
+        self.assertIn("exceeded 18 m/s", text)
+        self.assertNotIn("exceeded 13 m/s", text)
+
+    def test_line_is_omitted_when_no_threshold_was_crossed(self):
+        text = self._summary_text(
+            [(2020080406, "Fairfield", 30.0, 4.0, 0, 0, 0, 0, 600)]
+        )
+        self.assertNotIn("Wind gust exposure:", text)
+        self.assertIn("Peak wind gust:", text)
+        self.assertIn(PHASE_2_UNAVAILABLE, text)
+
+    def test_caveat_explains_exposure_is_not_magnitude(self):
+        text = self._summary_text(
+            [(2020080406, "Fairfield", 30.0, 9.5, 20, 8, 6, 0, 600)]
+        )
+        self.assertIn("measured floor", text)
+        self.assertIn("peak gust magnitude is not in the schema", text)
+
+
+class TestComparisonLeadsWithTheLargestDifference(unittest.TestCase):
+    def setUp(self):
+        self.conn = _make_conn()
+        self.addCleanup(self.conn.close)
+
+    def _seed(self, weather):
+        self.conn.execute("DELETE FROM WeatherData")
+        self.conn.executemany(
+            "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP,"
+            " peakWSPD10, wgt5, wgt9, wgt13, wgt18, outage)"
+            " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            weather,
+        )
+        self.conn.commit()
+
+    def test_metric_bullets_are_ordered_by_relative_magnitude(self):
+        """The invariant: whatever the data, the largest relative gap leads."""
+        report = render_storm_comparison(
+            compare_storms(self.conn, 2020080406, 2021090100)
+        )
+        bullets = _metric_bullets(report.text)
+        percentages = [
+            int(m) for line in bullets for m in re.findall(r"(\d+)% higher", line)
+        ]
+        self.assertEqual(percentages, sorted(percentages, reverse=True))
+
+    def test_metric_bullets_come_before_the_structural_ones(self):
+        """Structural observations are demoted: the metrics in the table above
+        are what the reader is comparing."""
+        report = render_storm_comparison(
+            compare_storms(self.conn, 2020080406, 2021090100)
+        )
+        section = report.text.split("Where they differ most:")[1]
+        self.assertLess(
+            section.index("Statewide outages:"),
+            section.index("Geographic concentration:"),
+        )
+
+    def test_a_dominant_precipitation_gap_leads_the_section(self):
+        """The defect this section was rewritten for: the table showed
+        precipitation differing ~7x while every bullet said the storms were
+        alike."""
+        self._seed(
+            [
+                # Same outage and wind; precipitation differs by 8x.
+                (2020080406, "Fairfield", 10.0, 9.0, 5, 1, 0, 0, 500),
+                (2020080406, "Hartford", 10.0, 9.0, 5, 1, 0, 0, 500),
+                (2021090100, "Fairfield", 80.0, 9.0, 5, 1, 0, 0, 500),
+                (2021090100, "Hartford", 80.0, 9.0, 5, 1, 0, 0, 500),
+            ]
+        )
+        report = render_storm_comparison(
+            compare_storms(self.conn, 2020080406, 2021090100)
+        )
+        section = report.text.split("Where they differ most:")[1]
+        bullets = [l for l in section.splitlines() if l.strip().startswith("- ")]
+        self.assertIn("precipitation", bullets[0].lower())
+        self.assertIn("8.0x", bullets[0])
+
+    def test_a_large_ratio_is_stated_as_a_multiple(self):
+        report = render_storm_comparison(
+            compare_storms(self.conn, 2020080406, 2021090100)
+        )
+        self.assertIn("x Storm", report.text)
+
+    def test_identical_storms_are_not_listed_under_differ_most(self):
+        self.conn.execute("DELETE FROM WeatherData")
+        self.conn.executemany(
+            "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP,"
+            " peakWSPD10, wgt5, wgt9, wgt13, wgt18, outage)"
+            " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (2020080406, "Fairfield", 30.0, 9.5, 20, 8, 0, 0, 600),
+                (2021090100, "Fairfield", 30.0, 9.5, 20, 8, 0, 0, 600),
+            ],
+        )
+        self.conn.commit()
+        report = render_storm_comparison(
+            compare_storms(self.conn, 2020080406, 2021090100)
+        )
+        self.assertIn("How they compare:", report.text)
+        self.assertNotIn("Where they differ most:", report.text)
+
+    def test_matching_normalized_behaviour_collapses_to_one_line(self):
+        report = render_storm_comparison(
+            compare_storms(self.conn, 2020080406, 2021090100)
+        )
+        self.assertEqual(report.text.count("Normalized divergence:"), 1)
+        self.assertIn("for both storms", report.text)
+
+
+class TestDisplayRows(unittest.TestCase):
+    """Structured rows are for maps and reasoning; display rows are for people."""
+
+    def setUp(self):
+        self.conn = _make_conn()
+        self.addCleanup(self.conn.close)
+
+    def test_summary_display_rows_use_labels_and_rounded_values(self):
+        report = render_storm_summary(storm_summary(self.conn, 2020080406))
+        row = display_rows(report)[0]
+
+        self.assertIn("County", row)
+        self.assertIn("Peak wind", row)
+        self.assertNotIn("peakWSPD10", row)
+        self.assertNotIn("outage_per_million_ohline", row)
+        self.assertTrue(str(row["Peak wind"]).endswith("mph"))
+
+    def test_ranking_display_rows_hide_metric_keys_and_raw_percentiles(self):
+        report = render_storm_ranking(storm_ranking(self.conn, 2020080406))
+        row = display_rows(report)[0]
+
+        self.assertNotIn("metric", row)
+        self.assertNotIn("percentile", row)
+        self.assertTrue(str(row["Rank"]).endswith(("st", "nd", "rd", "th")))
+        self.assertTrue(str(row["Percentile"]).startswith("top "))
+
+    def test_comparison_display_rows_are_formatted(self):
+        report = render_storm_comparison(
+            compare_storms(self.conn, 2020080406, 2021090100)
+        )
+        row = display_rows(report)[0]
+
+        self.assertIn("Storm A", row)
+        self.assertNotIn("storm_a", row)
+        self.assertNotIn("percent_change", row)
+
+    def test_forecast_display_rows_round_similarity_and_show_the_delta(self):
+        comparison = compare_forecast(
+            self.conn, {"peakWSPD10": 9.0}, county="Fairfield"
+        )
+        report = render_forecast_comparison(comparison)
+        row = display_rows(report, forecast_wind_ms=9.0)[0]
+
+        self.assertIn("Outages (actual)", row)
+        self.assertIn("vs forecast", row)
+
+    def test_no_display_row_leaks_full_precision_floats(self):
+        for report in (
+            render_storm_summary(storm_summary(self.conn, 2020080406)),
+            render_storm_ranking(storm_ranking(self.conn, 2020080406)),
+            render_storm_comparison(
+                compare_storms(self.conn, 2020080406, 2021090100)
+            ),
+        ):
+            with self.subTest(kind=report.kind):
+                for row in display_rows(report):
+                    for key, value in row.items():
+                        if isinstance(value, float):
+                            self.assertLessEqual(
+                                len(str(value).split(".")[-1]),
+                                3,
+                                f"{report.kind}.{key} = {value}",
+                            )
+
+
+class TestForecastAnalogueVolume(unittest.TestCase):
+    def setUp(self):
+        self.conn = _make_conn()
+        self.addCleanup(self.conn.close)
+
+    def test_defaults_are_small_enough_to_read(self):
+        comparison = compare_forecast(self.conn, {"peakWSPD10": 9.0})
+        for group in comparison.analogue_groups:
+            with self.subTest(county=group.county):
+                self.assertLessEqual(len(group.analogues), 3)
+        self.assertLessEqual(len(comparison.analogue_groups), 3)
+
+    def test_counts_are_parameters(self):
+        comparison = compare_forecast(
+            self.conn, {"peakWSPD10": 9.0}, limit=1, max_counties=1
+        )
+        self.assertEqual(len(comparison.analogue_groups), 1)
+        self.assertEqual(len(comparison.analogue_groups[0].analogues), 1)
+
+    def test_omitted_counties_are_reported_not_hidden(self):
+        comparison = compare_forecast(
+            self.conn, {"peakWSPD10": 9.0}, max_counties=1
+        )
+        self.assertEqual(comparison.counties_omitted, 1)
+        self.assertIn("1 more in scope", render_forecast_comparison(comparison).text)
+
+    def test_delta_column_makes_the_ordering_legible(self):
+        report = render_forecast_comparison(
+            compare_forecast(self.conn, {"peakWSPD10": 9.0}, county="Fairfield")
+        )
+        self.assertIn("vs forecast", report.text)
+        self.assertRegex(report.text, r"[+-]\d+\.\d mph")
+
+    def test_delta_column_is_ascii(self):
+        """A Greek delta raises UnicodeEncodeError on a cp1252 console, which
+        crashes the CLI rather than merely looking wrong."""
+        report = render_forecast_comparison(
+            compare_forecast(self.conn, {"peakWSPD10": 9.0}, county="Fairfield")
+        )
+        report.text.encode("cp1252")  # must not raise
 
 
 if __name__ == "__main__":

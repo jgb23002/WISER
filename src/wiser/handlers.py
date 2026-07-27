@@ -53,12 +53,14 @@ from wiser.storm_analysis import (
     storm_summary,
 )
 from wiser.storm_reports import (
+    DATASET_VINTAGE_NOTE,
     REPORT_FORECAST_COMPARISON,
     REPORT_STORM_COMPARISON,
     REPORT_STORM_RANKING,
     REPORT_STORM_SUMMARY,
     render_forecast_comparison,
     render_storm_comparison,
+    display_rows,
     render_storm_ranking,
     render_storm_summary,
 )
@@ -224,6 +226,9 @@ class AnalyticsResult:
     # report produced it. Interfaces show the block above the rows.
     report: str | None = None
     report_kind: str | None = None
+    # rows with human labels and rounded values, for display. `rows` keeps
+    # machine column names and full precision for maps and reasoning.
+    display_rows: list[dict[str, object]] | None = None
 
 
 @dataclass
@@ -239,6 +244,7 @@ class SimilarityResult:
     # storm-scoped work landed.
     report: str | None = None
     report_kind: str | None = None
+    display_rows: list[dict[str, object]] | None = None
 
 
 @dataclass
@@ -765,14 +771,17 @@ def _resolve_single_storm(
         return resolution.storm.storm_code, []
 
     if resolution.ambiguous:
-        listed = ", ".join(
-            f"{match.storm_code} ({match.event_datetime})"
+        # Rendered as ready-to-run queries rather than a prose list: the user
+        # would otherwise have to retype the whole question around the code.
+        options = "\n".join(
+            f"  {_requery_text(ctx.query, token, match.storm_code)}"
+            f"   ({_clock_time(match.event_datetime)})"
             for match in resolution.matches
         )
         return None, [
             Notice(
-                f"{token} matches more than one storm: {listed}. "
-                "Re-ask with the full stormCode to pick one.",
+                f"{token} matches more than one storm. "
+                f"Re-ask with the full stormCode:\n{options}",
                 level="error",
             )
         ]
@@ -780,6 +789,22 @@ def _resolve_single_storm(
     return None, [
         Notice(f"No storm in the database matches {token!r}.", level="error")
     ]
+
+
+def _requery_text(query: str, token: str, storm_code: int) -> str:
+    """The user's own question with the ambiguous token swapped for a code.
+
+    Substituting in place rather than rebuilding the sentence: the token can
+    sit anywhere, and removing it from "how does the storm on 2022-03-31 rank"
+    leaves "how does the storm on rank".
+    """
+    return " ".join(query.replace(token, str(storm_code)).split())
+
+
+def _clock_time(event_datetime: str) -> str:
+    """'2021-09-01 12:00:00' → '2021-09-01 12:00'."""
+    text = str(event_datetime).replace("T", " ")
+    return text[:16] if len(text) >= 16 else text
 
 
 def _storm_notice_result(notices: list[Notice], kind: str) -> AnalyticsResult:
@@ -822,6 +847,7 @@ def handle_storm_summary(ctx: HandlerContext) -> AnalyticsResult:
 
     result = AnalyticsResult(
         rows=report.rows,
+        display_rows=display_rows(report),
         report=report.text,
         report_kind=report.kind,
         answer=(
@@ -866,8 +892,10 @@ def handle_storm_ranking(ctx: HandlerContext) -> AnalyticsResult:
             [*notices, Notice(str(exc), level="error")], REPORT_STORM_RANKING
         )
 
+    notices.append(Notice(DATASET_VINTAGE_NOTE))
     return AnalyticsResult(
         rows=report.rows,
+        display_rows=display_rows(report),
         report=report.text,
         report_kind=report.kind,
         answer=report.text.split("\n", 1)[0],
@@ -917,6 +945,7 @@ def handle_storm_comparison(ctx: HandlerContext) -> AnalyticsResult:
 
     return AnalyticsResult(
         rows=report.rows,
+        display_rows=display_rows(report),
         report=report.text,
         report_kind=report.kind,
         answer=report.text.split("\n", 1)[0],
@@ -974,9 +1003,9 @@ def _handle_forecast_comparison(
         )
 
     try:
-        comparison = compare_forecast(
-            ctx.conn, params, county=county, limit=ctx.limit
-        )
+        # The analogue count is its own concern, not the general row limit:
+        # eight counties at --limit 10 is eighty rows of table for one question.
+        comparison = compare_forecast(ctx.conn, params, county=county)
         report = render_forecast_comparison(
             comparison,
             reference_summary=reference_summary,
@@ -989,6 +1018,9 @@ def _handle_forecast_comparison(
 
     return AnalyticsResult(
         rows=report.rows,
+        display_rows=display_rows(
+            report, forecast_wind_ms=params.get("peakWSPD10")
+        ),
         report=report.text,
         report_kind=report.kind,
         answer=(
@@ -1081,6 +1113,9 @@ def _attach_forecast_report(
 
     result.report = report.text
     result.report_kind = report.kind
+    result.display_rows = display_rows(
+        report, forecast_wind_ms=result.params.get("peakWSPD10")
+    )
     return result
 
 

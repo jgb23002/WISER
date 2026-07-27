@@ -52,9 +52,21 @@ CREATE TABLE County (
 --
 -- Fields:
 --   sumAFWA_TOTPRECIP: Total precipitation during storm (mm)
---   peakWSPD10: Peak wind speed at 10m height (m/s)
---   wgt5-18: Hours where wind speed exceeded threshold (m/s)
+--   peakWSPD10: Peak SUSTAINED wind speed at 10m height (m/s)
+--   wgt5-18: Hours where the wind GUST exceeded 5/9/13/18 m/s
 --   outage: Number of trouble spots / outage locations
+--
+-- wgt* and peakWSPD10 do not measure the same quantity, and the data proves
+-- it: 211 rows have wgt13 > 0 while peakWSPD10 < 13, and all 11 rows with
+-- wgt18 > 0 have peakWSPD10 < 18 (statewide MAX(peakWSPD10) is 13.11 m/s, so
+-- no row could reach 18 m/s sustained). Middlesex in storm 2006090118 records
+-- an hour above 18 m/s against a 7.51 m/s peak sustained wind.
+--
+-- Gusts exceeding sustained speed is the explanation consistent with all four
+-- thresholds; the source AFWA field has not been confirmed, so treat "gust" as
+-- the working interpretation rather than a verified provenance claim. What is
+-- certain is that wgt* must NOT be read as hours above peakWSPD10, and that a
+-- threshold-hour count is exposure, never a peak magnitude.
 -- ============================================================================
 CREATE TABLE WeatherData (
     stormCode BIGINT NOT NULL,
