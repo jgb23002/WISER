@@ -23,6 +23,9 @@ from wiser.agents.sql_ai_agent import SqlValidationError  # noqa: E402
 from wiser.agents.task_routing_agent import Route  # noqa: E402
 from wiser.handlers import (  # noqa: E402
     ROUTE_HANDLERS,
+    AnalyticsResult,
+    Notice,
+    SimilarityResult,
     handle_weather_analytics,
     parse_similarity_county,
     parse_similarity_params,
@@ -177,6 +180,77 @@ class TestCliExternalLoad(unittest.TestCase):
         self.assertIn("External outage observations loaded", text)
         self.assertIn("source: EagleEye", text)
         self.assertIn("rows parsed: 2", text)
+
+
+class TestStormReportRendering(unittest.TestCase):
+    """The report block prints above the rows; results without one are
+    byte-identical to what the CLI printed before storm-scoped routes existed."""
+
+    @staticmethod
+    def _render(result) -> str:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            render_result(result)
+        return buffer.getvalue()
+
+    def test_report_block_prints_above_the_rows(self):
+        result = AnalyticsResult(
+            report="Storm date:        2020-08-04\nStatewide outages:  21,557",
+            report_kind="storm_summary",
+            rows=[{"county": "Fairfield", "outage": 5935}],
+            answer="ignored while a report is present",
+        )
+        output = self._render(result)
+
+        self.assertIn("Storm date:", output)
+        self.assertIn("Fairfield", output)
+        self.assertLess(output.index("Storm date:"), output.index("Fairfield"))
+
+    def test_notices_print_before_the_report(self):
+        result = AnalyticsResult(
+            report="Storm date: 2020-08-04",
+            report_kind="storm_summary",
+            rows=[],
+            notices=[Notice("2021-09-01 matches more than one storm.", level="error")],
+        )
+        output = self._render(result)
+        self.assertLess(
+            output.index("matches more than one storm"), output.index("Storm date:")
+        )
+
+    def test_a_result_without_a_report_is_unchanged(self):
+        with_report_field = AnalyticsResult(
+            sql="SELECT 1", rows=[{"county": "Fairfield", "total_outage": 10}],
+            answer="one row",
+        )
+        output = self._render(with_report_field)
+        self.assertIn("one row", output)
+        self.assertIn("Fairfield", output)
+        self.assertNotIn("Storm date", output)
+
+    def test_similarity_forecast_report_prints_above_the_table(self):
+        result = SimilarityResult(
+            ok=True,
+            county="Fairfield",
+            params={"peakWSPD10": 9.2},
+            rows=[
+                {
+                    "stormCode": 2020080406,
+                    "similarity": 0.9,
+                    "eventDateTime": "2020-08-04 06:00:00",
+                    "peakWSPD10": 9.2,
+                    "outage": 5935,
+                }
+            ],
+            total_historical=294,
+            report="Forecast Comparison: upcoming storm vs historical record",
+            report_kind="forecast_comparison",
+        )
+        output = self._render(result)
+        self.assertIn("Forecast Comparison:", output)
+        self.assertLess(
+            output.index("Forecast Comparison:"), output.index("2020080406")
+        )
 
 
 if __name__ == "__main__":

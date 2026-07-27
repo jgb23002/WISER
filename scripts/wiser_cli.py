@@ -138,6 +138,14 @@ def _render_analytics(
     for notice in result.notices:
         print(notice.text)
 
+    # Storm-scoped routes render a report block; the rows sit underneath it.
+    if result.report is not None:
+        print(result.report)
+        print()
+        print_rows(result.rows or [])
+        _print_reasoning(result, show_prompt=show_reasoning_prompt)
+        return
+
     if result.used_fallback:
         if result.fallback_title is not None:
             print(result.fallback_title)
@@ -174,6 +182,11 @@ def _render_similarity(result: SimilarityResult) -> None:
         for notice in result.notices:
             print(notice.text)
         return
+    for notice in result.notices:
+        print(notice.text)
+    if result.report is not None:
+        print(result.report)
+        print()
     print_results(
         result.county,
         result.params,

@@ -149,6 +149,17 @@ def _render_analytics(
 
     _render_notices(result.notices)
 
+    # Storm-scoped routes render a report block above the rows and heat map.
+    if result.report is not None:
+        _render_storm_report(result)
+        _render_rows(result.rows or [])
+        _render_analytics_heatmap(result)
+        _render_reasoning(
+            result,
+            show_reasoning_prompt=show_reasoning_prompt,
+        )
+        return
+
     if result.used_fallback:
         st.caption("Answered with fixed fallback queries (SQL AI Agent unavailable).")
         if result.fallback_title is not None:
@@ -172,6 +183,24 @@ def _render_analytics(
         result,
         show_reasoning_prompt=show_reasoning_prompt,
     )
+
+
+_REPORT_TITLES = {
+    "storm_summary": "Storm summary",
+    "storm_ranking": "Storm ranking",
+    "storm_comparison": "Storm comparison",
+    "forecast_comparison": "Forecast comparison",
+}
+
+
+def _render_storm_report(result) -> None:
+    """Show a storm report block.
+
+    Rendered as preformatted text, not markdown: the reports use column
+    alignment and a leading-space indent that markdown would collapse.
+    """
+    st.subheader(_REPORT_TITLES.get(result.report_kind, "Storm report"))
+    st.code(result.report, language="text")
 
 
 def _render_reasoning(
@@ -277,6 +306,9 @@ def _render_similarity(result: SimilarityResult) -> None:
     if not result.ok:
         _render_notices(result.notices)
         return
+    _render_notices(result.notices)
+    if result.report is not None:
+        _render_storm_report(result)
     params = ", ".join(f"{name}={value:g}" for name, value in result.params.items())
     st.subheader(f"Similar storms — {result.county}")
     st.caption(

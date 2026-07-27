@@ -145,3 +145,57 @@ class TestStreamlitApp(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStormReportRendering(unittest.TestCase):
+    """Structural checks on the Streamlit storm-report path.
+
+    Asserted with ast rather than by importing: streamlit_app.py calls main()
+    at module scope, so importing it runs the app.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import ast
+
+        cls.ast = ast
+        cls.tree = ast.parse(APP_PATH.read_text(encoding="utf-8"))
+        cls.functions = {
+            node.name: node
+            for node in ast.walk(cls.tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+
+    def test_storm_report_renderer_exists(self):
+        self.assertIn("_render_storm_report", self.functions)
+
+    def _streamlit_calls(self, function_name: str) -> set[str]:
+        """Names of st.* widgets called in a function."""
+        return {
+            node.func.attr
+            for node in self.ast.walk(self.functions[function_name])
+            if isinstance(node, self.ast.Call)
+            and isinstance(node.func, self.ast.Attribute)
+            and isinstance(node.func.value, self.ast.Name)
+            and node.func.value.id == "st"
+        }
+
+    def test_report_is_rendered_preformatted_not_as_markdown(self):
+        """The reports use column alignment and leading-space indents that
+        markdown would collapse."""
+        calls = self._streamlit_calls("_render_storm_report")
+        self.assertIn("code", calls)
+        self.assertNotIn("markdown", calls)
+
+    def test_analytics_renderer_checks_for_a_report(self):
+        source = self.ast.dump(self.functions["_render_analytics"])
+        self.assertIn("report", source)
+        self.assertIn("_render_storm_report", source)
+
+    def test_similarity_renderer_checks_for_a_report(self):
+        source = self.ast.dump(self.functions["_render_similarity"])
+        self.assertIn("_render_storm_report", source)
+
+    def test_heatmap_is_still_rendered_once_on_the_report_path(self):
+        source = self.ast.dump(self.functions["_render_analytics"])
+        self.assertEqual(source.count("_render_analytics_heatmap"), 3)
