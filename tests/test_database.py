@@ -12,6 +12,9 @@ from wiser.database import (  # noqa: E402
     DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
     connect,
     initialize_schema,
+    load_current_weather_rows,
+    load_hourly_weather_rows,
+    load_normalized_rows,
 )
 
 
@@ -72,6 +75,118 @@ class TestDatabaseInitialization(unittest.TestCase):
             self.assertIn("WeatherData", table_names)
             self.assertIn("ExternalOutageObservation", table_names)
             self.assertNotIn("StormCounty", table_names)
+        finally:
+            conn.close()
+
+    def test_load_normalized_rows_seeds_regions_metrics_and_hourly_rows(self):
+        conn = sqlite3.connect(":memory:")
+        try:
+            initialize_schema(conn)
+            load_normalized_rows(
+                conn,
+                [
+                    {
+                        "stormCode": 2005100800,
+                        "eventDateTime": "2005-10-08 00:00:00",
+                        "eventLength": 48,
+                    }
+                ],
+                [{"county": "Fairfield", "state": "CT", "ohLine": 1500}],
+                [
+                    {
+                        "stormCode": 2005100800,
+                        "county": "Fairfield",
+                        "sumAFWA_TOTPRECIP": 25.5,
+                        "peakWSPD10": 9.2,
+                        "wgt5": 4,
+                        "wgt9": 2,
+                        "wgt13": 1,
+                        "wgt18": 0,
+                        "outage": 120,
+                    }
+                ],
+            )
+            metric_count = conn.execute(
+                "SELECT COUNT(*) FROM StormMetricDefinition"
+            ).fetchone()[0]
+            region_count = conn.execute(
+                "SELECT COUNT(*) FROM RegionCountyMapping"
+            ).fetchone()[0]
+
+            load_hourly_weather_rows(
+                conn,
+                [
+                    {
+                        "stormCode": 2005100800,
+                        "county": "Fairfield",
+                        "hourOffset": 0,
+                        "metricKey": "humidity",
+                        "metricValue": 84.0,
+                        "observedAt": "2005-10-08 00:00:00",
+                        "sourceColumn": "humidity_h00",
+                    },
+                    {
+                        "stormCode": 2005100800,
+                        "county": "Fairfield",
+                        "hourOffset": 1,
+                        "metricKey": "temperature",
+                        "metricValue": 70.0,
+                        "observedAt": "2005-10-08 01:00:00",
+                        "sourceColumn": "temperature_h01",
+                    }
+                ],
+            )
+            hourly_count = conn.execute(
+                "SELECT COUNT(*) FROM HourlyWeatherObservation"
+            ).fetchone()[0]
+            temperature_metric = conn.execute(
+                "SELECT displayName FROM StormMetricDefinition WHERE metricKey = ?",
+                ("temperature",),
+            ).fetchone()[0]
+            peak_gust = conn.execute(
+                "SELECT peakGUST10 FROM WeatherData WHERE stormCode = ?",
+                (2005100800,),
+            ).fetchone()[0]
+
+            self.assertGreater(metric_count, 0)
+            self.assertGreater(region_count, 0)
+            self.assertEqual(hourly_count, 2)
+            self.assertEqual(temperature_metric, "Temperature")
+            self.assertIsNone(peak_gust)
+        finally:
+            conn.close()
+
+    def test_load_current_weather_rows_stages_current_observations(self):
+        conn = sqlite3.connect(":memory:")
+        try:
+            initialize_schema(conn)
+            conn.execute(
+                "INSERT INTO County(county, state, ohLine) VALUES(?, ?, ?)",
+                ("Fairfield", "CT", 1500),
+            )
+            load_current_weather_rows(
+                conn,
+                [
+                    {
+                        "sourceSystem": "mock_feed",
+                        "sourceRecordId": "obs-1",
+                        "observedAt": "2026-08-11 14:00:00",
+                        "county": "Fairfield",
+                        "state": "CT",
+                        "peakWSPD10": 9.1,
+                        "peakGUST10": 17.2,
+                        "sumAFWA_TOTPRECIP": 12.5,
+                        "humidity": 82.0,
+                        "outage": 44,
+                        "rawPayload": "{}",
+                    }
+                ],
+            )
+
+            row = conn.execute(
+                "SELECT peakGUST10, humidity, outage FROM CurrentWeatherObservation"
+            ).fetchone()
+            self.assertEqual(tuple(row), (17.2, 82.0, 44))
         finally:
             conn.close()
 

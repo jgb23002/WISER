@@ -31,13 +31,23 @@ from wiser.storm_analysis import (  # noqa: E402
     StormAnalysisError,
     compare_forecast,
     compare_storms,
+    current_threshold_analysis,
+    current_weather_available,
+    current_weather_group_analysis,
     date_to_storm_code_range,
+    month_by_month_analysis,
+    month_period,
+    region_group_analysis,
     resolve_storm,
+    season_by_season_analysis,
     storm_code_to_date,
     state_counties,
     storm_count,
+    storm_group_analysis,
     storm_ranking,
     storm_summary,
+    threshold_analysis,
+    ThresholdSpec,
 )
 
 _SCHEMA_SQL = SCHEMA_PATH.read_text(encoding="utf-8")
@@ -175,6 +185,273 @@ class TestStormCodeArithmetic(unittest.TestCase):
                     date_to_storm_code_range(bad)
 
 
+class TestSponsorGroupAnalytics(unittest.TestCase):
+    def setUp(self):
+        self.conn = _make_conn(
+            storms=[
+                (2026020100, "2026-02-01 00:00:00", 48),
+                (2026070100, "2026-07-01 00:00:00", 48),
+                (2026070200, "2026-07-02 00:00:00", 48),
+            ],
+            counties=[
+                ("Fairfield", "CT", 4_000_000),
+                ("Hartford", "CT", 8_000_000),
+            ],
+            weather=[
+                (2026020100, "Fairfield", 10.0, 5.0, 2, 0, 0, 0, 100),
+                (2026020100, "Hartford", 12.0, 6.0, 2, 0, 0, 0, 50),
+                (2026070100, "Fairfield", 40.0, 12.0, 10, 5, 1, 0, 300),
+                (2026070100, "Hartford", 35.0, 11.0, 8, 4, 1, 0, 200),
+                (2026070200, "Fairfield", 20.0, 8.0, 4, 0, 0, 0, 40),
+                (2026070200, "Hartford", 18.0, 7.0, 4, 0, 0, 0, 60),
+            ],
+        )
+        self.addCleanup(self.conn.close)
+
+    def test_month_group_comparison_summarizes_outages_and_intensity(self):
+        analysis = storm_group_analysis(
+            self.conn,
+            (month_period(7), month_period(2)),
+            title="July vs February",
+            group_by="month",
+        )
+
+        rows = {row["group"]: row for row in analysis.rows}
+        self.assertEqual(rows["July"]["storm_count"], 2)
+        self.assertEqual(rows["July"]["total_outage"], 600)
+        self.assertEqual(rows["February"]["storm_count"], 1)
+        self.assertEqual(rows["February"]["total_outage"], 150)
+        self.assertGreater(rows["July"]["peak_wind_ms"], rows["February"]["peak_wind_ms"])
+        self.assertTrue(analysis.distribution_rows)
+
+    def test_month_and_season_trends_return_chart_ready_rows(self):
+        monthly = month_by_month_analysis(self.conn)
+        seasonal = season_by_season_analysis(self.conn)
+
+        self.assertEqual(len(monthly.rows), 12)
+        self.assertEqual(len(seasonal.rows), 4)
+        self.assertTrue(any(row["group"] == "July" for row in monthly.rows))
+        self.assertTrue(any(row["group"] == "Summer" for row in seasonal.rows))
+
+    def test_region_group_analysis_uses_default_ct_regions(self):
+        analysis = region_group_analysis(self.conn)
+        rows = {row["region"]: row for row in analysis.rows}
+
+        self.assertIn("Northern CT", rows)
+        self.assertIn("Southern CT", rows)
+        self.assertEqual(rows["Northern CT"]["group"], "Northern CT")
+        self.assertEqual(rows["Southern CT"]["group"], "Southern CT")
+        self.assertGreater(rows["Northern CT"]["total_outage"], 0)
+        self.assertGreater(rows["Southern CT"]["total_outage"], 0)
+
+    def test_threshold_analysis_returns_matching_storm_county_rows(self):
+        analysis = threshold_analysis(
+            self.conn,
+            ThresholdSpec(
+                metric_key="peakWSPD10",
+                label="Peak sustained wind",
+                stored_threshold=10.0,
+                display_threshold="22.4 mph",
+            ),
+            period=month_period(7),
+            limit=5,
+        )
+
+        self.assertEqual(analysis.matched_rows, 2)
+        self.assertEqual(analysis.matched_storms, 1)
+        self.assertEqual({row["county"] for row in analysis.rows}, {"Fairfield", "Hartford"})
+
+    def test_group_analysis_includes_peak_gust_when_available(self):
+        self.conn.execute(
+            "UPDATE WeatherData SET peakGUST10 = ? WHERE stormCode = ? AND county = ?",
+            (19.0, 2026070100, "Hartford"),
+        )
+        self.conn.commit()
+
+        analysis = storm_group_analysis(
+            self.conn,
+            (month_period(7), month_period(2)),
+            title="July vs February",
+            group_by="month",
+        )
+
+        rows = {row["group"]: row for row in analysis.rows}
+        self.assertEqual(rows["July"]["peak_gust_ms"], 19.0)
+        self.assertIsNone(rows["February"]["peak_gust_ms"])
+
+    def test_gust_threshold_uses_peak_magnitude_before_wgt_fallback(self):
+        self.conn.execute(
+            "UPDATE WeatherData SET peakGUST10 = ?, wgt18 = ?"
+            " WHERE stormCode = ? AND county = ?",
+            (20.0, 0, 2026070100, "Fairfield"),
+        )
+        self.conn.commit()
+
+        analysis = threshold_analysis(
+            self.conn,
+            ThresholdSpec(
+                metric_key="peakGUST10",
+                label="Peak wind gust",
+                stored_threshold=18.0,
+                display_threshold="40.3 mph",
+                comparison_metric="wgt18",
+            ),
+            period=month_period(7),
+            limit=5,
+        )
+
+        self.assertFalse(analysis.used_gust_exposure_fallback)
+        self.assertEqual(analysis.matched_rows, 1)
+        self.assertEqual(analysis.rows[0]["metric_value"], 20.0)
+        self.assertEqual(analysis.rows[0]["county"], "Fairfield")
+
+    def test_gust_threshold_falls_back_to_wgt_when_no_peak_gust_exists(self):
+        analysis = threshold_analysis(
+            self.conn,
+            ThresholdSpec(
+                metric_key="peakGUST10",
+                label="Peak wind gust",
+                stored_threshold=9.0,
+                display_threshold="20.1 mph",
+                comparison_metric="wgt9",
+            ),
+            period=month_period(7),
+            limit=5,
+        )
+
+        self.assertTrue(analysis.used_gust_exposure_fallback)
+        self.assertEqual(analysis.matched_rows, 2)
+        self.assertEqual({row["metric_value"] for row in analysis.rows}, {5.0, 4.0})
+
+    def test_current_weather_group_analysis_replaces_current_month_period(self):
+        self.conn.executemany(
+            """
+            INSERT INTO CurrentWeatherObservation(
+                sourceSystem,
+                sourceRecordId,
+                observedAt,
+                county,
+                state,
+                peakWSPD10,
+                peakGUST10,
+                sumAFWA_TOTPRECIP,
+                humidity,
+                outage,
+                rawPayload
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "mock_feed",
+                    "obs-1",
+                    "2026-08-11 14:00:00",
+                    "Fairfield",
+                    "CT",
+                    9.0,
+                    16.0,
+                    10.0,
+                    80.0,
+                    40,
+                    "{}",
+                ),
+                (
+                    "mock_feed",
+                    "obs-1",
+                    "2026-08-11 14:00:00",
+                    "Hartford",
+                    "CT",
+                    10.0,
+                    18.0,
+                    12.0,
+                    86.0,
+                    60,
+                    "{}",
+                ),
+            ],
+        )
+        self.conn.commit()
+
+        self.assertTrue(
+            current_weather_available(self.conn, year=2026, month=8)
+        )
+        analysis = current_weather_group_analysis(
+            self.conn,
+            (month_period(8), month_period(7)),
+            current_year=2026,
+            current_month=8,
+            title="Current August vs July",
+            group_by="month",
+        )
+
+        rows = {row["group"]: row for row in analysis.rows}
+        self.assertEqual(rows["Current August 2026"]["source"], "current_weather")
+        self.assertEqual(rows["Current August 2026"]["total_outage"], 100)
+        self.assertEqual(rows["Current August 2026"]["peak_gust_ms"], 18.0)
+        self.assertEqual(rows["July"]["total_outage"], 600)
+
+    def test_current_threshold_analysis_supports_humidity(self):
+        self.conn.execute(
+            """
+            INSERT INTO CurrentWeatherObservation(
+                sourceSystem,
+                sourceRecordId,
+                observedAt,
+                county,
+                state,
+                peakWSPD10,
+                peakGUST10,
+                sumAFWA_TOTPRECIP,
+                humidity,
+                outage,
+                rawPayload
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "mock_feed",
+                "obs-1",
+                "2026-08-11 14:00:00",
+                "Fairfield",
+                "CT",
+                9.0,
+                16.0,
+                10.0,
+                82.0,
+                40,
+                "{}",
+            ),
+        )
+        self.conn.commit()
+
+        analysis = current_threshold_analysis(
+            self.conn,
+            ThresholdSpec(
+                metric_key="humidity",
+                label="Humidity",
+                stored_threshold=80.0,
+                display_threshold="80%",
+            ),
+            year=2026,
+            month=8,
+            limit=5,
+        )
+
+        self.assertEqual(analysis.source, "current_weather")
+        self.assertEqual(analysis.matched_rows, 1)
+        self.assertEqual(analysis.rows[0]["metric_value"], 82.0)
+
+    def test_humidity_threshold_names_current_data_gap(self):
+        with self.assertRaisesRegex(StormAnalysisError, "humidity observations"):
+            threshold_analysis(
+                self.conn,
+                ThresholdSpec(
+                    metric_key="humidity",
+                    label="Humidity",
+                    stored_threshold=80.0,
+                    display_threshold="80%",
+                ),
+            )
+
+
 class TestResolveStorm(unittest.TestCase):
     def setUp(self):
         self.conn = _make_conn()
@@ -265,6 +542,18 @@ class TestStormSummary(unittest.TestCase):
         self.assertIsNone(summary.storm_type)
         self.assertIsNone(summary.peak_snowfall_mm)
         self.assertIsNone(summary.wind_gust_ms)
+
+    def test_peak_gust_is_reported_when_source_data_provides_it(self):
+        self.conn.execute(
+            "UPDATE WeatherData SET peakGUST10 = ? WHERE stormCode = ? AND county = ?",
+            (18.0, 2020080406, "Fairfield"),
+        )
+        self.conn.commit()
+
+        summary = storm_summary(self.conn, 2020080406)
+
+        self.assertEqual(summary.wind_gust_ms.county, "Fairfield")
+        self.assertEqual(summary.wind_gust_ms.value, 18.0)
 
     def test_threshold_count_uses_the_configured_column(self):
         summary = storm_summary(self.conn, 2020080406)

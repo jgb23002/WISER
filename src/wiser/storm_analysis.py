@@ -25,6 +25,7 @@ Portability rules this module holds to (see the plan, section 2):
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Iterable, Protocol, Sequence
 
@@ -35,6 +36,7 @@ DEFAULT_STATE = "CT"
 # be a tie across the whole record and carry no information.
 METRIC_OUTAGE = "outage"
 METRIC_MAX_WIND = "max_wind"
+METRIC_MAX_GUST = "max_gust"
 METRIC_MAX_PRECIP = "max_precip"
 
 RANKABLE_METRICS: tuple[str, ...] = (METRIC_OUTAGE, METRIC_MAX_WIND, METRIC_MAX_PRECIP)
@@ -42,12 +44,14 @@ RANKABLE_METRICS: tuple[str, ...] = (METRIC_OUTAGE, METRIC_MAX_WIND, METRIC_MAX_
 METRIC_LABELS: dict[str, str] = {
     METRIC_OUTAGE: "statewide outages",
     METRIC_MAX_WIND: "maximum wind speed",
+    METRIC_MAX_GUST: "maximum wind gust",
     METRIC_MAX_PRECIP: "maximum precipitation",
 }
 
 COUNTY_METRIC_LABELS: dict[str, str] = {
     METRIC_OUTAGE: "outages",
     METRIC_MAX_WIND: "maximum wind speed",
+    METRIC_MAX_GUST: "maximum wind gust",
     METRIC_MAX_PRECIP: "maximum precipitation",
 }
 
@@ -143,6 +147,7 @@ class CountyStormRow:
     state: str
     outage: int
     peak_wind_ms: float
+    peak_gust_ms: float | None
     precip_mm: float
     wgt5: int
     wgt9: int
@@ -179,7 +184,7 @@ class GustExposure:
     """The strongest gust threshold this storm crossed, and for how long.
 
     ``threshold_ms`` is a floor: the gust reached at least this speed for
-    ``hours`` hours. The actual peak gust is not in the schema.
+    ``hours`` hours. When ``peakGUST10`` exists it is reported separately.
     """
 
     threshold_ms: int
@@ -205,9 +210,9 @@ class StormSummary:
     # never inferred, never defaulted to a number.
     storm_type: None = None
     peak_snowfall_mm: None = None
-    # Peak gust MAGNITUDE stays unavailable even though gust EXPOSURE is
-    # measured: hours above a threshold cannot yield a peak value.
-    wind_gust_ms: None = None
+    # Peak gust MAGNITUDE from source data. None for legacy rows where only
+    # wgt* threshold-hour exposure is available.
+    wind_gust_ms: CountyValue | None = None
 
     @property
     def scope_label(self) -> str:
@@ -364,8 +369,175 @@ class ForecastComparison:
         return f"statewide ({self.state})"
 
 
+@dataclass(frozen=True)
+class PeriodSpec:
+    """A month, season, year, or custom group of storms."""
+
+    key: str
+    label: str
+    kind: str
+    month: int | None = None
+    season: str | None = None
+    year: int | None = None
+    exclude_key: str | None = None
+
+    def includes(self, storm_code: int) -> bool:
+        year, month, _day = storm_code_to_ymd(storm_code)
+        if self.exclude_key:
+            excluded = period_from_key(self.exclude_key)
+            return not excluded.includes(storm_code)
+        if self.year is not None and year != self.year:
+            return False
+        if self.month is not None:
+            return month == self.month
+        if self.season is not None:
+            return month in SEASON_MONTHS[self.season]
+        return True
+
+
+@dataclass(frozen=True)
+class GroupObservation:
+    storm_code: int
+    date: str
+    county: str
+    outage: int
+    peak_wind_ms: float
+    peak_gust_ms: float | None
+    precip_mm: float
+    humidity: float | None
+    wgt5: int
+    wgt9: int
+    wgt13: int
+    wgt18: int
+    oh_line: int
+
+    def value(self, metric_key: str) -> float:
+        if metric_key == "outage":
+            return float(self.outage)
+        if metric_key == "peakWSPD10":
+            return self.peak_wind_ms
+        if metric_key == "peakGUST10":
+            if self.peak_gust_ms is None:
+                raise StormAnalysisError("peak gust magnitude is not available")
+            return self.peak_gust_ms
+        if metric_key == "sumAFWA_TOTPRECIP":
+            return self.precip_mm
+        if metric_key == "humidity":
+            if self.humidity is None:
+                raise StormAnalysisError("humidity is not available")
+            return self.humidity
+        if metric_key in {"wgt5", "wgt9", "wgt13", "wgt18"}:
+            return float(getattr(self, metric_key))
+        raise StormAnalysisError(f"metric {metric_key!r} is not available")
+
+
+@dataclass(frozen=True)
+class StormOutagePoint:
+    group_label: str
+    storm_code: int
+    date: str
+    outage: int
+
+
+@dataclass(frozen=True)
+class StormGroupSummary:
+    key: str
+    label: str
+    group_kind: str
+    region: str | None
+    storm_count: int
+    county_count: int
+    total_outage: int
+    avg_outage_per_storm: float | None
+    median_outage_per_storm: float | None
+    max_storm_outage: int | None
+    max_storm_code: int | None
+    peak_wind_ms: float | None
+    peak_gust_ms: float | None
+    max_precip_mm: float | None
+    avg_precip_mm: float | None
+    max_humidity: float | None
+    avg_humidity: float | None
+    gust_hours_9: int
+    gust_hours_13: int
+    outage_per_million_ohline: float | None
+    storm_outages: tuple[StormOutagePoint, ...]
+    data_source: str = "historical"
+
+
+@dataclass(frozen=True)
+class StormGroupAnalysis:
+    title: str
+    scope_label: str
+    group_by: str
+    summaries: tuple[StormGroupSummary, ...]
+    rows: tuple[dict[str, Any], ...]
+    distribution_rows: tuple[dict[str, Any], ...]
+    region_rows: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True)
+class ThresholdSpec:
+    metric_key: str
+    label: str
+    stored_threshold: float
+    display_threshold: str
+    comparison_metric: str | None = None
+
+
+@dataclass(frozen=True)
+class ThresholdAnalysis:
+    title: str
+    threshold: ThresholdSpec
+    scope_label: str
+    rows: tuple[dict[str, Any], ...]
+    matched_rows: int
+    matched_storms: int
+    matched_counties: int
+    total_rows: int
+    used_gust_exposure_fallback: bool = False
+    source: str = "historical"
+
+
 class StormAnalysisError(ValueError):
     """Raised when a requested storm or metric cannot be analysed."""
+
+
+MONTH_NAMES: tuple[str, ...] = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+
+SEASON_MONTHS: dict[str, tuple[int, ...]] = {
+    "winter": (12, 1, 2),
+    "spring": (3, 4, 5),
+    "summer": (6, 7, 8),
+    "fall": (9, 10, 11),
+}
+SEASON_LABELS: dict[str, str] = {
+    "winter": "Winter",
+    "spring": "Spring",
+    "summer": "Summer",
+    "fall": "Fall",
+}
+
+DEFAULT_REGION_COUNTIES: dict[str, tuple[str, ...]] = {
+    "Northern CT": ("Hartford", "Litchfield", "Tolland", "Windham"),
+    "Southern CT": ("Fairfield", "Middlesex", "New Haven", "New London"),
+    "Eastern CT": ("New London", "Tolland", "Windham"),
+    "Western CT": ("Fairfield", "Litchfield"),
+    "Central CT": ("Hartford", "Middlesex", "New Haven"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +555,11 @@ def storm_code_to_date(storm_code: int) -> str:
     day = int(storm_code) // 100
     year, month, date = day // 10000, (day // 100) % 100, day % 100
     return f"{year:04d}-{month:02d}-{date:02d}"
+
+
+def storm_code_to_ymd(storm_code: int) -> tuple[int, int, int]:
+    day = int(storm_code) // 100
+    return day // 10000, (day // 100) % 100, day % 100
 
 
 def storm_code_hour(storm_code: int) -> int:
@@ -404,6 +581,56 @@ def date_to_storm_code_range(iso_date: str) -> tuple[int, int]:
         raise StormAnalysisError(f"not an ISO date: {iso_date!r}") from exc
     lower = ((year * 10000) + (month * 100) + day) * 100
     return lower, lower + 100
+
+
+def month_period(month: int, *, year: int | None = None) -> PeriodSpec:
+    label = MONTH_NAMES[int(month) - 1]
+    key = f"month:{int(month):02d}"
+    if year is not None:
+        label = f"{label} {year}"
+        key = f"{key}:{int(year)}"
+    return PeriodSpec(key=key, label=label, kind="month", month=int(month), year=year)
+
+
+def season_period(season: str, *, year: int | None = None) -> PeriodSpec:
+    key_name = season.lower()
+    if key_name == "autumn":
+        key_name = "fall"
+    if key_name not in SEASON_MONTHS:
+        raise StormAnalysisError(f"unknown season: {season!r}")
+    label = SEASON_LABELS[key_name]
+    key = f"season:{key_name}"
+    if year is not None:
+        label = f"{label} {year}"
+        key = f"{key}:{int(year)}"
+    return PeriodSpec(key=key, label=label, kind="season", season=key_name, year=year)
+
+
+def all_period(label: str = "All storms") -> PeriodSpec:
+    return PeriodSpec(key="all", label=label, kind="all")
+
+
+def other_period(base: PeriodSpec, label: str | None = None) -> PeriodSpec:
+    return PeriodSpec(
+        key=f"not:{base.key}",
+        label=label or f"All storms outside {base.label}",
+        kind="baseline",
+        exclude_key=base.key,
+    )
+
+
+def period_from_key(key: str) -> PeriodSpec:
+    if key == "all":
+        return all_period()
+    if key.startswith("month:"):
+        parts = key.split(":")
+        year = int(parts[2]) if len(parts) > 2 else None
+        return month_period(int(parts[1]), year=year)
+    if key.startswith("season:"):
+        parts = key.split(":")
+        year = int(parts[2]) if len(parts) > 2 else None
+        return season_period(parts[1], year=year)
+    raise StormAnalysisError(f"unknown period key: {key!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +747,7 @@ def storm_summary(
             c.state,
             w.outage,
             w.peakWSPD10,
+            w.peakGUST10,
             w.sumAFWA_TOTPRECIP,
             w.wgt5,
             w.wgt9,
@@ -553,6 +781,7 @@ def storm_summary(
         counties=counties,
         statewide_outage=statewide_outage,
         max_wind=_argmax(counties, lambda row: row.peak_wind_ms),
+        wind_gust_ms=_argmax_optional(counties, lambda row: row.peak_gust_ms),
         max_precip=_argmax(counties, lambda row: row.precip_mm),
         top_outage_counties=tuple(
             sorted(
@@ -761,6 +990,12 @@ def compare_storms(
             label="Max wind speed",
             value_a=summary_a.max_wind.value if summary_a.max_wind else None,
             value_b=summary_b.max_wind.value if summary_b.max_wind else None,
+        ),
+        MetricDelta(
+            metric=METRIC_MAX_GUST,
+            label="Max wind gust",
+            value_a=summary_a.wind_gust_ms.value if summary_a.wind_gust_ms else None,
+            value_b=summary_b.wind_gust_ms.value if summary_b.wind_gust_ms else None,
         ),
         MetricDelta(
             metric=METRIC_MAX_PRECIP,
@@ -1001,6 +1236,827 @@ def _analogue_storm(match: dict[str, Any], county: str) -> AnalogueStorm:
 
 
 # ---------------------------------------------------------------------------
+# Sponsor follow-up — period, group, region, and threshold analytics
+# ---------------------------------------------------------------------------
+
+
+def storm_group_analysis(
+    conn: DbConnection,
+    periods: Sequence[PeriodSpec],
+    *,
+    title: str,
+    group_by: str,
+    region: str | None = None,
+    county: str | None = None,
+    state: str = DEFAULT_STATE,
+) -> StormGroupAnalysis:
+    """Summarise storm groups such as July vs February or month by month."""
+    observations = _group_observations(
+        conn, state=state, region=region, county=county
+    )
+    summaries = tuple(
+        _summarize_group(
+            period,
+            [
+                row for row in observations
+                if period.includes(row.storm_code)
+            ],
+            region=region or (f"{county} County" if county else None),
+        )
+        for period in periods
+    )
+    return StormGroupAnalysis(
+        title=title,
+        scope_label=_scope_label(region, state, county=county),
+        group_by=group_by,
+        summaries=summaries,
+        rows=tuple(_group_summary_row(summary) for summary in summaries),
+        distribution_rows=tuple(
+            _distribution_row(point)
+            for summary in summaries
+            for point in summary.storm_outages
+        ),
+        region_rows=tuple(region_summary_rows(conn, state=state, period=periods[0]))
+        if region is None and county is None and len(periods) == 1
+        else (),
+    )
+
+
+def month_by_month_analysis(
+    conn: DbConnection,
+    *,
+    region: str | None = None,
+    county: str | None = None,
+    state: str = DEFAULT_STATE,
+) -> StormGroupAnalysis:
+    return storm_group_analysis(
+        conn,
+        tuple(month_period(month) for month in range(1, 13)),
+        title="Month-by-month storm analysis",
+        group_by="month",
+        region=region,
+        county=county,
+        state=state,
+    )
+
+
+def season_by_season_analysis(
+    conn: DbConnection,
+    *,
+    region: str | None = None,
+    county: str | None = None,
+    state: str = DEFAULT_STATE,
+) -> StormGroupAnalysis:
+    return storm_group_analysis(
+        conn,
+        tuple(season_period(season) for season in ("winter", "spring", "summer", "fall")),
+        title="Season-by-season storm analysis",
+        group_by="season",
+        region=region,
+        county=county,
+        state=state,
+    )
+
+
+def region_summary_rows(
+    conn: DbConnection,
+    *,
+    state: str = DEFAULT_STATE,
+    period: PeriodSpec | None = None,
+) -> list[dict[str, Any]]:
+    """Summaries for each default/custom region."""
+    period = period or all_period()
+    rows: list[dict[str, Any]] = []
+    for region in _region_mapping(conn, state=state):
+        analysis = storm_group_analysis(
+            conn,
+            (period,),
+            title=f"{period.label} regional storm analysis",
+            group_by="region",
+            region=region,
+            state=state,
+        )
+        if analysis.rows:
+            row = dict(analysis.rows[0])
+            row["group"] = region
+            row["region"] = region
+            rows.append(row)
+    rows.sort(key=lambda row: (-int(row["total_outage"]), str(row["region"])))
+    return rows
+
+
+def region_group_analysis(
+    conn: DbConnection,
+    *,
+    period: PeriodSpec | None = None,
+    state: str = DEFAULT_STATE,
+) -> StormGroupAnalysis:
+    period = period or all_period()
+    rows = tuple(region_summary_rows(conn, state=state, period=period))
+    return StormGroupAnalysis(
+        title=f"{period.label} regional storm analysis",
+        scope_label=f"statewide ({state}) by WISER default regions",
+        group_by="region",
+        summaries=(),
+        rows=rows,
+        distribution_rows=(),
+    )
+
+
+def threshold_analysis(
+    conn: DbConnection,
+    threshold: ThresholdSpec,
+    *,
+    period: PeriodSpec | None = None,
+    region: str | None = None,
+    county: str | None = None,
+    state: str = DEFAULT_STATE,
+    limit: int = 10,
+) -> ThresholdAnalysis:
+    """Find storm-county rows exceeding a weather or outage threshold."""
+    if threshold.metric_key == "humidity":
+        raise StormAnalysisError(
+            "humidity is registered for the upcoming mock dataset, but no "
+            "humidity observations are present in the current WISER tables"
+        )
+
+    period = period or all_period()
+    observations = [
+        row for row in _group_observations(
+            conn, state=state, region=region, county=county
+        )
+        if period.includes(row.storm_code)
+    ]
+    uses_gust_fallback = (
+        threshold.metric_key == "peakGUST10"
+        and not any(row.peak_gust_ms is not None for row in observations)
+        and threshold.comparison_metric is not None
+    )
+    matches = [
+        _threshold_row(row, threshold, use_gust_fallback=uses_gust_fallback)
+        for row in observations
+        if _exceeds_threshold(row, threshold, use_gust_fallback=uses_gust_fallback)
+    ]
+    matches.sort(
+        key=lambda row: (
+            -float(row["metric_value"]),
+            -int(row["outage"]),
+            int(row["stormCode"]),
+            str(row["county"]),
+        )
+    )
+    limited = tuple(matches[:limit])
+    return ThresholdAnalysis(
+        title=f"Threshold check: {threshold.label} > {threshold.display_threshold}",
+        threshold=threshold,
+        scope_label=_scope_label(region, state, period=period, county=county),
+        rows=limited,
+        matched_rows=len(matches),
+        matched_storms=len({int(row["stormCode"]) for row in matches}),
+        matched_counties=len({str(row["county"]) for row in matches}),
+        total_rows=len(observations),
+        used_gust_exposure_fallback=uses_gust_fallback,
+    )
+
+
+def current_weather_available(
+    conn: DbConnection,
+    *,
+    year: int,
+    month: int,
+    state: str = DEFAULT_STATE,
+) -> bool:
+    """True when staged current-weather rows exist for a calendar month."""
+    start, end = _month_bounds(year, month)
+    try:
+        rows = _fetch(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM CurrentWeatherObservation
+            WHERE observedAt >= ? AND observedAt < ?
+              AND LOWER(state) = LOWER(?)
+            """,
+            (start, end, state),
+        )
+    except Exception:  # noqa: BLE001 - older DBs simply have no current feed
+        return False
+    return bool(rows and int(rows[0][0] or 0) > 0)
+
+
+def current_weather_group_analysis(
+    conn: DbConnection,
+    periods: Sequence[PeriodSpec],
+    *,
+    current_year: int,
+    current_month: int,
+    title: str,
+    group_by: str,
+    region: str | None = None,
+    county: str | None = None,
+    state: str = DEFAULT_STATE,
+) -> StormGroupAnalysis:
+    """Hybrid group analysis that replaces this month with staged current rows."""
+    rows: list[dict[str, Any]] = []
+    distribution_rows: list[dict[str, Any]] = []
+    summaries: list[StormGroupSummary] = []
+
+    for period in periods:
+        if _is_current_month_period(period, current_year=current_year, current_month=current_month):
+            current_rows = _current_weather_observations(
+                conn,
+                year=current_year,
+                month=current_month,
+                state=state,
+                region=region,
+                county=county,
+            )
+            summary_row, distribution = _current_weather_summary_row(
+                current_rows,
+                year=current_year,
+                month=current_month,
+                region=region or (f"{county} County" if county else None),
+            )
+            rows.append(summary_row)
+            distribution_rows.extend(distribution)
+            continue
+
+        historical = storm_group_analysis(
+            conn,
+            (period,),
+            title=title,
+            group_by=period.kind,
+            region=region,
+            county=county,
+            state=state,
+        )
+        summaries.extend(historical.summaries)
+        rows.extend(dict(row) for row in historical.rows)
+        distribution_rows.extend(dict(row) for row in historical.distribution_rows)
+
+    return StormGroupAnalysis(
+        title=title,
+        scope_label=f"{_scope_label(region, state, county=county)} · current weather staging",
+        group_by=group_by,
+        summaries=tuple(summaries),
+        rows=tuple(rows),
+        distribution_rows=tuple(distribution_rows),
+        region_rows=(),
+    )
+
+
+def current_threshold_analysis(
+    conn: DbConnection,
+    threshold: ThresholdSpec,
+    *,
+    year: int,
+    month: int,
+    region: str | None = None,
+    county: str | None = None,
+    state: str = DEFAULT_STATE,
+    limit: int = 10,
+) -> ThresholdAnalysis:
+    """Threshold check over staged current-weather rows for this calendar month."""
+    observations = _current_weather_observations(
+        conn,
+        year=year,
+        month=month,
+        state=state,
+        region=region,
+        county=county,
+    )
+    if threshold.metric_key == "peakGUST10" and not any(
+        row.get("peakGUST10") is not None for row in observations
+    ):
+        raise StormAnalysisError(
+            "current weather observations do not include peakGUST10, so peak "
+            "gust magnitude cannot be checked for this month"
+        )
+    if threshold.metric_key == "humidity" and not any(
+        row.get("humidity") is not None for row in observations
+    ):
+        raise StormAnalysisError(
+            "current weather observations do not include humidity values for "
+            "this month"
+        )
+
+    matches = [
+        _current_threshold_row(row, threshold)
+        for row in observations
+        if _current_exceeds_threshold(row, threshold)
+    ]
+    matches.sort(
+        key=lambda row: (
+            -float(row["metric_value"]),
+            -int(row["outage"] or 0),
+            str(row["stormCode"]),
+            str(row["county"]),
+        )
+    )
+    limited = tuple(matches[:limit])
+    month_label = f"{MONTH_NAMES[month - 1]} {year}"
+    return ThresholdAnalysis(
+        title=(
+            f"Current threshold check: {threshold.label} > "
+            f"{threshold.display_threshold}"
+        ),
+        threshold=threshold,
+        scope_label=f"{_scope_label(region, state, county=county)} · {month_label}",
+        rows=limited,
+        matched_rows=len(matches),
+        matched_storms=len({str(row["stormCode"]) for row in matches}),
+        matched_counties=len({str(row["county"]) for row in matches}),
+        total_rows=len(observations),
+        source="current_weather",
+    )
+
+
+def _group_observations(
+    conn: DbConnection,
+    *,
+    state: str,
+    region: str | None,
+    county: str | None = None,
+) -> tuple[GroupObservation, ...]:
+    rows = _fetch(
+        conn,
+        """
+        SELECT
+            w.stormCode,
+            s.eventDateTime,
+            w.county,
+            w.outage,
+            w.peakWSPD10,
+            w.peakGUST10,
+            w.sumAFWA_TOTPRECIP,
+            w.wgt5,
+            w.wgt9,
+            w.wgt13,
+            w.wgt18,
+            c.ohLine
+        FROM WeatherData w
+        JOIN Storm s ON s.stormCode = w.stormCode
+        JOIN County c ON LOWER(c.county) = LOWER(w.county)
+        WHERE LOWER(c.state) = LOWER(?)
+        ORDER BY w.stormCode ASC, w.county ASC
+        """,
+        (state,),
+    )
+    allowed = None
+    if region is not None:
+        allowed = {
+            county.lower()
+            for county in _region_mapping(conn, state=state).get(region, ())
+        }
+    observations = []
+    for row in rows:
+        row_county = str(row[2])
+        if county is not None and row_county.lower() != county.lower():
+            continue
+        if allowed is not None and row_county.lower() not in allowed:
+            continue
+        storm_code = int(row[0])
+        observations.append(
+            GroupObservation(
+                storm_code=storm_code,
+                date=storm_code_to_date(storm_code),
+                county=row_county,
+                outage=int(row[3]),
+                peak_wind_ms=float(row[4]),
+                peak_gust_ms=_as_optional_float(row[5]),
+                precip_mm=float(row[6]),
+                humidity=None,
+                wgt5=int(row[7]),
+                wgt9=int(row[8]),
+                wgt13=int(row[9]),
+                wgt18=int(row[10]),
+                oh_line=int(row[11]),
+            )
+        )
+    return tuple(observations)
+
+
+def _current_weather_observations(
+    conn: DbConnection,
+    *,
+    year: int,
+    month: int,
+    state: str,
+    region: str | None,
+    county: str | None,
+) -> tuple[dict[str, Any], ...]:
+    start, end = _month_bounds(year, month)
+    rows = _fetch(
+        conn,
+        """
+        SELECT
+            sourceRecordId,
+            observedAt,
+            county,
+            outage,
+            peakWSPD10,
+            peakGUST10,
+            sumAFWA_TOTPRECIP,
+            humidity
+        FROM CurrentWeatherObservation
+        WHERE observedAt >= ? AND observedAt < ?
+          AND LOWER(state) = LOWER(?)
+        ORDER BY observedAt ASC, county ASC, sourceRecordId ASC
+        """,
+        (start, end, state),
+    )
+    allowed = None
+    if region is not None:
+        allowed = {
+            county_name.lower()
+            for county_name in _region_mapping(conn, state=state).get(region, ())
+        }
+
+    observations: list[dict[str, Any]] = []
+    for row in rows:
+        row_county = str(row[2]) if row[2] is not None else None
+        if county is not None and (row_county or "").lower() != county.lower():
+            continue
+        if allowed is not None and (row_county or "").lower() not in allowed:
+            continue
+        observations.append(
+            {
+                "sourceRecordId": str(row[0]),
+                "observedAt": str(row[1]),
+                "date": str(row[1])[:10],
+                "county": row_county or "Unknown",
+                "outage": _as_optional_int(row[3]),
+                "peakWSPD10": _as_optional_float(row[4]),
+                "peakGUST10": _as_optional_float(row[5]),
+                "sumAFWA_TOTPRECIP": _as_optional_float(row[6]),
+                "humidity": _as_optional_float(row[7]),
+            }
+        )
+    return tuple(observations)
+
+
+def _current_weather_summary_row(
+    observations: Sequence[dict[str, Any]],
+    *,
+    year: int,
+    month: int,
+    region: str | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    label = f"Current {MONTH_NAMES[month - 1]} {year}"
+    event_totals: dict[str, int] = defaultdict(int)
+    event_dates: dict[str, str] = {}
+    counties = set()
+    for row in observations:
+        source_id = str(row["sourceRecordId"])
+        event_totals[source_id] += int(row.get("outage") or 0)
+        event_dates[source_id] = str(row.get("date") or "")
+        if row.get("county") != "Unknown":
+            counties.add(str(row["county"]))
+
+    outage_values = sorted(event_totals.values())
+    max_source_id = None
+    max_outage = None
+    if event_totals:
+        max_source_id, max_outage = sorted(
+            event_totals.items(), key=lambda item: (-item[1], item[0])
+        )[0]
+
+    total_outage = sum(int(row.get("outage") or 0) for row in observations)
+    event_count = len(event_totals)
+    distribution_rows = [
+        {
+            "group": label,
+            "stormCode": source_id,
+            "date": event_dates[source_id],
+            "outage": outage,
+            "source": "current_weather",
+        }
+        for source_id, outage in sorted(
+            event_totals.items(), key=lambda item: (-item[1], item[0])
+        )
+    ]
+    return (
+        {
+            "group": label,
+            "region": region,
+            "storm_count": event_count,
+            "county_count": len(counties),
+            "total_outage": total_outage,
+            "avg_outage_per_storm": (
+                total_outage / event_count if event_count else None
+            ),
+            "median_outage_per_storm": _median(outage_values),
+            "max_storm_outage": max_outage,
+            "max_storm_code": max_source_id,
+            "peak_wind_ms": _max_or_none(
+                row["peakWSPD10"]
+                for row in observations
+                if row.get("peakWSPD10") is not None
+            ),
+            "peak_gust_ms": _max_or_none(
+                row["peakGUST10"]
+                for row in observations
+                if row.get("peakGUST10") is not None
+            ),
+            "max_precip_mm": _max_or_none(
+                row["sumAFWA_TOTPRECIP"]
+                for row in observations
+                if row.get("sumAFWA_TOTPRECIP") is not None
+            ),
+            "avg_precip_mm": _average_or_none(
+                row["sumAFWA_TOTPRECIP"]
+                for row in observations
+                if row.get("sumAFWA_TOTPRECIP") is not None
+            ),
+            "max_humidity": _max_or_none(
+                row["humidity"]
+                for row in observations
+                if row.get("humidity") is not None
+            ),
+            "avg_humidity": _average_or_none(
+                row["humidity"]
+                for row in observations
+                if row.get("humidity") is not None
+            ),
+            "gust_hours_9": 0,
+            "gust_hours_13": 0,
+            "outage_per_million_ohline": None,
+            "source": "current_weather",
+        },
+        distribution_rows,
+    )
+
+
+def _current_threshold_row(
+    observation: dict[str, Any],
+    threshold: ThresholdSpec,
+) -> dict[str, Any]:
+    return {
+        "stormCode": observation["sourceRecordId"],
+        "date": observation["date"],
+        "county": observation["county"],
+        "metric": threshold.label,
+        "metric_value": _current_metric_value(observation, threshold.metric_key),
+        "threshold": threshold.display_threshold,
+        "outage": observation.get("outage"),
+        "peakWSPD10": observation.get("peakWSPD10"),
+        "peakGUST10": observation.get("peakGUST10"),
+        "sumAFWA_TOTPRECIP": observation.get("sumAFWA_TOTPRECIP"),
+        "humidity": observation.get("humidity"),
+        "wgt9": None,
+        "wgt13": None,
+        "wgt18": None,
+        "source": "current_weather",
+    }
+
+
+def _current_exceeds_threshold(
+    observation: dict[str, Any],
+    threshold: ThresholdSpec,
+) -> bool:
+    value = _current_metric_value(observation, threshold.metric_key)
+    return value is not None and value > threshold.stored_threshold
+
+
+def _current_metric_value(
+    observation: dict[str, Any],
+    metric_key: str,
+) -> float | None:
+    if metric_key == "outage":
+        outage = observation.get("outage")
+        return float(outage) if outage is not None else None
+    value = observation.get(metric_key)
+    return float(value) if value is not None else None
+
+
+def _is_current_month_period(
+    period: PeriodSpec,
+    *,
+    current_year: int,
+    current_month: int,
+) -> bool:
+    return (
+        period.kind == "month"
+        and period.month == current_month
+        and period.year in (None, current_year)
+    )
+
+
+def _month_bounds(year: int, month: int) -> tuple[str, str]:
+    start = f"{int(year):04d}-{int(month):02d}-01 00:00:00"
+    next_year, next_month = (int(year) + 1, 1) if int(month) == 12 else (int(year), int(month) + 1)
+    end = f"{next_year:04d}-{next_month:02d}-01 00:00:00"
+    return start, end
+
+
+def _region_mapping(
+    conn: DbConnection,
+    *,
+    state: str,
+) -> dict[str, tuple[str, ...]]:
+    try:
+        rows = _fetch(
+            conn,
+            """
+            SELECT region, county
+            FROM RegionCountyMapping
+            WHERE LOWER(state) = LOWER(?)
+            ORDER BY region ASC, county ASC
+            """,
+            (state,),
+        )
+    except Exception:  # noqa: BLE001 - older DBs still get default regions
+        rows = []
+    mapping: dict[str, list[str]] = defaultdict(list)
+    for region, county in rows:
+        mapping[str(region)].append(str(county))
+    if mapping:
+        return {region: tuple(counties) for region, counties in mapping.items()}
+    return DEFAULT_REGION_COUNTIES
+
+
+def _summarize_group(
+    period: PeriodSpec,
+    observations: Sequence[GroupObservation],
+    *,
+    region: str | None,
+) -> StormGroupSummary:
+    storm_totals: dict[int, int] = defaultdict(int)
+    storm_dates: dict[int, str] = {}
+    county_lines: dict[str, int] = {}
+    for row in observations:
+        storm_totals[row.storm_code] += row.outage
+        storm_dates[row.storm_code] = row.date
+        county_lines[row.county] = row.oh_line
+
+    outage_values = sorted(storm_totals.values())
+    max_code = None
+    max_outage = None
+    if storm_totals:
+        max_code, max_outage = sorted(
+            storm_totals.items(), key=lambda item: (-item[1], item[0])
+        )[0]
+    total_outage = sum(row.outage for row in observations)
+    storm_count_value = len(storm_totals)
+    line_exposure = sum(county_lines.values())
+
+    return StormGroupSummary(
+        key=period.key,
+        label=period.label,
+        group_kind=period.kind,
+        region=region,
+        storm_count=storm_count_value,
+        county_count=len(county_lines),
+        total_outage=total_outage,
+        avg_outage_per_storm=(
+            total_outage / storm_count_value if storm_count_value else None
+        ),
+        median_outage_per_storm=_median(outage_values),
+        max_storm_outage=max_outage,
+        max_storm_code=max_code,
+        peak_wind_ms=_max_or_none(row.peak_wind_ms for row in observations),
+        peak_gust_ms=_max_or_none(
+            row.peak_gust_ms for row in observations if row.peak_gust_ms is not None
+        ),
+        max_precip_mm=_max_or_none(row.precip_mm for row in observations),
+        avg_precip_mm=_average_or_none(row.precip_mm for row in observations),
+        max_humidity=_max_or_none(
+            row.humidity for row in observations if row.humidity is not None
+        ),
+        avg_humidity=_average_or_none(
+            row.humidity for row in observations if row.humidity is not None
+        ),
+        gust_hours_9=sum(row.wgt9 for row in observations),
+        gust_hours_13=sum(row.wgt13 for row in observations),
+        outage_per_million_ohline=(
+            total_outage * 1_000_000.0 / line_exposure
+            if line_exposure
+            else None
+        ),
+        storm_outages=tuple(
+            StormOutagePoint(
+                group_label=period.label,
+                storm_code=storm_code,
+                date=storm_dates[storm_code],
+                outage=outage,
+            )
+            for storm_code, outage in sorted(
+                storm_totals.items(), key=lambda item: (-item[1], item[0])
+            )
+        ),
+    )
+
+
+def _group_summary_row(summary: StormGroupSummary) -> dict[str, Any]:
+    return {
+        "group": summary.label,
+        "region": summary.region,
+        "storm_count": summary.storm_count,
+        "county_count": summary.county_count,
+        "total_outage": summary.total_outage,
+        "avg_outage_per_storm": summary.avg_outage_per_storm,
+        "median_outage_per_storm": summary.median_outage_per_storm,
+        "max_storm_outage": summary.max_storm_outage,
+        "max_storm_code": summary.max_storm_code,
+        "peak_wind_ms": summary.peak_wind_ms,
+        "peak_gust_ms": summary.peak_gust_ms,
+        "max_precip_mm": summary.max_precip_mm,
+        "avg_precip_mm": summary.avg_precip_mm,
+        "max_humidity": summary.max_humidity,
+        "avg_humidity": summary.avg_humidity,
+        "gust_hours_9": summary.gust_hours_9,
+        "gust_hours_13": summary.gust_hours_13,
+        "outage_per_million_ohline": summary.outage_per_million_ohline,
+        "source": summary.data_source,
+    }
+
+
+def _distribution_row(point: StormOutagePoint) -> dict[str, Any]:
+    return {
+        "group": point.group_label,
+        "stormCode": point.storm_code,
+        "date": point.date,
+        "outage": point.outage,
+    }
+
+
+def _threshold_row(
+    observation: GroupObservation,
+    threshold: ThresholdSpec,
+    *,
+    use_gust_fallback: bool = False,
+) -> dict[str, Any]:
+    metric_key = (
+        threshold.comparison_metric
+        if use_gust_fallback and threshold.comparison_metric
+        else threshold.metric_key
+    )
+    return {
+        "stormCode": observation.storm_code,
+        "date": observation.date,
+        "county": observation.county,
+        "metric": threshold.label,
+        "metric_value": observation.value(metric_key),
+        "threshold": threshold.display_threshold,
+        "outage": observation.outage,
+        "peakWSPD10": observation.peak_wind_ms,
+        "peakGUST10": observation.peak_gust_ms,
+        "sumAFWA_TOTPRECIP": observation.precip_mm,
+        "humidity": observation.humidity,
+        "wgt9": observation.wgt9,
+        "wgt13": observation.wgt13,
+        "wgt18": observation.wgt18,
+        "source": "historical",
+    }
+
+
+def _exceeds_threshold(
+    observation: GroupObservation,
+    threshold: ThresholdSpec,
+    *,
+    use_gust_fallback: bool = False,
+) -> bool:
+    if use_gust_fallback:
+        metric_key = threshold.comparison_metric
+        return bool(metric_key) and observation.value(metric_key) > 0
+    if threshold.metric_key == "peakGUST10" and observation.peak_gust_ms is None:
+        return False
+    return observation.value(threshold.metric_key) > threshold.stored_threshold
+
+
+def _scope_label(
+    region: str | None,
+    state: str,
+    *,
+    period: PeriodSpec | None = None,
+    county: str | None = None,
+) -> str:
+    pieces = [region or (f"{county} County" if county else f"statewide ({state})")]
+    if period is not None and period.kind != "all":
+        pieces.append(period.label)
+    return " · ".join(pieces)
+
+
+def _median(values: Sequence[int]) -> float | None:
+    if not values:
+        return None
+    midpoint = len(values) // 2
+    if len(values) % 2:
+        return float(values[midpoint])
+    return (values[midpoint - 1] + values[midpoint]) / 2.0
+
+
+def _max_or_none(values: Iterable[float]) -> float | None:
+    items = list(values)
+    return max(items) if items else None
+
+
+def _average_or_none(values: Iterable[float]) -> float | None:
+    items = list(values)
+    return sum(items) / len(items) if items else None
+
+
+# ---------------------------------------------------------------------------
 # Row mapping — positional, never by key (see the module docstring)
 # ---------------------------------------------------------------------------
 
@@ -1019,12 +2075,13 @@ def _county_storm_row(row: Sequence[Any]) -> CountyStormRow:
         state=str(row[1]),
         outage=int(row[2]),
         peak_wind_ms=float(row[3]),
-        precip_mm=float(row[4]),
-        wgt5=int(row[5]),
-        wgt9=int(row[6]),
-        wgt13=int(row[7]),
-        wgt18=int(row[8]),
-        oh_line=int(row[9]),
+        peak_gust_ms=_as_optional_float(row[4]),
+        precip_mm=float(row[5]),
+        wgt5=int(row[6]),
+        wgt9=int(row[7]),
+        wgt13=int(row[8]),
+        wgt18=int(row[9]),
+        oh_line=int(row[10]),
     )
 
 
@@ -1036,7 +2093,26 @@ def _argmax(rows: Iterable[CountyStormRow], key) -> CountyValue | None:
     return CountyValue(ordered[0].county, float(key(ordered[0])))
 
 
+def _argmax_optional(rows: Iterable[CountyStormRow], key) -> CountyValue | None:
+    """Highest non-null value with a deterministic county-name tiebreak."""
+    available = [(row, key(row)) for row in rows]
+    ordered = sorted(
+        ((row, value) for row, value in available if value is not None),
+        key=lambda item: (-float(item[1]), item[0].county),
+    )
+    if not ordered:
+        return None
+    row, value = ordered[0]
+    return CountyValue(row.county, float(value))
+
+
 def _as_optional_float(value: Any) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _as_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    return int(value)

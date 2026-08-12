@@ -248,6 +248,11 @@ class TestHeatMapFraming(unittest.TestCase):
         source = self.ast.dump(self.functions["_render_analytics"])
         self.assertIn("display_rows", source)
 
+    def test_storm_report_path_renders_chart_payloads(self):
+        self.assertIn("_render_result_charts", self.functions)
+        source = self.ast.dump(self.functions["_render_analytics"])
+        self.assertIn("_render_result_charts", source)
+
 
 class TestSideBySideMaps(unittest.TestCase):
     """Comparison results carry two map panels; the app draws them together."""

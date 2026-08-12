@@ -156,6 +156,7 @@ def _render_analytics(
         _render_storm_report(result)
         if result.display_rows:
             st.dataframe(result.display_rows, hide_index=True, width="stretch")
+        _render_result_charts(result.charts)
         _render_analytics_heatmap(result)
         _render_reasoning(
             result,
@@ -193,6 +194,8 @@ _REPORT_TITLES = {
     "storm_ranking": "Storm ranking",
     "storm_comparison": "Storm comparison",
     "forecast_comparison": "Forecast comparison",
+    "storm_group_analysis": "Storm group analysis",
+    "threshold_analysis": "Threshold analysis",
 }
 
 
@@ -323,6 +326,82 @@ def _render_result_chart(rows: list[dict[str, object]]) -> None:
         _render_bar_chart(
             _chart_rows(rows, "stormCode", "outage"), "Storm", "Outages"
         )
+
+
+def _render_result_charts(charts: list[object]) -> None:
+    if not charts:
+        return
+    st.subheader("Charts")
+    for chart in charts:
+        rows = getattr(chart, "rows", [])
+        if len(rows) < 2:
+            continue
+        with st.container(border=True):
+            st.markdown(f"**{chart.title}**")
+            if chart.kind == "bar":
+                st.bar_chart(
+                    rows,
+                    x=chart.x,
+                    y=chart.y,
+                    color=getattr(chart, "color", None),
+                    x_label=chart.x_label,
+                    y_label=chart.y_label,
+                )
+            elif chart.kind == "line":
+                st.line_chart(
+                    rows,
+                    x=chart.x,
+                    y=chart.y,
+                    color=getattr(chart, "color", None),
+                    x_label=chart.x_label,
+                    y_label=chart.y_label,
+                )
+            elif chart.kind == "scatter":
+                st.scatter_chart(
+                    rows,
+                    x=chart.x,
+                    y=chart.y,
+                    color=getattr(chart, "color", None),
+                    x_label=chart.x_label,
+                    y_label=chart.y_label,
+                )
+            elif chart.kind == "histogram":
+                _render_histogram(chart)
+
+
+def _render_histogram(chart) -> None:
+    tooltip = [{"field": chart.x, "type": "quantitative"}]
+    if chart.color:
+        tooltip.append({"field": chart.color, "type": "nominal"})
+    st.vega_lite_chart(
+        chart.rows,
+        {
+            "mark": "bar",
+            "encoding": {
+                "x": {
+                    "bin": True,
+                    "field": chart.x,
+                    "type": "quantitative",
+                    "title": chart.x_label,
+                },
+                "y": {
+                    "aggregate": "count",
+                    "type": "quantitative",
+                    "title": chart.y_label,
+                },
+                "color": (
+                    {
+                        "field": chart.color,
+                        "type": "nominal",
+                        "title": chart.color.capitalize(),
+                    }
+                    if chart.color
+                    else {"value": "#4f46e5"}
+                ),
+                "tooltip": tooltip,
+            },
+        },
+    )
 
 
 def _render_bar_chart(
@@ -532,7 +611,11 @@ def _render_external_preview(db_path: str, *, limit: int) -> None:
         return
     st.dataframe(rows, hide_index=True, width="stretch")
     if _has_columns(rows, "sourceRecordId", "outageCount"):
-        _render_bar_chart(_chart_rows(rows, "sourceRecordId", "outageCount"))
+        _render_bar_chart(
+            _chart_rows(rows, "sourceRecordId", "outageCount"),
+            "Record",
+            "Outage count",
+        )
 
 
 @st.cache_data(show_spinner=False)

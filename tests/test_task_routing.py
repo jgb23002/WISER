@@ -77,6 +77,25 @@ class TestTaskRoutingAgent(unittest.TestCase):
 
         self.assertEqual(decision.route, Route.SIMILARITY_SEARCH)
 
+    def test_routes_sponsor_month_comparison_to_weather_analytics(self):
+        decision = self.agent.route(
+            "how does storms in July and Februrary relate to storms"
+        )
+
+        self.assertEqual(decision.route, Route.WEATHER_ANALYTICS)
+
+    def test_routes_this_month_intensity_question_to_weather_analytics(self):
+        decision = self.agent.route(
+            "is the storms this month large and more intense than in February"
+        )
+
+        self.assertEqual(decision.route, Route.WEATHER_ANALYTICS)
+
+    def test_routes_regional_threshold_question_to_weather_analytics(self):
+        decision = self.agent.route("northern CT storms with wind above 40mph")
+
+        self.assertEqual(decision.route, Route.WEATHER_ANALYTICS)
+
 
 if __name__ == "__main__":
     unittest.main()

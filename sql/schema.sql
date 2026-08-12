@@ -9,7 +9,11 @@ PRAGMA foreign_keys = OFF;
 -- Drop existing tables (reverse dependency order)
 -- ============================================================================
 DROP TABLE IF EXISTS WeatherData;
+DROP TABLE IF EXISTS HourlyWeatherObservation;
+DROP TABLE IF EXISTS CurrentWeatherObservation;
 DROP TABLE IF EXISTS ExternalOutageObservation;
+DROP TABLE IF EXISTS StormMetricDefinition;
+DROP TABLE IF EXISTS RegionCountyMapping;
 DROP TABLE IF EXISTS StormCounty;
 DROP TABLE IF EXISTS County;
 DROP TABLE IF EXISTS Storm;
@@ -53,6 +57,7 @@ CREATE TABLE County (
 -- Fields:
 --   sumAFWA_TOTPRECIP: Total precipitation during storm (mm)
 --   peakWSPD10: Peak SUSTAINED wind speed at 10m height (m/s)
+--   peakGUST10: Peak wind gust magnitude (m/s), NULL when source omits it
 --   wgt5-18: Hours where the wind GUST exceeded 5/9/13/18 m/s
 --   outage: Number of trouble spots / outage locations
 --
@@ -73,6 +78,7 @@ CREATE TABLE WeatherData (
     county VARCHAR(64) NOT NULL,
     sumAFWA_TOTPRECIP REAL NOT NULL,
     peakWSPD10 REAL NOT NULL,
+    peakGUST10 REAL,
     wgt5 INTEGER NOT NULL,
     wgt9 INTEGER NOT NULL,
     wgt13 INTEGER NOT NULL,
@@ -83,11 +89,98 @@ CREATE TABLE WeatherData (
     FOREIGN KEY (county) REFERENCES County(county),
     CHECK (sumAFWA_TOTPRECIP >= 0),
     CHECK (peakWSPD10 > 0),
+    CHECK (peakGUST10 IS NULL OR peakGUST10 >= 0),
     CHECK (wgt5 >= 0),
     CHECK (wgt9 >= 0),
     CHECK (wgt13 >= 0),
     CHECK (wgt18 >= 0),
     CHECK (outage >= 0)
+);
+
+-- ============================================================================
+-- RegionCountyMapping Table: Default regional rollups for Connecticut
+--
+-- Sponsor-specific service territory analysis requires territory boundary or
+-- county-to-territory mapping data. Until that is supplied, this table supports
+-- transparent Connecticut planning regions such as northern/southern CT.
+-- ============================================================================
+CREATE TABLE RegionCountyMapping (
+    region VARCHAR(64) NOT NULL,
+    county VARCHAR(64) NOT NULL,
+    state  VARCHAR(2)  NOT NULL DEFAULT 'CT',
+    source TEXT NOT NULL DEFAULT 'wiser_default',
+    PRIMARY KEY (region, county, state),
+    FOREIGN KEY (county) REFERENCES County(county),
+    CHECK (LENGTH(state) = 2)
+);
+
+-- ============================================================================
+-- StormMetricDefinition Table: Metric labels, units, and severity direction
+--
+-- New mock-data metrics such as humidity can be registered here without
+-- hardcoding every presentation label into each query path.
+-- ============================================================================
+CREATE TABLE StormMetricDefinition (
+    metricKey TEXT PRIMARY KEY,
+    displayName TEXT NOT NULL,
+    storedUnit TEXT NOT NULL,
+    higherIsMoreSevere INTEGER NOT NULL DEFAULT 1,
+    sourceColumn TEXT,
+    CHECK (higherIsMoreSevere IN (0, 1))
+);
+
+-- ============================================================================
+-- HourlyWeatherObservation Table: Future hourly 48-window weather metrics
+--
+-- This table normalizes wide hourly source columns into a long form:
+-- one metric value per storm, county, hour offset, and metric. Keeping the
+-- model long rather than 48 hardcoded columns lets future metrics such as
+-- humidity and gust timestamps arrive without schema churn.
+-- ============================================================================
+CREATE TABLE HourlyWeatherObservation (
+    stormCode BIGINT NOT NULL,
+    county VARCHAR(64) NOT NULL,
+    hourOffset INTEGER NOT NULL,
+    metricKey TEXT NOT NULL,
+    metricValue REAL NOT NULL,
+    observedAt TIMESTAMP,
+    sourceColumn TEXT,
+    PRIMARY KEY (stormCode, county, hourOffset, metricKey),
+    FOREIGN KEY (stormCode) REFERENCES Storm(stormCode),
+    FOREIGN KEY (county) REFERENCES County(county),
+    FOREIGN KEY (metricKey) REFERENCES StormMetricDefinition(metricKey),
+    CHECK (hourOffset >= 0 AND hourOffset < 48)
+);
+
+-- ============================================================================
+-- CurrentWeatherObservation Table: Staging table for current/live weather feeds
+--
+-- This table represents observed current-month weather/outage rows, separate
+-- from the historical storm event table. "This month" sponsor queries prefer
+-- this table when it has rows for the current calendar month; otherwise WISER
+-- falls back to historical calendar-month comparison with a clear notice.
+-- ============================================================================
+CREATE TABLE CurrentWeatherObservation (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sourceSystem TEXT NOT NULL,
+    sourceRecordId TEXT NOT NULL,
+    observedAt TIMESTAMP NOT NULL,
+    county VARCHAR(64),
+    state VARCHAR(2) NOT NULL DEFAULT 'CT',
+    peakWSPD10 REAL,
+    peakGUST10 REAL,
+    sumAFWA_TOTPRECIP REAL,
+    humidity REAL,
+    outage INTEGER,
+    rawPayload TEXT NOT NULL,
+    UNIQUE (sourceSystem, sourceRecordId, observedAt, county),
+    FOREIGN KEY (county) REFERENCES County(county),
+    CHECK (LENGTH(state) = 2),
+    CHECK (peakWSPD10 IS NULL OR peakWSPD10 >= 0),
+    CHECK (peakGUST10 IS NULL OR peakGUST10 >= 0),
+    CHECK (sumAFWA_TOTPRECIP IS NULL OR sumAFWA_TOTPRECIP >= 0),
+    CHECK (humidity IS NULL OR (humidity >= 0 AND humidity <= 100)),
+    CHECK (outage IS NULL OR outage >= 0)
 );
 
 -- ============================================================================
@@ -120,6 +213,16 @@ CREATE TABLE ExternalOutageObservation (
 CREATE INDEX idx_weatherdata_outage ON WeatherData(outage DESC);
 CREATE INDEX idx_weatherdata_county ON WeatherData(county);
 CREATE INDEX idx_storm_datetime ON Storm(eventDateTime);
+CREATE INDEX idx_region_county_state
+    ON RegionCountyMapping(state, region, county);
+CREATE INDEX idx_hourly_weather_storm_county_hour
+    ON HourlyWeatherObservation(stormCode, county, hourOffset);
+CREATE INDEX idx_hourly_weather_metric
+    ON HourlyWeatherObservation(metricKey, metricValue DESC);
+CREATE INDEX idx_current_weather_time
+    ON CurrentWeatherObservation(observedAt DESC);
+CREATE INDEX idx_current_weather_county_time
+    ON CurrentWeatherObservation(county, observedAt DESC);
 CREATE INDEX idx_external_outage_source_time
     ON ExternalOutageObservation(sourceSystem, observedAt DESC);
 CREATE INDEX idx_external_outage_county

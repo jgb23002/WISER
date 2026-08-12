@@ -48,6 +48,9 @@ RULES:
 - wgt5/wgt9/wgt13/wgt18 = hours wind exceeded that m/s threshold.
   "storms above 13 m/s" maps to wgt13 > 0. NOT peakWSPD10 > 13.
 - peakWSPD10 = actual peak wind speed at 10m height. "fastest storm" = MAX(peakWSPD10).
+- peakGUST10 = peak wind gust magnitude at 10m height, when source data provides it.
+  It may be NULL in legacy rows. For peak gust magnitude questions, use peakGUST10;
+  for gust exposure / hours above a threshold, use wgt5/wgt9/wgt13/wgt18.
 - outage = number of trouble spots dispatched. "worst" = MAX or SUM(outage).
 - "affected most" means highest outage impact unless the question names another metric.
 - County.ohLine = overhead-line exposure. It can be used to normalize outages by

@@ -441,6 +441,41 @@
     "notes": "Mode A is unaffected by the gate revision."
   },
   {
+    "id": "sponsor_group_001",
+    "query": "does the weather this month caused more outages?",
+    "expected_route": "weather_analytics",
+    "category": "sponsor_group_analytics",
+    "notes": "This-month outage comparison is deterministic storm group analytics."
+  },
+  {
+    "id": "sponsor_group_002",
+    "query": "how does storms in July and Februrary relate to storms",
+    "expected_route": "weather_analytics",
+    "category": "sponsor_group_analytics",
+    "notes": "Month-vs-month sponsor wording should not route to RAG despite 'how does'."
+  },
+  {
+    "id": "sponsor_group_003",
+    "query": "is the storms this month large and more intense than in February",
+    "expected_route": "weather_analytics",
+    "category": "sponsor_group_analytics",
+    "notes": "This-month intensity comparison goes to deterministic period analytics."
+  },
+  {
+    "id": "sponsor_region_001",
+    "query": "show storm outage analysis on a regional basis",
+    "expected_route": "weather_analytics",
+    "category": "sponsor_group_analytics",
+    "notes": "Regional sponsor questions use default CT region rollups."
+  },
+  {
+    "id": "sponsor_threshold_001",
+    "query": "which storms had wind above 40mph?",
+    "expected_route": "weather_analytics",
+    "category": "sponsor_group_analytics",
+    "notes": "Threshold checks are deterministic analytics."
+  },
+  {
     "id": "unknown_001",
     "query": "hello",
     "expected_route": "unknown",

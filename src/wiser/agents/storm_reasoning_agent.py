@@ -29,6 +29,8 @@ Reasoning rules:
 UNITS — every numeric column, because mislabelling one is the easiest way to
 be badly wrong:
 - peakWSPD10 is peak SUSTAINED wind speed at 10m height, in METRES PER SECOND.
+- peakGUST10 is peak wind GUST magnitude at 10m height, in METRES PER SECOND,
+  when source data provides it. It may be NULL in legacy rows.
 - sumAFWA_TOTPRECIP is total precipitation in MILLIMETRES. It is never inches.
   A value like 30.67 is 30.67 mm, which is 1.21 inches — not "30.67 inches".
 - wgt5, wgt9, wgt13, wgt18 are HOURS the wind GUST exceeded 5/9/13/18 m/s.

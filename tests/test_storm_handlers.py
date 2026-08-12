@@ -394,7 +394,7 @@ class TestHandleStormComparisonModeA(unittest.TestCase):
             )
         self.assertEqual(result.report_kind, REPORT_STORM_COMPARISON)
         self.assertIn("Storm Comparison:", result.report)
-        self.assertEqual(len(result.rows), 4)
+        self.assertEqual(len(result.rows), 5)
 
     def test_one_storm_gives_a_notice_not_a_half_report(self):
         result = handle_storm_comparison(
