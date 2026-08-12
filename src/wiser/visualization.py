@@ -117,6 +117,15 @@ _SCALE_EXPONENT = 0.4
 #: Above this relative luminance a fill takes dark ink; below it, light ink.
 _INK_FLIP_LUMINANCE = 0.18
 
+#: Dimensions for a map drawn in a side-by-side comparison panel. Type in an
+#: SVG is sized in viewBox units, so it only arrives at its declared size when
+#: the viewBox matches the frame. Rendering the full-width 860x560 map into a
+#: ~450px column scaled everything by ~0.5 and put the band labels near 5px;
+#: no font size can win against that, because the transform scales it too.
+#: The renderer therefore draws panels at their own size and the frame matches.
+PANEL_MAP_WIDTH = 480
+PANEL_MAP_HEIGHT = 460
+
 
 def load_county_geojson(
     path: str | Path = DEFAULT_CT_COUNTY_GEOJSON,
@@ -297,7 +306,7 @@ def render_county_heatmap_svg(
         ".county-value{font:600 10px system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;fill:#263747}"
         ".county-ink-light{fill:#f8fafc;stroke:#0b1220}"
         ".legend-label{font:600 11px system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;fill:#cbd5e1}"
-        ".legend-band{font:600 10px system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;fill:#cbd5e1}"
+        ".legend-band{font:600 11px system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;fill:#cbd5e1}"
         "</style>"
         f"<text x=\"24\" y=\"30\" class=\"map-title\">{safe_title}</text>"
         f"<text x=\"24\" y=\"50\" class=\"map-subtitle\">{html.escape(metric.value_label)} by legacy Connecticut county</text>"
@@ -603,19 +612,19 @@ def _legend_svg(
         swatch_right = x + 24 + 8 + _text_width(f"All counties {flat}")
     else:
         box_width = _band_box_width(width, x=x, gap=gap, bands=bands)
-        band_labels = _band_labels(
-            _band_edges(min_value, max_value, zero_anchored=metric.zero_anchored)
-        )
+        edges = _band_edges(min_value, max_value, zero_anchored=metric.zero_anchored)
         for index, color in enumerate(COUNTY_HEATMAP_PALETTE):
             box_x = x + index * (box_width + gap)
             parts.append(
                 f"<rect x=\"{box_x:.1f}\" y=\"{y}\" "
                 f"width=\"{box_width:.1f}\" height=\"14\" rx=\"2\" fill=\"{color}\" />"
             )
+        for edge_index, text in _labelled_edges(edges):
+            edge_x = _edge_x(edge_index, x=x, box_width=box_width, gap=gap, bands=bands)
             parts.append(
-                f"<text x=\"{box_x + box_width / 2:.1f}\" y=\"{y + 27}\" "
-                "text-anchor=\"middle\" class=\"legend-band\">"
-                f"{html.escape(band_labels[index])}</text>"
+                f"<text x=\"{edge_x:.1f}\" y=\"{y + 27}\" "
+                f"text-anchor=\"{_edge_anchor(edge_index, bands)}\" class=\"legend-band\">"
+                f"{html.escape(text)}</text>"
             )
         swatch_right = x + bands * box_width + (bands - 1) * gap
 
@@ -671,18 +680,53 @@ def _text_width(text: str) -> float:
     return len(text) * 6.2
 
 
-def _band_labels(edges: Sequence[float]) -> list[str]:
-    """``low–high`` for every band, at the coarsest precision that stays distinct.
+def _labelled_edges(edges: Sequence[float]) -> list[tuple[int, str]]:
+    """Which band boundaries carry a number, and what it says.
+
+    Every boundary would collide at panel width, so alternate ones are labelled
+    and the reader reads the ones between as lying in between. Both ends are
+    always labelled — a scale whose top is unstated cannot be read at all.
+    """
+    last = len(edges) - 1
+    indices = list(range(0, last + 1, 2))
+    if indices[-1] != last:
+        indices.append(last)
+    texts = _edge_texts(edges)
+    return [(index, texts[index]) for index in indices]
+
+
+def _edge_x(
+    index: int, *, x: int, box_width: float, gap: int, bands: int
+) -> float:
+    """The x of band boundary ``index``: swatch edges, and midway across gaps."""
+    if index <= 0:
+        return float(x)
+    if index >= bands:
+        return x + bands * box_width + (bands - 1) * gap
+    return x + index * (box_width + gap) - gap / 2
+
+
+def _edge_anchor(index: int, bands: int) -> str:
+    """Endpoints anchor inward so their text cannot leave the viewBox."""
+    if index <= 0:
+        return "start"
+    if index >= bands:
+        return "end"
+    return "middle"
+
+
+def _edge_texts(edges: Sequence[float]) -> list[str]:
+    """Every boundary value, at the coarsest precision that keeps them distinct.
 
     Counts want no decimals; a metric whose whole range is a couple of units
-    wide would collapse to "9–9" without them.
+    wide would collapse every boundary to "9" without them.
     """
     texts = [_round_to(value, 0) for value in edges]
     for decimals in (1, 2):
         if len(set(texts)) == len(texts) or float(edges[-1]) <= float(edges[0]):
             break
         texts = [_round_to(value, decimals) for value in edges]
-    return [f"{texts[index]}–{texts[index + 1]}" for index in range(len(edges) - 1)]
+    return texts
 
 
 def _round_to(value: float, decimals: int) -> str:

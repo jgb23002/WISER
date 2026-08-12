@@ -16,11 +16,16 @@ if str(SRC_DIR) not in sys.path:
 from wiser.visualization import (  # noqa: E402
     COUNTY_HEATMAP_METRICS,
     COUNTY_HEATMAP_PALETTE,
+    PANEL_MAP_HEIGHT,
+    PANEL_MAP_WIDTH,
     county_metric_rows,
     load_county_geojson,
     normalize_county_name,
     render_county_heatmap_svg,
 )
+
+sys.path.insert(0, str(REPO_ROOT))
+from streamlit_app import _SVG_PANEL_HEIGHT  # noqa: E402
 
 
 class TestCountyVisualization(unittest.TestCase):
@@ -218,13 +223,20 @@ class TestSharedColourScale(unittest.TestCase):
         self.assertEqual(ranked, sorted(ranked))
         self.assertLess(ranked[1], ranked[2])
 
-    def test_legend_names_the_value_range_of_every_band(self):
+    def test_legend_names_the_values_the_bands_run_between(self):
+        """Retargeted from one label per band to labelled boundaries.
+
+        The bands are unequal in width, so the reader needs the values they run
+        between. Labelling all eight boundaries collided at panel width, so
+        alternate ones are labelled and both ends always are — which is what
+        this now asserts, in place of the old one-label-per-band count.
+        """
         svg = render_county_heatmap_svg(
             self.geojson, self.strong, "outage", value_range=(0.0, 6000.0)
         )
-        bands = re.findall(r'class="legend-band">([^<]+)<', svg)
+        bands = re.findall(r'class="legend-band"[^>]*>([^<]+)<', svg)
 
-        self.assertEqual(len(bands), len(COUNTY_HEATMAP_PALETTE))
+        self.assertLess(len(bands), len(COUNTY_HEATMAP_PALETTE) + 1)
         self.assertTrue(bands[0].startswith("0"), bands[0])
         self.assertTrue(bands[-1].endswith("6,000"), bands[-1])
 
@@ -344,6 +356,74 @@ class TestFlatMap(unittest.TestCase):
             _LEGEND_BAND_RE.findall(svg), [], "a flat scale has no bands to name"
         )
         self.assertIn("All counties", svg)
+
+
+_BAND_LABEL_RE = re.compile(
+    r'<text x="([\d.]+)"[^>]*class="legend-band"[^>]*>([^<]+)<'
+)
+#: Rough per-character width of a legend band label at its font size.
+_BAND_CHAR_WIDTH = 6.2
+
+
+class TestLegendReadability(unittest.TestCase):
+    """Band labels have to survive being drawn at the size they are shown.
+
+    A panel SVG is framed at its own dimensions, so nothing is scaled down and
+    a label declared at 11px arrives at 11px. Before this, an 860-wide map was
+    squeezed into a ~450px column and the labels landed near 5px.
+    """
+
+    def setUp(self):
+        self.geojson = load_county_geojson()
+        self.rows = [
+            {"county": "Fairfield", "outage": 6000},
+            {"county": "Hartford", "outage": 300},
+        ]
+
+    def _labels(self, width=PANEL_MAP_WIDTH, height=PANEL_MAP_HEIGHT):
+        svg = render_county_heatmap_svg(
+            self.geojson,
+            self.rows,
+            "outage",
+            width=width,
+            height=height,
+            value_range=(0.0, 6000.0),
+        )
+        return [(float(x), text) for x, text in _BAND_LABEL_RE.findall(svg)]
+
+    def test_the_panel_frame_matches_the_panel_viewbox(self):
+        """Equal height means the browser scales by exactly 1, never shrinking type."""
+        self.assertEqual(PANEL_MAP_HEIGHT, _SVG_PANEL_HEIGHT)
+
+    def test_boundaries_are_labelled_alternately_not_every_one(self):
+        """Every boundary at panel width would collide; alternate ones fit."""
+        labels = self._labels()
+        bands = len(COUNTY_HEATMAP_PALETTE)
+
+        self.assertLess(len(labels), bands + 1, "labelling every edge is what overflows")
+        self.assertGreaterEqual(len(labels), 4, "too few labels to read the scale by")
+
+    def test_both_ends_of_the_scale_are_stated(self):
+        labels = self._labels()
+
+        self.assertTrue(labels[0][1].startswith("0"), labels[0][1])
+        self.assertTrue(labels[-1][1].endswith("6,000"), labels[-1][1])
+
+    def test_labels_do_not_collide_at_panel_width(self):
+        labels = self._labels()
+
+        for (left_x, left), (right_x, right) in zip(labels, labels[1:]):
+            needed = (len(left) + len(right)) / 2 * _BAND_CHAR_WIDTH
+            self.assertGreaterEqual(
+                right_x - left_x,
+                needed,
+                f"{left!r} and {right!r} overlap at panel width",
+            )
+
+    def test_labels_stay_inside_the_viewbox(self):
+        for x, text in self._labels():
+            self.assertGreaterEqual(x, 0)
+            self.assertLessEqual(x, PANEL_MAP_WIDTH)
 
 
 if __name__ == "__main__":
