@@ -395,11 +395,32 @@ def _comparison_table(comparison: StormComparison) -> list[str]:
 
 
 def _signed_unit(value: float | None, formatter) -> str:
-    """'+1.4 mph' — sign from the raw value, unit from the formatter."""
+    """'+1.4 mph' — sign from the raw value, unit from the formatter.
+
+    A gap too small to survive the formatter's rounding is reported as a bound
+    instead of as a signed zero. 22.41 and 22.46 mph print as 22.4 and 22.5,
+    and "-0.0 mph" between them reads as a broken subtraction.
+    """
     if value is None:
         return "not available"
     rendered = formatter(abs(value))
+    if value != 0:
+        below = _below_resolution(rendered)
+        if below is not None:
+            return below
     return f"{'+' if value >= 0 else '-'}{rendered}"
+
+
+def _below_resolution(rendered: str) -> str | None:
+    """'0.0 mph' -> '<0.1 mph'. None when the value did not round to zero."""
+    number, _, unit = rendered.partition(" ")
+    try:
+        if float(number.replace(",", "")) != 0:
+            return None
+    except ValueError:
+        return None
+    step = f"{number[:-1]}1" if "." in number else "1"
+    return f"<{step} {unit}".rstrip()
 
 
 # Below this relative gap a metric is not worth calling a difference.
@@ -840,9 +861,12 @@ def comparison_map_panels(
 ) -> list[MapPanel]:
     """Two county maps for a storm comparison, on one shared colour scale.
 
-    Scaling each map to its own rows would paint the weaker storm as deep red
-    as the stronger one and invert the comparison being made, so the range
-    spans both storms.
+    Scaling each map to its own rows would paint the weaker storm as deep as
+    the stronger one and invert the comparison being made, so the range spans
+    both storms. It is anchored at zero rather than at the lowest county in
+    either storm: the floor of a shared magnitude scale is "no outages", and
+    starting it at, say, 5 makes the quietest county of the quieter storm read
+    as empty.
     """
     panels: list[tuple[str, str, list[dict[str, Any]]]] = []
     for label, summary in (
@@ -853,7 +877,8 @@ def comparison_map_panels(
         panels.append(
             (
                 f"{label} — {summary.storm.date}",
-                f"{format_count(summary.statewide_outage)} {OUTAGE_UNIT_NOTE}",
+                f"{format_count(summary.statewide_outage)} {OUTAGE_UNIT_NOTE}"
+                f"{_peak_county_note(rows, metric)}",
                 rows,
             )
         )
@@ -864,7 +889,7 @@ def comparison_map_panels(
         for row in rows
         if isinstance(row.get(metric), (int, float))
     ]
-    shared = (min(values), max(values)) if values else (0.0, 0.0)
+    shared = (min(0.0, min(values)), max(values)) if values else (0.0, 0.0)
 
     return [
         MapPanel(
@@ -876,6 +901,20 @@ def comparison_map_panels(
         )
         for title, subtitle, rows in panels
     ]
+
+
+def _peak_county_note(rows: list[dict[str, Any]], metric: str) -> str:
+    """Where this storm's own maximum sits, and what it was.
+
+    On a scale shared with a much larger storm, a quiet storm's map is faint by
+    design. Naming its own peak next to the map keeps that readable as a
+    comparison rather than as a missing layer.
+    """
+    scored = [row for row in rows if isinstance(row.get(metric), (int, float))]
+    if not scored:
+        return ""
+    peak = max(scored, key=lambda row: float(row[metric]))
+    return f" — peaks at {format_count(peak[metric])} in {peak['county']}"
 
 
 def forecast_rows(comparison: ForecastComparison) -> list[dict[str, Any]]:

@@ -15,6 +15,7 @@ if str(SRC_DIR) not in sys.path:
 
 from wiser.visualization import (  # noqa: E402
     COUNTY_HEATMAP_METRICS,
+    COUNTY_HEATMAP_PALETTE,
     county_metric_rows,
     load_county_geojson,
     normalize_county_name,
@@ -117,6 +118,7 @@ class TestSharedColourScale(unittest.TestCase):
             {"county": "Fairfield", "outage": 600},
             {"county": "Hartford", "outage": 300},
         ]
+        self.darkest = COUNTY_HEATMAP_PALETTE[-1]
 
     def _fills(self, rows, value_range=None):
         """County polygon fills only.
@@ -129,6 +131,15 @@ class TestSharedColourScale(unittest.TestCase):
         )
         return re.findall(r'<path [^>]*fill="(#[0-9a-fA-F]{6})"', svg)
 
+    def _fills_by_county(self, rows, value_range=None):
+        svg = render_county_heatmap_svg(
+            self.geojson, rows, "outage", value_range=value_range
+        )
+        pairs = re.findall(
+            r'fill="(#[0-9a-fA-F]{6})"[^>]*><title>([^:<]+):', svg
+        )
+        return {county: fill for fill, county in pairs}
+
     def test_independent_scales_paint_the_weak_storm_as_darkly_as_the_strong(self):
         """The defect a shared range exists to prevent."""
         self.assertEqual(
@@ -136,14 +147,76 @@ class TestSharedColourScale(unittest.TestCase):
         )
 
     def test_a_shared_range_keeps_the_weak_storm_lighter(self):
-        shared = (300.0, 6000.0)
+        shared = (0.0, 6000.0)
         strong = set(self._fills(self.strong, shared))
         weak = set(self._fills(self.weak, shared))
 
-        self.assertIn("#bd0026", strong, "the strongest county should be hottest")
+        self.assertIn(self.darkest, strong, "the strongest county should be darkest")
         self.assertNotIn(
-            "#bd0026", weak, "the weaker storm must not use the hottest colour"
+            self.darkest, weak, "the weaker storm must not use the darkest colour"
         )
+
+    def test_a_weak_storm_still_varies_on_a_shared_scale(self):
+        """The defect the scale exists to avoid: a flat, empty-looking map.
+
+        These are the 2009-05-09 county outages against the 2022-02-17 peak
+        that reported the bug: on a linear ramp every one of them lands in the
+        first band and the whole state paints white.
+        """
+        rows = [
+            {"county": "Fairfield", "outage": 44},
+            {"county": "Litchfield", "outage": 22},
+            {"county": "Hartford", "outage": 17},
+            {"county": "Windham", "outage": 10},
+            {"county": "Tolland", "outage": 5},
+        ]
+        fills = self._fills_by_county(rows, (0.0, 171.0))
+        shades = {fills[row["county"]] for row in rows}
+
+        self.assertGreaterEqual(len(shades), 3, "the weak storm must show structure")
+        self.assertNotIn(
+            COUNTY_HEATMAP_PALETTE[0],
+            shades,
+            "a county with outages should not paint as the empty end of the ramp",
+        )
+        self.assertNotIn(
+            COUNTY_HEATMAP_PALETTE[-1],
+            shades,
+            "and it must stay clear of the darker storm's end of the ramp",
+        )
+
+    def test_the_scale_still_orders_counties_across_both_maps(self):
+        """Compression may not reorder anything: more outages, never lighter."""
+        shared = (0.0, 6000.0)
+        ramp = list(COUNTY_HEATMAP_PALETTE)
+        weak = self._fills_by_county(self.weak, shared)
+        strong = self._fills_by_county(self.strong, shared)
+
+        ranked = [
+            ramp.index(weak["Hartford"]),  # 300
+            ramp.index(weak["Fairfield"]),  # 600
+            ramp.index(strong["Hartford"]),  # 3,000
+            ramp.index(strong["Fairfield"]),  # 6,000
+        ]
+        self.assertEqual(ranked, sorted(ranked))
+        self.assertLess(ranked[1], ranked[2])
+
+    def test_legend_names_the_value_range_of_every_band(self):
+        svg = render_county_heatmap_svg(
+            self.geojson, self.strong, "outage", value_range=(0.0, 6000.0)
+        )
+        bands = re.findall(r'class="legend-band">([^<]+)<', svg)
+
+        self.assertEqual(len(bands), len(COUNTY_HEATMAP_PALETTE))
+        self.assertTrue(bands[0].startswith("0"), bands[0])
+        self.assertTrue(bands[-1].endswith("6,000"), bands[-1])
+
+    def test_dark_fills_take_light_ink(self):
+        """Near-black text on a near-black county is unreadable."""
+        svg = render_county_heatmap_svg(
+            self.geojson, self.strong, "outage", value_range=(0.0, 6000.0)
+        )
+        self.assertIn("county-ink-light", svg)
 
     def test_outage_is_a_supported_metric(self):
         self.assertIn("outage", COUNTY_HEATMAP_METRICS)

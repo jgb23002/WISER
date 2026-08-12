@@ -642,6 +642,30 @@ class TestComparisonLeadsWithTheLargestDifference(unittest.TestCase):
         self.assertIn("for both storms", report.text)
 
 
+class TestSignedDifferenceFormatting(unittest.TestCase):
+    """The Difference column has to agree with the two values beside it."""
+
+    def setUp(self):
+        from wiser.storm_reports import _signed_unit
+        from wiser.units import format_inches, format_mph
+
+        self.signed = _signed_unit
+        self.mph = format_mph
+        self.inches = format_inches
+
+    def test_a_real_gap_keeps_its_sign(self):
+        self.assertEqual(self.signed(-2.0, self.mph), "-4.5 mph")
+        self.assertEqual(self.signed(2.0, self.mph), "+4.5 mph")
+
+    def test_a_gap_too_small_to_print_becomes_a_bound(self):
+        """'-0.0 mph' under 22.4 and 22.5 reads as a broken subtraction."""
+        self.assertEqual(self.signed(-0.0219, self.mph), "<0.1 mph")
+        self.assertEqual(self.signed(0.02, self.inches), "<0.01 in")
+
+    def test_an_exact_zero_is_still_a_zero(self):
+        self.assertEqual(self.signed(0.0, self.mph), "+0.0 mph")
+
+
 class TestComparisonMapPanels(unittest.TestCase):
     """Two county maps for a comparison, read together."""
 
@@ -668,13 +692,16 @@ class TestComparisonMapPanels(unittest.TestCase):
         one and inverts the comparison the reader is making."""
         self.assertEqual(self.panels[0].value_range, self.panels[1].value_range)
 
-    def test_the_shared_scale_spans_both_storms(self):
+    def test_the_shared_scale_runs_from_zero_to_the_larger_storm(self):
+        """Anchored at zero, not at the quietest county in either storm.
+
+        Starting the ramp at the lowest observed value paints that county as if
+        it had no outages at all.
+        """
         every_value = [
             row["outage"] for panel in self.panels for row in panel.rows
         ]
-        self.assertEqual(
-            self.panels[0].value_range, (min(every_value), max(every_value))
-        )
+        self.assertEqual(self.panels[0].value_range, (0.0, max(every_value)))
 
     def test_the_shared_scale_is_wider_than_either_storm_alone(self):
         b_values = [row["outage"] for row in self.panels[1].rows]
@@ -684,6 +711,11 @@ class TestComparisonMapPanels(unittest.TestCase):
     def test_subtitle_states_the_storm_total_in_its_own_unit(self):
         self.assertIn("1,000", self.panels[0].subtitle)
         self.assertIn("trouble spots dispatched", self.panels[0].subtitle)
+
+    def test_subtitle_names_the_storms_own_peak_county(self):
+        """A quiet storm's map is faint by design; its own peak says why."""
+        self.assertIn("peaks at 600 in Fairfield", self.panels[0].subtitle)
+        self.assertIn("peaks at 200 in Fairfield", self.panels[1].subtitle)
 
     def test_metric_is_raw_outage_not_a_normalized_value(self):
         for panel in self.panels:

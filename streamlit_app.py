@@ -235,7 +235,9 @@ def _render_map_panels(result: AnalyticsResult) -> bool:
     st.subheader("County heat maps")
     st.caption(
         "Both maps share one colour scale, so the same shade means the same "
-        "number of outages in each."
+        "number of outages in each. The legend states the range each shade "
+        "covers; bands widen toward the top end, so a smaller storm still "
+        "shows its own contrast instead of flattening to one colour."
     )
     columns = st.columns(len(panels))
     for column, panel in zip(columns, panels):
