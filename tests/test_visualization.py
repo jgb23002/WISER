@@ -136,10 +136,31 @@ class TestSharedColourScale(unittest.TestCase):
         )
         return {county: fill for fill, county in pairs}
 
+    def _darkest_palette_fill(self, rows, value_range=None):
+        """The furthest-along-the-ramp colour actually painted on a county.
+
+        Ranked by palette index rather than by hex string: the no-data grey
+        is not on the ramp at all, and it sorts above every colour that is.
+        """
+        ramp = list(COUNTY_HEATMAP_PALETTE)
+        painted = [fill for fill in self._fills(rows, value_range) if fill in ramp]
+        return max(painted, key=ramp.index)
+
     def test_independent_scales_paint_the_weak_storm_as_darkly_as_the_strong(self):
-        """The defect a shared range exists to prevent."""
+        """The defect a shared range exists to prevent.
+
+        Scaled to itself, each storm spends its whole ramp on its own peak, so
+        600 outages paint exactly as dark as 6,000 and the reader comparing two
+        maps sees no difference.
+        """
         self.assertEqual(
-            max(self._fills(self.strong)), max(self._fills(self.weak))
+            self._darkest_palette_fill(self.strong),
+            self._darkest_palette_fill(self.weak),
+        )
+        self.assertEqual(
+            self._darkest_palette_fill(self.weak),
+            self.darkest,
+            "both storms should reach the dark end of their own ramp",
         )
 
     def test_a_shared_range_keeps_the_weak_storm_lighter(self):
