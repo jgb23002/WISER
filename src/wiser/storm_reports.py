@@ -404,12 +404,16 @@ def _signed_unit(value: float | None, formatter) -> str:
     """
     if value is None:
         return "not available"
+    sign = "+" if value >= 0 else "-"
     rendered = formatter(abs(value))
     if value != 0:
         below = _below_resolution(rendered)
         if below is not None:
-            return below
-    return f"{'+' if value >= 0 else '-'}{rendered}"
+            # Keep the sign: this is the one row where both value columns
+            # print the same rounded number, so the Difference column is the
+            # only place the direction of the gap still exists.
+            return f"{sign}{below}"
+    return f"{sign}{rendered}"
 
 
 def _below_resolution(rendered: str) -> str | None:

@@ -659,8 +659,18 @@ class TestSignedDifferenceFormatting(unittest.TestCase):
 
     def test_a_gap_too_small_to_print_becomes_a_bound(self):
         """'-0.0 mph' under 22.4 and 22.5 reads as a broken subtraction."""
-        self.assertEqual(self.signed(-0.0219, self.mph), "<0.1 mph")
-        self.assertEqual(self.signed(0.02, self.inches), "<0.01 in")
+        self.assertEqual(self.signed(-0.0219, self.mph), "-<0.1 mph")
+        self.assertEqual(self.signed(0.02, self.inches), "+<0.01 in")
+
+    def test_a_bound_still_says_which_storm_was_larger(self):
+        """The one row where the sign is the only thing left to read.
+
+        Both value columns print the same rounded number here, so if the
+        Difference column drops the sign too, the direction of the gap is
+        recoverable from nowhere on the page.
+        """
+        self.assertTrue(self.signed(-0.0219, self.mph).startswith("-"))
+        self.assertTrue(self.signed(0.0219, self.mph).startswith("+"))
 
     def test_an_exact_zero_is_still_a_zero(self):
         self.assertEqual(self.signed(0.0, self.mph), "+0.0 mph")
