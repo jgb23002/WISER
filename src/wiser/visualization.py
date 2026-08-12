@@ -561,10 +561,8 @@ def _legend_svg(
     """
     x = 24
     gap = 4
-    no_data_width = 120
     bands = len(COUNTY_HEATMAP_PALETTE)
-    usable = width - (x * 2) - no_data_width
-    box_width = max(28, (usable - gap * (bands - 1)) / bands)
+    box_width = _band_box_width(width, x=x, gap=gap, bands=bands)
     band_labels = _band_labels(
         _band_edges(min_value, max_value, zero_anchored=metric.zero_anchored)
     )
@@ -587,15 +585,53 @@ def _legend_svg(
             f"{html.escape(band_labels[index])}</text>"
         )
 
-    no_data_x = x + bands * (box_width + gap) + 12
+    swatch_right = x + bands * box_width + (bands - 1) * gap
+
+    no_data_x, no_data_y = _no_data_origin(swatch_right, width=width, x=x, y=y)
     parts.append(
-        f"<rect x=\"{no_data_x:.1f}\" y=\"{y}\" width=\"24\" height=\"14\" rx=\"2\" "
-        f"fill=\"{_NO_DATA_COLOR}\" />"
+        f"<rect x=\"{no_data_x:.1f}\" y=\"{no_data_y}\" width=\"{_NO_DATA_SWATCH}\" "
+        f"height=\"14\" rx=\"2\" fill=\"{_NO_DATA_COLOR}\" />"
     )
     parts.append(
-        f"<text x=\"{no_data_x + 32:.1f}\" y=\"{y + 12}\" class=\"legend-label\">No data</text>"
+        f"<text x=\"{no_data_x + _NO_DATA_SWATCH + _NO_DATA_GAP:.1f}\" "
+        f"y=\"{no_data_y + 12}\" class=\"legend-label\">No data</text>"
     )
     return "<g>" + "".join(parts) + "</g>"
+
+
+#: The No-data key: swatch, gap, then the label itself.
+_NO_DATA_SWATCH = 24
+_NO_DATA_GAP = 8
+_NO_DATA_BLOCK = _NO_DATA_SWATCH + _NO_DATA_GAP + 52
+#: Clearance between the colour swatches and the No-data key beside them.
+_NO_DATA_CLEARANCE = 12
+
+
+def _band_box_width(width: int, *, x: int, gap: int, bands: int) -> float:
+    """Swatch width that leaves the No-data key its reserved room.
+
+    Solved against the full budget — two margins, the inter-swatch gaps, the
+    clearance and the key — rather than against a bare subtraction, so the
+    swatches cannot run into the key at the default width.
+    """
+    budget = width - (x * 2) - _NO_DATA_CLEARANCE - _NO_DATA_BLOCK - gap * (bands - 1)
+    return max(28, budget / bands)
+
+
+def _no_data_origin(
+    swatch_right: float, *, width: int, x: int, y: int
+) -> tuple[float, int]:
+    """Where the No-data key goes: beside the swatches, or on its own row.
+
+    Below a certain width the swatches hit their minimum size and stop
+    shrinking, at which point there is no longer room beside them. Deriving
+    this from the swatches' true right edge keeps the key inside the viewBox
+    instead of pushing it off the canvas.
+    """
+    beside = swatch_right + _NO_DATA_CLEARANCE
+    if beside + _NO_DATA_BLOCK <= width - x:
+        return (beside, y)
+    return (float(x), y + 44)
 
 
 def _band_labels(edges: Sequence[float]) -> list[str]:

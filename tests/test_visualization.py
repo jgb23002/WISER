@@ -275,5 +275,36 @@ class TestScaleAnchoring(unittest.TestCase):
         )
 
 
+_RECT_RE = re.compile(r'<rect x="([\d.]+)" y="[^"]*" width="([\d.]+)"')
+_LEGEND_TEXT_RE = re.compile(r'<text x="([\d.]+)"[^>]*class="legend-label">([^<]*)<')
+#: "No data" at the 11px legend weight, rounded up. The renderer reserves room
+#: for this label, so the test has to know roughly what it costs.
+_NO_DATA_LABEL_WIDTH = 52
+
+
+class TestLegendLayout(unittest.TestCase):
+    def test_the_legend_stays_inside_a_narrow_map(self):
+        """Nothing the legend draws may cross the right edge of the viewBox."""
+        geojson = load_county_geojson()
+        rows = [{"county": "Fairfield", "outage": 600}]
+        width = 300
+
+        svg = render_county_heatmap_svg(
+            geojson, rows, "outage", width=width, value_range=(0.0, 6000.0)
+        )
+
+        for x, box_width in _RECT_RE.findall(svg):
+            self.assertLessEqual(
+                float(x) + float(box_width), width, f"swatch at x={x} overflows"
+            )
+        for x, text in _LEGEND_TEXT_RE.findall(svg):
+            if text == "No data":
+                self.assertLessEqual(
+                    float(x) + _NO_DATA_LABEL_WIDTH,
+                    width,
+                    "the No data label runs past the right edge",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
