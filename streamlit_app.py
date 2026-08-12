@@ -534,7 +534,11 @@ def _render_external_preview(db_path: str, *, limit: int) -> None:
         return
     st.dataframe(rows, hide_index=True, width="stretch")
     if _has_columns(rows, "sourceRecordId", "outageCount"):
-        _render_bar_chart(_chart_rows(rows, "sourceRecordId", "outageCount"))
+        _render_bar_chart(
+            _chart_rows(rows, "sourceRecordId", "outageCount"),
+            "Source record",
+            "Outages",
+        )
 
 
 @st.cache_data(show_spinner=False)
