@@ -772,11 +772,16 @@ def _edge_texts(edges: Sequence[float]) -> list[str]:
     Counts want no decimals; a metric whose whole range is a couple of units
     wide would collapse every boundary to "9" without them.
     """
+    # A range with no width can never be made distinct, so there is nothing to
+    # chase; hoisted out of the loop because it cannot change inside it.
+    degenerate = edges[-1] <= edges[0]
     texts = [_round_to(value, 0) for value in edges]
-    for decimals in (1, 2):
-        if len(set(texts)) == len(texts) or float(edges[-1]) <= float(edges[0]):
-            break
+    if degenerate:
+        return texts
+    for decimals in (0, 1, 2):
         texts = [_round_to(value, decimals) for value in edges]
+        if len(set(texts)) == len(texts):
+            break
     return texts
 
 
@@ -799,13 +804,23 @@ def _round_to(value: float, decimals: int) -> str:
 #: Extra tooltip context, shown only when the caller's rows carry it. Storm-scoped
 #: rows and aggregate rows have different columns, and listing an absent one as
 #: "No data" reads as a gap in the data rather than a column this view never had.
-_TOOLTIP_EXTRAS: tuple[tuple[str, str, str], ...] = (
-    ("outage", "outages", "trouble spots"),
-    ("total_outage", "total outage", "trouble spots"),
-    ("avg_peak_wind", "avg peak wind", "m/s"),
-    ("peakWSPD10", "peak wind", "m/s"),
-    ("outage_per_million_ohline", "per 1M ohLine", "trouble spots / 1M ohLine"),
+#: ``(row key, tooltip label)``. Units are NOT restated here — they are read
+#: from the metric registry, so renaming a unit there cannot leave the tooltip
+#: printing the old spelling with no test or type error to catch it.
+_TOOLTIP_EXTRAS: tuple[tuple[str, str], ...] = (
+    ("outage", "outages"),
+    ("total_outage", "total outage"),
+    ("avg_peak_wind", "avg peak wind"),
+    ("peakWSPD10", "peak wind"),
+    ("outage_per_million_ohline", "per 1M ohLine"),
 )
+#: peakWSPD10 is a raw WeatherData column rather than a heat-map metric, so the
+#: registry has no unit for it. It is the only one that has to be declared here.
+_UNREGISTERED_TOOLTIP_UNITS = {"peakWSPD10": "m/s"}
+
+
+def _tooltip_unit(key: str) -> str:
+    return metric_unit(key) or _UNREGISTERED_TOOLTIP_UNITS.get(key, "")
 
 
 def _tooltip_text(
@@ -817,10 +832,10 @@ def _tooltip_text(
         return f"{county}: no data"
     metric = COUNTY_HEATMAP_METRICS[metric_key]
     parts = [f"{county}: {metric.value_label} {_format_value(row.get(metric_key), metric.unit)}"]
-    for key, label, unit in _TOOLTIP_EXTRAS:
+    for key, label in _TOOLTIP_EXTRAS:
         if key == metric_key or not _is_number(row.get(key)):
             continue
-        parts.append(f"{label} {_format_value(row.get(key), unit)}")
+        parts.append(f"{label} {_format_value(row.get(key), _tooltip_unit(key))}")
     return "; ".join(parts)
 
 
