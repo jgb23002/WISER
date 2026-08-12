@@ -40,7 +40,7 @@ from wiser.units import (
     mm_to_inches,
     ms_to_mph,
 )
-from wiser.visualization import is_zero_anchored
+from wiser.visualization import is_zero_anchored, metric_unit
 
 # Phase 2 fields: absent from the schema, never inferred.
 PHASE_2_UNAVAILABLE = "not available — requires external storm metadata (Phase 2)"
@@ -928,7 +928,14 @@ def _peak_county_note(rows: list[dict[str, Any]], metric: str) -> str:
     if not scored:
         return ""
     peak = max(scored, key=lambda row: float(row[metric]))
-    return f" — peaks at {format_count(peak[metric])} in {peak['county']}"
+    # County before value: "peaks at 12.35 in Fairfield" reads the county as a
+    # unit, because "in" is also how format_inches spells inches. Naming the
+    # county first leaves no number in front of the preposition.
+    unit = metric_unit(metric)
+    measure = format_count(peak[metric])
+    if unit:
+        measure = f"{measure} {unit}"
+    return f" — peaks in {peak['county']} at {measure}"
 
 
 def forecast_rows(comparison: ForecastComparison) -> list[dict[str, Any]]:

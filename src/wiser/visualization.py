@@ -354,6 +354,17 @@ def metric_display_name(metric_key: str) -> str:
     return COUNTY_HEATMAP_METRICS[metric_key].label
 
 
+def metric_unit(metric_key: str) -> str | None:
+    """The registered unit for ``metric_key``, or None if it has none.
+
+    One place owns unit strings. Callers that print a metric's value read it
+    from here rather than restating it, so a rename cannot leave two spellings
+    of the same unit in circulation.
+    """
+    metric = COUNTY_HEATMAP_METRICS.get(metric_key)
+    return metric.unit if metric else None
+
+
 def is_zero_anchored(metric_key: str) -> bool:
     """Whether zero is a meaningful floor for ``metric_key``.
 

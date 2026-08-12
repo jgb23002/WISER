@@ -724,8 +724,13 @@ class TestComparisonMapPanels(unittest.TestCase):
 
     def test_subtitle_names_the_storms_own_peak_county(self):
         """A quiet storm's map is faint by design; its own peak says why."""
-        self.assertIn("peaks at 600 in Fairfield", self.panels[0].subtitle)
-        self.assertIn("peaks at 200 in Fairfield", self.panels[1].subtitle)
+        self.assertIn("peaks in Fairfield at 600 trouble spots", self.panels[0].subtitle)
+        self.assertIn("peaks in Fairfield at 200 trouble spots", self.panels[1].subtitle)
+
+    def test_the_peak_value_is_never_followed_by_a_bare_in(self):
+        """"peaks at 12.35 in Fairfield" reads 12.35 as inches."""
+        for panel in self.panels:
+            self.assertNotRegex(panel.subtitle, r"peaks at [\d,.]+ in ")
 
     def test_metric_is_raw_outage_not_a_normalized_value(self):
         for panel in self.panels:
