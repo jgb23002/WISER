@@ -3,7 +3,10 @@
 ## `ct_counties_legacy.geojson`
 
 This file contains the 8 legacy Connecticut county polygons used by WISER's
-county-level heat maps.
+county-level heat maps. It is read by `src/wiser/visualization.py`, which
+projects the polygons into an inline SVG. County names are matched
+case-insensitively and with a trailing "County" stripped, so `Fairfield` in the
+dataset lines up with whatever casing the layer carries.
 
 Source: State of Connecticut, Office of Policy and Management, CT Counties
 layer: https://geodata.ct.gov/datasets/ctmaps::ct-counties

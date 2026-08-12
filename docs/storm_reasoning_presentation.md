@@ -57,25 +57,47 @@ for storm 2020080406, why did Hartford have more outages than New Haven
 despite lower wind?
 ```
 
-**AI-generated response**
+> **Behaviour changed.** This prompt names a storm, so it now routes to
+> `storm_summary` rather than `weather_analytics`, and the storm-scoped path
+> narrows to the one county it finds in the query text. The two-county
+> comparison below is no longer what this prompt produces. Recorded here as it
+> stands, not as it was.
+
+**Response today — `Route: storm_summary`, scoped to Hartford alone**
 
 ```text
-- Hartford / storm 2020080406 ranks highest by outage with 4,792.
-- New Haven is next at 2,958, a gap of 1,834.
-- The rows support a non-linear outage relationship: Hartford has 4,792 outages
-  with 9.35 m/s wind, while New Haven has 2,958 outages despite 9.95 m/s wind.
-  Exposure may matter: ohLine is 5,869,550 versus 3,233,197. Normalized by
-  ohLine, New Haven is higher at 914.88, so the exposure-adjusted interpretation
-  differs from the raw outage ranking.
-- Caveat: causal claims need additional evidence.
+Storm Impact
+  Statewide outages (trouble spots dispatched):  4,792
+  Counties with the highest outages:
+    Hartford County — 4,792
+
+Relative Impact
+  After normalizing by overhead line length, Hartford County experienced the
+    greatest relative impact (816.42 per million ohLine).
+
+Analytical reasoning:
+- Strongest measured signal: Hartford / storm 2020080406 ranks highest by
+  outage with 4,792.
+- Wind is one driver, but the rows should be read alongside outage,
+  precipitation, threshold-hour, and exposure fields because outages do not
+  always rise one-for-one with peak wind.
+- Caveat: this explanation uses only returned database fields; causal claims
+  need additional evidence such as population, vegetation, asset condition,
+  and restoration logs.
 ```
+
+Dropping the storm identifier reaches `weather_analytics` and restores the
+two-county comparison, but across **all** storms rather than this one —
+Hartford 23,307 vs New Haven 16,965, not 4,792 vs 2,958.
 
 **Evaluation**
 
-Good: goes beyond lookup by explaining that raw outage ranking and normalized
-ranking differ. Good caveat discipline. Next refinement: include storm duration,
-vegetation, grid asset condition, or customer population if those fields are
-added later.
+The earlier response — which named both counties, called out the non-linear
+wind/outage relationship, and showed that ohLine normalization reverses the raw
+ranking — is not currently reachable by any phrasing. With the identifier the
+comparison county is dropped; without it the storm scope is. A storm-scoped
+question naming two counties should keep both in scope; that is an open gap,
+not a design decision.
 
 ---
 
@@ -160,6 +182,10 @@ the divergence only when supporting fields are available.
 County heat maps use `data/geography/ct_counties_legacy.geojson`, the State of
 Connecticut legacy 8-county layer. This matches the dataset's older county
 names instead of newer planning-region geography.
+
+Every table and response on this page was re-run against `data/wiser.db` and
+matches, except where slide 2 records a routing change. Slides 1, 3, and 4
+reproduce byte-for-byte through the local analytical fallback.
 
 Example command pattern:
 
