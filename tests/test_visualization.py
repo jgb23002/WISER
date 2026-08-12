@@ -306,5 +306,45 @@ class TestLegendLayout(unittest.TestCase):
                 )
 
 
+_COUNTY_FILL_RE = re.compile(r'<path [^>]*fill="(#[0-9a-fA-F]{6})"')
+_LEGEND_BAND_RE = re.compile(r'class="legend-band">([^<]+)<')
+
+
+class TestFlatMap(unittest.TestCase):
+    """Every county reporting the same number is not a catastrophe."""
+
+    def setUp(self):
+        self.geojson = load_county_geojson()
+        self.rows = [
+            {"county": "Fairfield", "outage": 0},
+            {"county": "Hartford", "outage": 0},
+            {"county": "Litchfield", "outage": 0},
+        ]
+
+    def _svg(self):
+        return render_county_heatmap_svg(
+            self.geojson, self.rows, "outage", value_range=(0.0, 0.0)
+        )
+
+    def test_an_all_zero_storm_paints_the_empty_end_of_the_ramp(self):
+        """Two storms that both recorded nothing must not both paint black."""
+        fills = set(_COUNTY_FILL_RE.findall(self._svg()))
+
+        self.assertNotIn(
+            COUNTY_HEATMAP_PALETTE[-1],
+            fills,
+            "nothing happened; the map must not read as the worst case",
+        )
+        self.assertIn(COUNTY_HEATMAP_PALETTE[0], fills)
+
+    def test_a_flat_map_does_not_repeat_one_range_across_every_band(self):
+        svg = self._svg()
+
+        self.assertEqual(
+            _LEGEND_BAND_RE.findall(svg), [], "a flat scale has no bands to name"
+        )
+        self.assertIn("All counties", svg)
+
+
 if __name__ == "__main__":
     unittest.main()

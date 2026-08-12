@@ -331,7 +331,6 @@ def is_zero_anchored(metric_key: str) -> bool:
     return bool(metric and metric.zero_anchored)
 
 
-
 def _validate_geojson(data: dict[str, Any]) -> None:
     if data.get("type") != "FeatureCollection":
         raise ValueError("Expected a GeoJSON FeatureCollection.")
@@ -507,6 +506,25 @@ def _band_edges(
     return [min_value + span * (index / bands) ** exponent for index in range(bands + 1)]
 
 
+def _is_flat_range(min_value: float, max_value: float) -> bool:
+    """True when every county carries the same value, so there is no spread."""
+    return math.isclose(min_value, max_value)
+
+
+def _flat_color(value: float) -> str:
+    """The one colour a map with no spread in it should wear.
+
+    A flat range says nothing about relative magnitude, so it cannot honestly
+    use either end of the ramp — except at zero, which is not "the bottom of
+    this range" but "nothing happened", and reads as the empty end. Painting
+    the dark end here turned two storms that both recorded no outages into a
+    solid near-black Connecticut.
+    """
+    if math.isclose(value, 0.0):
+        return COUNTY_HEATMAP_PALETTE[0]
+    return COUNTY_HEATMAP_PALETTE[len(COUNTY_HEATMAP_PALETTE) // 2]
+
+
 def _value_color(
     value: float,
     min_value: float,
@@ -516,8 +534,8 @@ def _value_color(
 ) -> str:
     if not math.isfinite(value):
         return _NO_DATA_COLOR
-    if math.isclose(min_value, max_value):
-        return COUNTY_HEATMAP_PALETTE[-1]
+    if _is_flat_range(min_value, max_value):
+        return _flat_color(value)
     bands = len(COUNTY_HEATMAP_PALETTE)
     position = _scale_position(value, min_value, max_value, zero_anchored=zero_anchored)
     index = min(bands - 1, max(0, int(position * bands)))
@@ -562,10 +580,6 @@ def _legend_svg(
     x = 24
     gap = 4
     bands = len(COUNTY_HEATMAP_PALETTE)
-    box_width = _band_box_width(width, x=x, gap=gap, bands=bands)
-    band_labels = _band_labels(
-        _band_edges(min_value, max_value, zero_anchored=metric.zero_anchored)
-    )
 
     header = metric.value_label
     if metric.unit.lower() not in header.lower():
@@ -573,19 +587,37 @@ def _legend_svg(
     parts = [
         f"<text x=\"{x}\" y=\"{y - 10}\" class=\"legend-label\">{html.escape(header)}</text>"
     ]
-    for index, color in enumerate(COUNTY_HEATMAP_PALETTE):
-        box_x = x + index * (box_width + gap)
-        parts.append(
-            f"<rect x=\"{box_x:.1f}\" y=\"{y}\" "
-            f"width=\"{box_width:.1f}\" height=\"14\" rx=\"2\" fill=\"{color}\" />"
-        )
-        parts.append(
-            f"<text x=\"{box_x + box_width / 2:.1f}\" y=\"{y + 27}\" "
-            "text-anchor=\"middle\" class=\"legend-band\">"
-            f"{html.escape(band_labels[index])}</text>"
-        )
 
-    swatch_right = x + bands * box_width + (bands - 1) * gap
+    if _is_flat_range(min_value, max_value):
+        # No spread means no bands. Seven swatches all labelled "0–0" describe a
+        # scale that isn't there; one swatch and the value itself is the truth.
+        flat = _format_value(min_value, metric.unit)
+        parts.append(
+            f"<rect x=\"{x}\" y=\"{y}\" width=\"24\" height=\"14\" rx=\"2\" "
+            f"fill=\"{_flat_color(min_value)}\" />"
+        )
+        parts.append(
+            f"<text x=\"{x + 32}\" y=\"{y + 12}\" class=\"legend-label\">"
+            f"All counties {html.escape(flat)}</text>"
+        )
+        swatch_right = x + 24 + 8 + _text_width(f"All counties {flat}")
+    else:
+        box_width = _band_box_width(width, x=x, gap=gap, bands=bands)
+        band_labels = _band_labels(
+            _band_edges(min_value, max_value, zero_anchored=metric.zero_anchored)
+        )
+        for index, color in enumerate(COUNTY_HEATMAP_PALETTE):
+            box_x = x + index * (box_width + gap)
+            parts.append(
+                f"<rect x=\"{box_x:.1f}\" y=\"{y}\" "
+                f"width=\"{box_width:.1f}\" height=\"14\" rx=\"2\" fill=\"{color}\" />"
+            )
+            parts.append(
+                f"<text x=\"{box_x + box_width / 2:.1f}\" y=\"{y + 27}\" "
+                "text-anchor=\"middle\" class=\"legend-band\">"
+                f"{html.escape(band_labels[index])}</text>"
+            )
+        swatch_right = x + bands * box_width + (bands - 1) * gap
 
     no_data_x, no_data_y = _no_data_origin(swatch_right, width=width, x=x, y=y)
     parts.append(
@@ -632,6 +664,11 @@ def _no_data_origin(
     if beside + _NO_DATA_BLOCK <= width - x:
         return (beside, y)
     return (float(x), y + 44)
+
+
+def _text_width(text: str) -> float:
+    """Rough width of a legend label at 11px, for layout arithmetic only."""
+    return len(text) * 6.2
 
 
 def _band_labels(edges: Sequence[float]) -> list[str]:
