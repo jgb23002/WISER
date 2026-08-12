@@ -239,5 +239,41 @@ class TestSharedColourScale(unittest.TestCase):
         self.assertIn("outage", COUNTY_HEATMAP_METRICS)
 
 
+class TestScaleAnchoring(unittest.TestCase):
+    """Which curve a metric gets is a property of the metric, not of its data."""
+
+    def setUp(self):
+        self.geojson = load_county_geojson()
+
+    def _band_index(self, rows, metric, value_range, county):
+        svg = render_county_heatmap_svg(
+            self.geojson, rows, metric, value_range=value_range
+        )
+        pairs = re.findall(r'fill="(#[0-9a-fA-F]{6})"[^>]*><title>([^:<]+):', svg)
+        fills = {name: fill for fill, name in pairs}
+        return list(COUNTY_HEATMAP_PALETTE).index(fills[county])
+
+    def test_a_magnitude_metric_compresses_even_with_no_zero_county(self):
+        """The knife edge: whether some county reported 0 must not pick the curve.
+
+        Outages are a magnitude whose floor is "none", so the ramp compresses
+        whether or not this particular slice happens to contain a zero. On the
+        midpoint of 5..100 a linear scale lands in band 3; compressed, band 5.
+        """
+        rows = [{"county": "Fairfield", "outage": 52.5}]
+
+        self.assertEqual(
+            self._band_index(rows, "outage", (5.0, 100.0), "Fairfield"), 5
+        )
+
+    def test_a_wind_metric_stays_linear(self):
+        """The guard on the other side: wind speed has no meaningful zero."""
+        rows = [{"county": "Fairfield", "avg_peak_wind": 15.0}]
+
+        self.assertEqual(
+            self._band_index(rows, "avg_peak_wind", (10.0, 20.0), "Fairfield"), 3
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

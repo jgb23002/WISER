@@ -25,6 +25,13 @@ class CountyHeatmapMetric:
     value_label: str
     unit: str
     help_text: str
+    #: True when zero is a meaningful floor for this quantity — "no outages",
+    #: not "the smallest reading in this slice". Magnitude metrics are anchored
+    #: at zero and compressed (see ``_SCALE_EXPONENT``); everything else is a
+    #: narrow band the reader wants spread out, so it stays linear. Deriving
+    #: this from the data instead put the choice on whether some county
+    #: happened to report a zero, which flipped the whole map on one row.
+    zero_anchored: bool = False
 
 
 COUNTY_HEATMAP_METRICS: dict[str, CountyHeatmapMetric] = {
@@ -34,6 +41,7 @@ COUNTY_HEATMAP_METRICS: dict[str, CountyHeatmapMetric] = {
         value_label="Outages",
         unit="trouble spots",
         help_text="Outage trouble spots for a single storm, by county.",
+        zero_anchored=True,
     ),
     "total_outage": CountyHeatmapMetric(
         key="total_outage",
@@ -41,6 +49,7 @@ COUNTY_HEATMAP_METRICS: dict[str, CountyHeatmapMetric] = {
         value_label="Total outage",
         unit="trouble spots",
         help_text="Sum of outage trouble spots by county.",
+        zero_anchored=True,
     ),
     "avg_outage": CountyHeatmapMetric(
         key="avg_outage",
@@ -48,6 +57,7 @@ COUNTY_HEATMAP_METRICS: dict[str, CountyHeatmapMetric] = {
         value_label="Average outage",
         unit="trouble spots",
         help_text="Average outage trouble spots per storm-county record.",
+        zero_anchored=True,
     ),
     "peak_outage": CountyHeatmapMetric(
         key="peak_outage",
@@ -55,6 +65,7 @@ COUNTY_HEATMAP_METRICS: dict[str, CountyHeatmapMetric] = {
         value_label="Peak outage",
         unit="trouble spots",
         help_text="Largest outage trouble-spot count observed in the county.",
+        zero_anchored=True,
     ),
     "avg_peak_wind": CountyHeatmapMetric(
         key="avg_peak_wind",
@@ -76,6 +87,7 @@ COUNTY_HEATMAP_METRICS: dict[str, CountyHeatmapMetric] = {
         value_label="Outage per 1M ohLine",
         unit="trouble spots / 1M ohLine",
         help_text="Outage trouble spots normalized by county overhead-line exposure.",
+        zero_anchored=True,
     ),
 }
 
@@ -237,7 +249,16 @@ def render_county_heatmap_svg(
         county = _feature_county_name(feature)
         row = rows_by_county.get(normalize_county_name(county))
         value = row.get(metric_key) if row else None
-        fill = _value_color(float(value), min_value, max_value) if _is_number(value) else _NO_DATA_COLOR
+        fill = (
+            _value_color(
+                float(value),
+                min_value,
+                max_value,
+                zero_anchored=metric.zero_anchored,
+            )
+            if _is_number(value)
+            else _NO_DATA_COLOR
+        )
         path_data = _geometry_path(feature["geometry"], bbox, width=width, height=height)
         tooltip = _tooltip_text(county, row, metric_key) if row else f"{county}: no data"
         paths.append(
@@ -298,6 +319,16 @@ def normalize_county_name(value: str) -> str:
 
 def metric_display_name(metric_key: str) -> str:
     return COUNTY_HEATMAP_METRICS[metric_key].label
+
+
+def is_zero_anchored(metric_key: str) -> bool:
+    """Whether zero is a meaningful floor for ``metric_key``.
+
+    Unknown metrics answer False: a quantity nobody has declared a floor for
+    gets the linear scale, which is the safe reading of an unknown unit.
+    """
+    metric = COUNTY_HEATMAP_METRICS.get(metric_key)
+    return bool(metric and metric.zero_anchored)
 
 
 
@@ -436,24 +467,33 @@ def _project(
     return (x, y)
 
 
-def _scale_position(value: float, min_value: float, max_value: float) -> float:
+def _scale_position(
+    value: float,
+    min_value: float,
+    max_value: float,
+    *,
+    zero_anchored: bool,
+) -> float:
     """Where ``value`` sits on the colour ramp, as 0..1.
 
-    A scale anchored at zero is a magnitude scale and gets compressed (see
-    ``_SCALE_EXPONENT``). A scale whose floor is already well above zero — peak
-    wind across counties of one storm, say — is a narrow band where the reader
-    cares about the spread inside it, so that one stays linear.
+    A magnitude scale gets compressed (see ``_SCALE_EXPONENT``). A quantity
+    with no meaningful zero — peak wind across the counties of one storm, say —
+    is a narrow band where the reader cares about the spread inside it, so that
+    one stays linear. Which of the two applies is declared by the metric, not
+    inferred from whether this slice of data happens to contain a zero.
     """
     span = max_value - min_value
     if span <= 0:
         return 1.0
     linear = min(1.0, max(0.0, (value - min_value) / span))
-    if min_value > 0:
+    if not zero_anchored:
         return linear
     return linear**_SCALE_EXPONENT
 
 
-def _band_edges(min_value: float, max_value: float) -> list[float]:
+def _band_edges(
+    min_value: float, max_value: float, *, zero_anchored: bool
+) -> list[float]:
     """The value at every band boundary, lowest first. One more than bands.
 
     The inverse of :func:`_scale_position`, so the legend can state the range
@@ -463,17 +503,23 @@ def _band_edges(min_value: float, max_value: float) -> list[float]:
     span = max_value - min_value
     if span <= 0:
         return [min_value] * (bands + 1)
-    exponent = 1.0 if min_value > 0 else 1.0 / _SCALE_EXPONENT
+    exponent = 1.0 / _SCALE_EXPONENT if zero_anchored else 1.0
     return [min_value + span * (index / bands) ** exponent for index in range(bands + 1)]
 
 
-def _value_color(value: float, min_value: float, max_value: float) -> str:
+def _value_color(
+    value: float,
+    min_value: float,
+    max_value: float,
+    *,
+    zero_anchored: bool,
+) -> str:
     if not math.isfinite(value):
         return _NO_DATA_COLOR
     if math.isclose(min_value, max_value):
         return COUNTY_HEATMAP_PALETTE[-1]
     bands = len(COUNTY_HEATMAP_PALETTE)
-    position = _scale_position(value, min_value, max_value)
+    position = _scale_position(value, min_value, max_value, zero_anchored=zero_anchored)
     index = min(bands - 1, max(0, int(position * bands)))
     return COUNTY_HEATMAP_PALETTE[index]
 
@@ -519,7 +565,9 @@ def _legend_svg(
     bands = len(COUNTY_HEATMAP_PALETTE)
     usable = width - (x * 2) - no_data_width
     box_width = max(28, (usable - gap * (bands - 1)) / bands)
-    band_labels = _band_labels(_band_edges(min_value, max_value))
+    band_labels = _band_labels(
+        _band_edges(min_value, max_value, zero_anchored=metric.zero_anchored)
+    )
 
     header = metric.value_label
     if metric.unit.lower() not in header.lower():

@@ -40,6 +40,7 @@ from wiser.units import (
     mm_to_inches,
     ms_to_mph,
 )
+from wiser.visualization import is_zero_anchored
 
 # Phase 2 fields: absent from the schema, never inferred.
 PHASE_2_UNAVAILABLE = "not available — requires external storm metadata (Phase 2)"
@@ -863,10 +864,11 @@ def comparison_map_panels(
 
     Scaling each map to its own rows would paint the weaker storm as deep as
     the stronger one and invert the comparison being made, so the range spans
-    both storms. It is anchored at zero rather than at the lowest county in
-    either storm: the floor of a shared magnitude scale is "no outages", and
-    starting it at, say, 5 makes the quietest county of the quieter storm read
-    as empty.
+    both storms. For a metric with a meaningful zero it is anchored there
+    rather than at the lowest county in either storm: the floor of a magnitude
+    scale is "no outages", and starting it at, say, 5 makes the quietest county
+    of the quieter storm read as empty. Metrics without such a floor keep their
+    own minimum — see :func:`wiser.visualization.is_zero_anchored`.
     """
     panels: list[tuple[str, str, list[dict[str, Any]]]] = []
     for label, summary in (
@@ -889,7 +891,15 @@ def comparison_map_panels(
         for row in rows
         if isinstance(row.get(metric), (int, float))
     ]
-    shared = (min(0.0, min(values)), max(values)) if values else (0.0, 0.0)
+    if not values:
+        shared = (0.0, 0.0)
+    elif is_zero_anchored(metric):
+        shared = (min(0.0, min(values)), max(values))
+    else:
+        # A quantity with no meaningful zero — wind speed, say — has no floor to
+        # anchor to. Forcing one turns a 12–18 m/s spread into a 0–18 scale and
+        # flattens every county into the top bands.
+        shared = (min(values), max(values))
 
     return [
         MapPanel(
