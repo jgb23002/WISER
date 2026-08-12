@@ -1011,13 +1011,19 @@ def _ranking_display_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _comparison_display_row(row: dict[str, Any]) -> dict[str, Any]:
-    formatter = _COMPARISON_FORMATTERS.get(row["metric"], (format_count, None))[0]
+    # The Difference column takes the DIFFERENCE formatter, not the value one.
+    # Formatting a difference as a value drops the sign and turns a gap too
+    # small to print into a bare "0.0 mph", which is the same defect the text
+    # report was fixed for — this table is just the other rendering of it.
+    value_fmt, diff_fmt = _COMPARISON_FORMATTERS.get(
+        row["metric"], (format_count, format_signed)
+    )
     percent = row["percent_change"]
     return {
         "Metric": row["label"],
-        "Storm A": formatter(row["storm_a"]),
-        "Storm B": formatter(row["storm_b"]),
-        "Difference": formatter(row["difference"])
+        "Storm A": value_fmt(row["storm_a"]),
+        "Storm B": value_fmt(row["storm_b"]),
+        "Difference": diff_fmt(row["difference"])
         if row["difference"] is not None
         else UNAVAILABLE_DISPLAY,
         "Change": f"{percent:+,.0f}%" if percent is not None else "—",

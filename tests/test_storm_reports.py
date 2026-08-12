@@ -847,3 +847,38 @@ class TestForecastAnalogueVolume(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestComparisonTableAndDataframeAgree(unittest.TestCase):
+    """The report and the dataframe are two renderings of one comparison.
+
+    The Difference column was formatted with the VALUE formatter here, so the
+    table said '+<0.1 mph' while the dataframe beside it said '0.0 mph'.
+    """
+
+    def setUp(self):
+        from wiser.storm_reports import _comparison_display_row
+
+        self.render = _comparison_display_row
+
+    def _row(self, metric, a, b):
+        return self.render(
+            {
+                "metric": metric,
+                "label": metric,
+                "storm_a": a,
+                "storm_b": b,
+                "difference": a - b,
+                "percent_change": None,
+            }
+        )
+
+    def test_a_below_resolution_wind_gap_keeps_its_bound_and_sign(self):
+        row = self._row("max_wind", 7.765029558, 7.765003202)
+
+        self.assertEqual(row["Difference"], "+<0.1 mph")
+
+    def test_a_positive_count_difference_is_signed(self):
+        row = self._row("counties_above_threshold", 6.0, 4.0)
+
+        self.assertEqual(row["Difference"], "+2")
