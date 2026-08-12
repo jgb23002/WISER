@@ -625,9 +625,7 @@ def _legend_svg(
     gap = 4
     bands = len(COUNTY_HEATMAP_PALETTE)
 
-    header = metric.value_label
-    if metric.unit.lower() not in header.lower():
-        header = f"{header} ({metric.unit})"
+    header = _legend_header(metric)
     parts = [
         f"<text x=\"{x}\" y=\"{y - 10}\" class=\"legend-label\">{html.escape(header)}</text>"
     ]
@@ -681,6 +679,24 @@ _NO_DATA_GAP = 8
 _NO_DATA_BLOCK = _NO_DATA_SWATCH + _NO_DATA_GAP + 52
 #: Clearance between the colour swatches and the No-data key beside them.
 _NO_DATA_CLEARANCE = 12
+
+
+def _legend_header(metric: CountyHeatmapMetric) -> str:
+    """``label (unit)``, minus any part of the unit the label already says.
+
+    A whole-string containment test only catches an exact repeat, so
+    "Outage per 1M ohLine" paired with "trouble spots / 1M ohLine" printed
+    "1M ohLine" twice in one 45-character label. Comparing on the unit's
+    distinctive tail catches the overlap that actually occurs.
+    """
+    label = metric.value_label
+    unit = metric.unit
+    tail = unit.rsplit("/", 1)[-1].strip()
+    if tail.lower() in label.lower():
+        unit = unit[: unit.rfind(tail)].strip().rstrip("/").strip()
+    if not unit or unit.lower() in label.lower():
+        return label
+    return f"{label} ({unit})"
 
 
 def _band_box_width(width: int, *, x: int, gap: int, bands: int) -> float:
@@ -774,6 +790,7 @@ def _round_to(value: float, decimals: int) -> str:
 #: rows and aggregate rows have different columns, and listing an absent one as
 #: "No data" reads as a gap in the data rather than a column this view never had.
 _TOOLTIP_EXTRAS: tuple[tuple[str, str, str], ...] = (
+    ("outage", "outages", "trouble spots"),
     ("total_outage", "total outage", "trouble spots"),
     ("avg_peak_wind", "avg peak wind", "m/s"),
     ("peakWSPD10", "peak wind", "m/s"),

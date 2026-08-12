@@ -483,5 +483,40 @@ class TestNoDataIsDistinguishable(unittest.TestCase):
             )
 
 
+class TestTooltipAndLegendText(unittest.TestCase):
+    def setUp(self):
+        self.geojson = load_county_geojson()
+        #: A storm-scoped row: carries `outage`, not the aggregate `total_outage`.
+        self.rows = [
+            {
+                "county": "Fairfield",
+                "outage": 412,
+                "peakWSPD10": 12.34,
+                "ohLine": 10_000_000,
+                "outage_per_million_ohline": 41.2,
+            }
+        ]
+
+    def _tooltips(self, metric_key):
+        svg = render_county_heatmap_svg(self.geojson, self.rows, metric_key)
+        return re.findall(r"<title>([^<]+)</title>", svg)
+
+    def test_a_normalized_map_still_shows_the_raw_outage_count(self):
+        """The numerator is in the row; dropping it hides what made the ratio."""
+        tooltip = next(t for t in self._tooltips("outage_per_million_ohline") if "Fairfield" in t)
+
+        self.assertIn("412", tooltip)
+
+    def test_the_legend_header_does_not_repeat_the_unit(self):
+        svg = render_county_heatmap_svg(
+            self.geojson, self.rows, "outage_per_million_ohline"
+        )
+        header = re.search(r'class="legend-label">([^<]*)</text>', svg).group(1)
+
+        self.assertEqual(
+            header.lower().count("1m ohline"), 1, f"unit repeated in {header!r}"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
