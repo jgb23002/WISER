@@ -104,7 +104,26 @@ COUNTY_HEATMAP_PALETTE = (
     "#184f95",
     "#0d366b",
 )
-_NO_DATA_COLOR = "#d7dce2"
+#: No data is not a value on the ramp, so it is drawn as a texture rather than
+#: as another shade. A grey can only ever be one step of a seven-step ramp away
+#: from colliding with it — the previous #d7dce2 sat at 1.04:1 against the
+#: ramp's lightest colour, which is no difference at all on a projector. The
+#: base is warm where the ramp is cool, and the hatch carries the distinction
+#: even in greyscale.
+NO_DATA_PATTERN_ID = "wiser-no-data"
+NO_DATA_BASE_COLOR = "#fcf9f4"
+_NO_DATA_HATCH_COLOR = "#9aa3ad"
+_NO_DATA_COLOR = f"url(#{NO_DATA_PATTERN_ID})"
+#: The hatch is drawn for a panel shown at 1:1, so the period is chosen to read
+#: at that size rather than through a downscale.
+_NO_DATA_PATTERN = (
+    f"<defs><pattern id=\"{NO_DATA_PATTERN_ID}\" width=\"8\" height=\"8\" "
+    "patternUnits=\"userSpaceOnUse\" patternTransform=\"rotate(45)\">"
+    f"<rect width=\"8\" height=\"8\" fill=\"{NO_DATA_BASE_COLOR}\" />"
+    f"<line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"8\" stroke=\"{_NO_DATA_HATCH_COLOR}\" "
+    "stroke-width=\"2\" />"
+    "</pattern></defs>"
+)
 
 #: Outage counts are heavily skewed, so a zero-anchored linear scale wastes the
 #: whole ramp on the top storm: comparing a 121-outage storm against a 777-outage
@@ -282,7 +301,11 @@ def render_county_heatmap_svg(
         label_point = _geometry_label_point(feature["geometry"], bbox, width=width, height=height)
         if label_point is not None:
             label_value = _format_value(value, metric.unit) if _is_number(value) else "No data"
-            name_class, value_class = _label_classes(fill)
+            # Ink is chosen against a colour, and the no-data fill is a pattern
+            # reference; its base is what the label actually sits on.
+            name_class, value_class = _label_classes(
+                fill if fill != _NO_DATA_COLOR else NO_DATA_BASE_COLOR
+            )
             labels.append(
                 "<text "
                 f"x=\"{label_point[0]:.1f}\" y=\"{label_point[1]:.1f}\" "
@@ -308,7 +331,8 @@ def render_county_heatmap_svg(
         ".legend-label{font:600 11px system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;fill:#cbd5e1}"
         ".legend-band{font:600 11px system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;fill:#cbd5e1}"
         "</style>"
-        f"<text x=\"24\" y=\"30\" class=\"map-title\">{safe_title}</text>"
+        + _NO_DATA_PATTERN
+        + f"<text x=\"24\" y=\"30\" class=\"map-title\">{safe_title}</text>"
         f"<text x=\"24\" y=\"50\" class=\"map-subtitle\">{html.escape(metric.value_label)} by legacy Connecticut county</text>"
         "<g transform=\"translate(0,18)\">"
         + "".join(paths)

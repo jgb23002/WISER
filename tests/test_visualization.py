@@ -16,6 +16,8 @@ if str(SRC_DIR) not in sys.path:
 from wiser.visualization import (  # noqa: E402
     COUNTY_HEATMAP_METRICS,
     COUNTY_HEATMAP_PALETTE,
+    NO_DATA_BASE_COLOR,
+    NO_DATA_PATTERN_ID,
     PANEL_MAP_HEIGHT,
     PANEL_MAP_WIDTH,
     county_metric_rows,
@@ -24,8 +26,16 @@ from wiser.visualization import (  # noqa: E402
     render_county_heatmap_svg,
 )
 
+from wiser.visualization import _relative_luminance  # noqa: E402
+
 sys.path.insert(0, str(REPO_ROOT))
 from streamlit_app import _SVG_PANEL_HEIGHT  # noqa: E402
+
+
+def _contrast(first: str, second: str) -> float:
+    """WCAG contrast ratio between two ``#rrggbb`` fills."""
+    values = sorted((_relative_luminance(first), _relative_luminance(second)))
+    return (values[1] + 0.05) / (values[0] + 0.05)
 
 
 class TestCountyVisualization(unittest.TestCase):
@@ -424,6 +434,53 @@ class TestLegendReadability(unittest.TestCase):
         for x, text in self._labels():
             self.assertGreaterEqual(x, 0)
             self.assertLessEqual(x, PANEL_MAP_WIDTH)
+
+
+class TestNoDataIsDistinguishable(unittest.TestCase):
+    """"We measured zero" and "we have no measurement" are different facts."""
+
+    def setUp(self):
+        self.geojson = load_county_geojson()
+        # One county with data; the other seven have none.
+        self.rows = [{"county": "Fairfield", "outage": 0}]
+
+    def _svg(self):
+        return render_county_heatmap_svg(
+            self.geojson, self.rows, "outage", value_range=(0.0, 6000.0)
+        )
+
+    def test_no_data_counties_are_filled_with_the_hatch(self):
+        svg = self._svg()
+
+        self.assertIn(f'<pattern id="{NO_DATA_PATTERN_ID}"', svg)
+        self.assertIn(f'fill="url(#{NO_DATA_PATTERN_ID})"', svg)
+
+    def test_the_hatch_sits_on_an_opaque_base(self):
+        """Without a base fill the county reads as a hole in the map."""
+        pattern = re.search(r"<pattern id=[^>]*>(.*?)</pattern>", self._svg(), re.S)
+
+        self.assertIsNotNone(pattern)
+        self.assertIn(f'fill="{NO_DATA_BASE_COLOR}"', pattern.group(1))
+
+    def test_the_legend_key_uses_the_same_fill_as_the_map(self):
+        """A key drawn differently from the thing it explains explains nothing."""
+        svg = self._svg()
+        key = re.search(r'<rect[^>]*fill="url\(#%s\)"[^>]*/>' % NO_DATA_PATTERN_ID, svg)
+
+        self.assertIsNotNone(key, "the No data swatch should carry the hatch too")
+
+    def test_the_base_stays_light_apart_from_every_ramp_colour(self):
+        """Texture is the primary signal, but lightness must not collide either.
+
+        The previous grey sat at 1.04:1 against the ramp's lightest colour,
+        which is no difference at all on a projector.
+        """
+        for color in COUNTY_HEATMAP_PALETTE:
+            self.assertGreaterEqual(
+                _contrast(NO_DATA_BASE_COLOR, color),
+                1.2,
+                f"no-data base is too close to {color}",
+            )
 
 
 if __name__ == "__main__":
