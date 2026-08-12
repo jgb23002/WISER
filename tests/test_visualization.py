@@ -26,7 +26,11 @@ from wiser.visualization import (  # noqa: E402
     render_county_heatmap_svg,
 )
 
-from wiser.visualization import _relative_luminance  # noqa: E402
+from wiser.visualization import (  # noqa: E402
+    _edge_texts,
+    _format_value,
+    _relative_luminance,
+)
 
 sys.path.insert(0, str(REPO_ROOT))
 from streamlit_app import _SVG_PANEL_HEIGHT  # noqa: E402
@@ -516,6 +520,39 @@ class TestTooltipAndLegendText(unittest.TestCase):
         self.assertEqual(
             header.lower().count("1m ohline"), 1, f"unit repeated in {header!r}"
         )
+
+
+class TestOneNumberFormatter(unittest.TestCase):
+    """County labels and legend bands are the same numbers in the same image."""
+
+    def test_half_values_round_the_same_way_everywhere(self):
+        """round() is banker's rounding: 2.5 -> 2 but 3.5 -> 4.
+
+        Two renderings of one quantity that disagree on .5 is a bug the reader
+        has no way to diagnose.
+        """
+        self.assertEqual(_edge_texts([2.5, 3.5]), ["3", "4"])
+
+    def test_edges_and_county_labels_agree_on_a_whole_number(self):
+        edge = _edge_texts([0.0, 1234.0])[1]
+        label = _format_value(1234.0, "trouble spots")
+
+        self.assertEqual(edge, label)
+
+
+class TestEdgeTextPrecision(unittest.TestCase):
+    def test_whole_numbers_when_they_are_distinct(self):
+        self.assertEqual(_edge_texts([0.0, 10.0, 20.0]), ["0", "10", "20"])
+
+    def test_decimals_appear_only_when_needed_to_stay_distinct(self):
+        texts = _edge_texts([9.0, 9.2, 9.4])
+
+        self.assertEqual(len(set(texts)), 3, texts)
+        self.assertTrue(all("." in text for text in texts), texts)
+
+    def test_a_degenerate_range_does_not_chase_precision(self):
+        """All-equal edges can never be made distinct; stop at the coarsest."""
+        self.assertEqual(_edge_texts([5.0, 5.0, 5.0]), ["5", "5", "5"])
 
 
 if __name__ == "__main__":

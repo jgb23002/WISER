@@ -781,9 +781,19 @@ def _edge_texts(edges: Sequence[float]) -> list[str]:
 
 
 def _round_to(value: float, decimals: int) -> str:
-    if decimals == 0:
-        return f"{round(value):,}"
-    return f"{value:,.{decimals}f}"
+    """One renderer for both the county labels and the legend boundaries.
+
+    Delegates to :func:`_format_value` so a quantity is spelled the same way
+    everywhere in one image, and rounds half away from zero. ``round()`` is
+    banker's rounding: it printed 2.5 as "2" and 3.5 as "4", and a legend
+    boundary that disagrees with the county label beside it on .5 is a
+    discrepancy the reader cannot diagnose.
+    """
+    factor = 10**decimals
+    magnitude = math.floor(abs(value) * factor + 0.5) / factor
+    return _format_value(
+        -magnitude if value < 0 else magnitude, "", decimals=decimals
+    )
 
 
 #: Extra tooltip context, shown only when the caller's rows carry it. Storm-scoped
@@ -814,10 +824,14 @@ def _tooltip_text(
     return "; ".join(parts)
 
 
-def _format_value(value: object, unit: str) -> str:
+def _format_value(value: object, unit: str, *, decimals: int | None = None) -> str:
+    """Render a metric value. ``decimals`` pins the precision for band labels."""
     if not _is_number(value):
         return "No data"
     number = float(value)
+    if decimals is not None:
+        text = f"{number:,.{decimals}f}"
+        return f"{text} {unit}".rstrip() if unit else text
     if unit == "m/s":
         return f"{number:.2f} {unit}"
     if "1M" in unit:
