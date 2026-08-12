@@ -238,8 +238,10 @@ def _render_map_panels(result: AnalyticsResult) -> bool:
     st.caption(
         "Both maps share one colour scale, so the same shade means the same "
         "number of outages in each. The legend marks the values the bands run "
-        "between; they widen toward the top end, so a smaller storm still "
-        "shows its own contrast instead of flattening to one colour. Hatched "
+        "between; they widen toward the top end, so a moderately smaller storm "
+        "keeps some of its own contrast. A storm orders of magnitude smaller "
+        "will read as uniformly pale — that is the comparison, not a missing "
+        "layer, and the caption above each map gives its own peak. Hatched "
         "counties have no data, as distinct from a measured zero."
     )
     columns = st.columns(len(panels))

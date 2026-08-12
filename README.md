@@ -227,9 +227,13 @@ streamlit run streamlit_app.py
   colour scale**, so the same shade means the same number in each — scaled
   independently, the smaller storm would paint as dark as the larger one and
   invert the comparison. The ramp runs one hue light-to-dark, and because
-  outage counts are heavily skewed it positions values by `value ** 0.4` so a
-  quiet storm still shows its own contrast instead of flattening to one
-  colour. The SVG legend labels alternate band boundaries with their values —
+  outage counts are heavily skewed it positions values by `value ** 0.4`, which
+  buys a moderately smaller storm back some of its own contrast. It does not
+  rescue every ratio: against a storm several hundred times larger, a quiet
+  storm's counties all land in the first band and its map reads uniformly pale.
+  That is the comparison rather than a missing layer — the caption above each
+  map names that storm's own peak county and value. The SVG legend labels
+  alternate band boundaries with their values —
   both ends always — and counties with no data are drawn as a hatch rather
   than another shade, so "we measured zero" and "we have no measurement" are
   never the same fill. Panels render at their own size with a matching frame,

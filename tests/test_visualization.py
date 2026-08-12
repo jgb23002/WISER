@@ -28,6 +28,7 @@ from wiser.visualization import (  # noqa: E402
 
 from wiser.visualization import (  # noqa: E402
     _edge_texts,
+    _scale_position,
     _format_value,
     _relative_luminance,
 )
@@ -553,6 +554,34 @@ class TestEdgeTextPrecision(unittest.TestCase):
     def test_a_degenerate_range_does_not_chase_precision(self):
         """All-equal edges can never be made distinct; stop at the coarsest."""
         self.assertEqual(_edge_texts([5.0, 5.0, 5.0]), ["5", "5", "5"])
+
+
+class TestCompressionHasALimit(unittest.TestCase):
+    """Pinning a decision, not a defect.
+
+    value ** 0.4 buys a moderately smaller storm back some contrast. At an
+    extreme ratio it cannot, and painting one anyway would assert a variation
+    that does not exist at the scale being compared on. Documented in
+    WISER_DOCUMENTATION.md; pinned here so it stays deliberate.
+    """
+
+    def test_a_moderately_smaller_storm_keeps_its_contrast(self):
+        """The case the compression exists for: roughly 4:1."""
+        positions = {
+            _scale_position(v, 0.0, 171.0, zero_anchored=True) for v in (44, 22, 10, 5)
+        }
+        bands = {min(6, int(p * 7)) for p in positions}
+
+        self.assertGreaterEqual(len(bands), 2, "4:1 should still show structure")
+
+    def test_a_storm_orders_of_magnitude_smaller_reads_as_uniformly_pale(self):
+        """742:1 - storm 2020080406 (5,935) against 2017031606 (8)."""
+        bands = {
+            min(6, int(_scale_position(v, 0.0, 5935.0, zero_anchored=True) * 7))
+            for v in (8, 6, 5, 4, 3, 2, 1)
+        }
+
+        self.assertEqual(bands, {0}, "the quiet storm should read as nothing")
 
 
 if __name__ == "__main__":

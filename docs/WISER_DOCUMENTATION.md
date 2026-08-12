@@ -262,10 +262,18 @@ Colour scale:
 - **Magnitude metrics are compressed, and which ones is declared, not guessed.**
   Outage counts are heavily skewed, so a zero-anchored linear scale spends the
   whole ramp on the top storm. Zero-anchored metrics position values by
-  `value ** 0.4`, which preserves ordering while giving the low end enough ramp
-  to vary. The `zero_anchored` flag on `CountyHeatmapMetric` decides this, so it
+  `value ** 0.4`, which preserves ordering while giving the low end more of the
+  ramp. The `zero_anchored` flag on `CountyHeatmapMetric` decides this, so it
   is a property of the quantity — wind speed has no meaningful zero and stays
   linear — rather than of whether a particular slice happened to contain a zero.
+- **Compression has a limit, and it is not a defect.** It buys back contrast at
+  moderate ratios; it cannot at extreme ones. Storm `2020080406` (peak county
+  5,935) against `2017031606` (peak county 8) is 742:1, and every county of the
+  smaller storm lands in band 0 — positions 0.031 to 0.071, all inside the
+  first band's width. Rendering that storm with visible internal contrast would
+  assert a variation that is not there at the scale being compared on. The map
+  reads uniformly pale and the panel caption names the storm's own peak county
+  and value, which is where the detail belongs.
 - **The legend labels alternate band boundaries**, since unequal band widths
   cannot be read off the colours. Labelling all eight collided at panel width;
   both ends are always labelled, because a scale whose top is unstated cannot
