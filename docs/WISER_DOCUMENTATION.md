@@ -266,10 +266,21 @@ Colour scale:
   to vary. The `zero_anchored` flag on `CountyHeatmapMetric` decides this, so it
   is a property of the quantity — wind speed has no meaningful zero and stays
   linear — rather than of whether a particular slice happened to contain a zero.
-- **The legend states the value range of every band**, since unequal band widths
-  cannot be read off the colours, and carries a separate key for counties with
-  no data. A map with no spread in it collapses to a single swatch naming the
+- **The legend labels alternate band boundaries**, since unequal band widths
+  cannot be read off the colours. Labelling all eight collided at panel width;
+  both ends are always labelled, because a scale whose top is unstated cannot
+  be read. A map with no spread in it collapses to a single swatch naming the
   value instead of repeating one range across seven bands.
+- **No data is a texture, not a shade.** A hatch over an opaque warm base,
+  against a cool ramp. Any single grey can collide with some step of a
+  seven-step ramp — the previous one sat at 1.04:1 against the ramp's lightest
+  colour — so the distinction is carried by texture and survives greyscale.
+- **Comparison panels render at their own size.** Type in an SVG is sized in
+  viewBox units, so it only arrives at its declared size when the viewBox
+  matches the frame. `PANEL_MAP_WIDTH`/`PANEL_MAP_HEIGHT` and a frame of equal
+  height keep the browser's scale at 1; squeezing the full-width map into a
+  column scaled the labels to roughly half, and no font size can compensate
+  for a transform applied after it.
 - **Label ink flips on dark fills**, so the heaviest counties do not carry
   near-black text on a near-black fill.
 

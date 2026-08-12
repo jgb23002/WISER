@@ -229,8 +229,11 @@ streamlit run streamlit_app.py
   invert the comparison. The ramp runs one hue light-to-dark, and because
   outage counts are heavily skewed it positions values by `value ** 0.4` so a
   quiet storm still shows its own contrast instead of flattening to one
-  colour. The SVG legend states the value range each band covers, and carries
-  a separate key for counties with no data.
+  colour. The SVG legend labels alternate band boundaries with their values —
+  both ends always — and counties with no data are drawn as a hatch rather
+  than another shade, so "we measured zero" and "we have no measurement" are
+  never the same fill. Panels render at their own size with a matching frame,
+  so nothing is scaled down and the labels arrive at the size they were set.
 - Without an `OPENAI_API_KEY`, a banner explains that analytics fall back to
   fixed queries and impact summaries use the local extractive mode — the app
   keeps working, nothing crashes.

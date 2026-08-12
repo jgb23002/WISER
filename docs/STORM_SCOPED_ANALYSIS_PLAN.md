@@ -1251,7 +1251,16 @@ changes behaviour the plan specified, not because it was planned.
    hit their 28px floor it drops to its own row instead of being pushed off the
    canvas.
 
-**Still open at the time of writing:** the legend re-layout (panel-sized viewBox
-plus alternate-edge band labels, so the band ranges survive being drawn at ~40%
-scale in a two-column panel) and a hatch fill for no-data, whose grey currently
-sits within 1.04:1 contrast of the ramp's lightest colour.
+**The rest of that review, closed afterwards:**
+
+| Commit | Finding |
+|---|---|
+| `53ab762` | Band labels were set at 10px and then the map was scaled to ~0.5 to fit a column; panels now render at their own size against a matching frame, and alternate boundaries carry the value |
+| `fe16c37` | No-data grey sat at 1.04:1 against the ramp's lightest colour; it is now a hatch over a warm base at 1.26:1 minimum against the whole ramp |
+| `1c17b00` | A below-resolution difference dropped its sign, on exactly the rows where both value columns print the same number |
+| `830662a` | "peaks at 12.35 in Fairfield" read the county as inches; the county is named first and the unit comes from the registry |
+| `b430be7` | The tooltip omitted the storm-scoped `outage` column, and the legend header printed "1M ohLine" twice |
+| `b951208` | Two number formatters in one image, one of them using banker's rounding |
+| `e18dae1` | The precision loop tested the previous iteration's result; tooltip units were copied out of the registry |
+
+All fifteen findings from that review are now closed.
