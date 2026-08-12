@@ -101,10 +101,6 @@ class TestCountyVisualization(unittest.TestCase):
             county_metric_rows(self.conn, "bogus_metric")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestSharedColourScale(unittest.TestCase):
     """Two maps shown together must be comparable by colour."""
 
@@ -220,3 +216,7 @@ class TestSharedColourScale(unittest.TestCase):
 
     def test_outage_is_a_supported_metric(self):
         self.assertIn("outage", COUNTY_HEATMAP_METRICS)
+
+
+if __name__ == "__main__":
+    unittest.main()
