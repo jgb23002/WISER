@@ -24,13 +24,16 @@ from typing import Any, Sequence
 from wiser.agents.storm_reasoning_agent import normalized_ranking_divergence
 from wiser.storm_analysis import (
     COMPARISON_THRESHOLD_MS,
+    METRIC_MAX_GUST,
     METRIC_MAX_PRECIP,
     METRIC_MAX_WIND,
     METRIC_OUTAGE,
     ForecastComparison,
+    StormGroupAnalysis,
     StormComparison,
     StormRanking,
     StormSummary,
+    ThresholdAnalysis,
 )
 from wiser.units import (
     format_count,
@@ -52,6 +55,7 @@ PHASE_2_UNAVAILABLE = "not available — requires external storm metadata (Phase
 MODELED_WIND_LABEL = "[modeled, AFWA peakWSPD10]"
 MODELED_PRECIP_LABEL = "[modeled, AFWA]"
 MODELED_GUST_LABEL = "[modeled, AFWA wgt thresholds]"
+PEAK_GUST_LABEL = "[source peakGUST10]"
 
 OUTAGE_UNIT_NOTE = "trouble spots dispatched"
 
@@ -59,6 +63,8 @@ REPORT_STORM_SUMMARY = "storm_summary"
 REPORT_STORM_RANKING = "storm_ranking"
 REPORT_STORM_COMPARISON = "storm_comparison"
 REPORT_FORECAST_COMPARISON = "forecast_comparison"
+REPORT_STORM_GROUP_ANALYSIS = "storm_group_analysis"
+REPORT_THRESHOLD_ANALYSIS = "threshold_analysis"
 
 
 # Reports are pasted into slides and screenshotted, where nothing re-wraps for
@@ -130,10 +136,16 @@ def render_storm_summary(
         f"  Peak snowfall:       {PHASE_2_UNAVAILABLE}",
     ]
 
-    # Gust EXPOSURE is measured (hours above a threshold); gust MAGNITUDE is
-    # not. The line states the threshold as a floor and never a peak value, and
-    # is omitted entirely when no threshold was crossed.
-    if summary.gust_exposure is not None:
+    if summary.wind_gust_ms is not None:
+        lines.append(
+            f"  Peak wind gust:      {_county_measure(summary.wind_gust_ms, format_mph)}"
+            f"  {PEAK_GUST_LABEL}"
+        )
+        if summary.gust_exposure is not None:
+            lines.append(
+                f"  Wind gust exposure:  {_gust_exposure_text(summary.gust_exposure)}"
+            )
+    elif summary.gust_exposure is not None:
         lines.append(f"  Wind gust exposure:  {_gust_exposure_text(summary.gust_exposure)}")
     else:
         lines.append(f"  Peak wind gust:      {PHASE_2_UNAVAILABLE}")
@@ -217,12 +229,15 @@ def _relative_impact_sentence(summary: StormSummary) -> str:
 
 
 def _summary_caveat(summary: StormSummary) -> str:
-    gust_note = (
-        " Gust exposure is hours above a threshold, a measured floor — the peak "
-        "gust magnitude is not in the schema."
-        if summary.gust_exposure is not None
-        else ""
-    )
+    if summary.wind_gust_ms is not None:
+        gust_note = " Peak gust magnitude is reported from peakGUST10 when source data provides it."
+    elif summary.gust_exposure is not None:
+        gust_note = (
+            " Gust exposure is hours above a threshold, a measured floor; these "
+            "legacy rows do not provide peak gust magnitude."
+        )
+    else:
+        gust_note = ""
     return (
         f"Caveat: county-level values ({len(summary.counties)} "
         f"{'county' if len(summary.counties) == 1 else 'counties'} in scope); "
@@ -371,6 +386,7 @@ def _scale_sentence(comparison: StormComparison) -> str:
 _COMPARISON_FORMATTERS = {
     METRIC_OUTAGE: (format_count, format_signed),
     METRIC_MAX_WIND: (format_mph, lambda value: _signed_unit(value, format_mph)),
+    METRIC_MAX_GUST: (format_mph, lambda value: _signed_unit(value, format_mph)),
     METRIC_MAX_PRECIP: (format_inches, lambda value: _signed_unit(value, format_inches)),
 }
 
@@ -782,6 +798,207 @@ def _forecast_caveat(comparison: ForecastComparison) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Sponsor follow-up — period/group/region and threshold reports
+# ---------------------------------------------------------------------------
+
+
+def render_storm_group_analysis(analysis: StormGroupAnalysis) -> StormReport:
+    lines = [
+        analysis.title,
+        f"Scope: {analysis.scope_label}",
+        "",
+    ]
+    lines.extend(_group_summary_table(analysis))
+    lines.extend(["", *_group_comparison_bullets(analysis), "", _group_caveat(analysis)])
+    return StormReport(
+        kind=REPORT_STORM_GROUP_ANALYSIS,
+        text=_wrap(lines),
+        rows=list(analysis.rows),
+    )
+
+
+def render_threshold_analysis(analysis: ThresholdAnalysis) -> StormReport:
+    lines = [
+        analysis.title,
+        f"Scope: {analysis.scope_label}",
+        (
+            f"Matched {format_count(analysis.matched_rows)} county-storm rows "
+            f"across {format_count(analysis.matched_storms)} storms and "
+            f"{format_count(analysis.matched_counties)} counties."
+        ),
+        "",
+    ]
+    if analysis.rows:
+        lines.extend(_threshold_table(analysis))
+    else:
+        lines.append("No rows exceeded the requested threshold in this scope.")
+    lines.extend(["", _threshold_caveat(analysis)])
+    return StormReport(
+        kind=REPORT_THRESHOLD_ANALYSIS,
+        text=_wrap(lines),
+        rows=list(analysis.rows),
+    )
+
+
+def _group_summary_table(analysis: StormGroupAnalysis) -> list[str]:
+    rows = [
+        f"  {'Group':<18}{'Storms':>8}{'Outages':>12}{'Avg/storm':>12}"
+        f"{'Peak wind':>12}{'Peak gust':>12}{'Max rain':>12}{'Gust h >13':>12}"
+    ]
+    for row in analysis.rows:
+        rows.append(
+            f"  {str(row['group'])[:18]:<18}"
+            f"{format_count(row['storm_count']):>8}"
+            f"{format_count(row['total_outage']):>12}"
+            f"{format_count(row['avg_outage_per_storm']):>12}"
+            f"{format_mph(row['peak_wind_ms']):>12}"
+            f"{format_mph(row.get('peak_gust_ms')):>12}"
+            f"{format_inches(row['max_precip_mm']):>12}"
+            f"{format_count(row['gust_hours_13']):>12}"
+        )
+    return rows
+
+
+def _group_comparison_bullets(analysis: StormGroupAnalysis) -> list[str]:
+    summaries = [row for row in analysis.rows if int(row["storm_count"]) > 0]
+    if not summaries:
+        return ["No storms matched this grouping in the current database."]
+
+    bullets: list[str] = []
+    outage_leader = max(summaries, key=lambda row: int(row["total_outage"]))
+    bullets.append(
+        f"Highest total outage group: {outage_leader['group']} "
+        f"with {format_count(outage_leader['total_outage'])} outages."
+    )
+
+    intensity_candidates = [
+        row for row in summaries if isinstance(row["peak_wind_ms"], (int, float))
+    ]
+    if intensity_candidates:
+        wind_leader = max(
+            intensity_candidates, key=lambda row: float(row["peak_wind_ms"])
+        )
+        bullets.append(
+            f"Highest modeled peak wind group: {wind_leader['group']} "
+            f"at {format_mph(wind_leader['peak_wind_ms'])}."
+        )
+
+    gust_candidates = [
+        row for row in summaries if isinstance(row.get("peak_gust_ms"), (int, float))
+    ]
+    if gust_candidates:
+        gust_leader = max(gust_candidates, key=lambda row: float(row["peak_gust_ms"]))
+        bullets.append(
+            f"Highest peak gust group: {gust_leader['group']} "
+            f"at {format_mph(gust_leader['peak_gust_ms'])}."
+        )
+
+    humidity_candidates = [
+        row for row in summaries if isinstance(row.get("max_humidity"), (int, float))
+    ]
+    if humidity_candidates:
+        humidity_leader = max(
+            humidity_candidates, key=lambda row: float(row["max_humidity"])
+        )
+        bullets.append(
+            f"Highest humidity group: {humidity_leader['group']} "
+            f"at {float(humidity_leader['max_humidity']):,.1f}%."
+        )
+
+    if len(summaries) == 2:
+        first, second = summaries
+        difference = int(first["total_outage"]) - int(second["total_outage"])
+        if difference:
+            leader, trailer = (first, second) if difference > 0 else (second, first)
+            bullets.append(
+                f"{leader['group']} has {format_count(abs(difference))} more "
+                f"outages than {trailer['group']} in this dataset."
+            )
+        else:
+            bullets.append("The two groups have the same total outage count.")
+
+    return [f"  - {bullet}" for bullet in bullets]
+
+
+def _threshold_table(analysis: ThresholdAnalysis) -> list[str]:
+    rows = [
+        f"  {'Storm':<12}{'Date':<12}{'County':<14}{'Metric':>12}{'Outages':>12}"
+    ]
+    for row in analysis.rows:
+        rows.append(
+            f"  {row['stormCode']:<12}"
+            f"{row['date']:<12}"
+            f"{str(row['county'])[:14]:<14}"
+            f"{_threshold_metric_display(analysis, row['metric_value']):>12}"
+            f"{format_count(row['outage']):>12}"
+        )
+    return rows
+
+
+def _threshold_metric_display(
+    analysis: ThresholdAnalysis,
+    value: object,
+) -> str:
+    key = analysis.threshold.metric_key
+    if key == "peakWSPD10":
+        return format_mph(value)
+    if key == "peakGUST10":
+        if analysis.used_gust_exposure_fallback:
+            return f"{format_count(value)} h"
+        return format_mph(value)
+    if key == "sumAFWA_TOTPRECIP":
+        return format_inches(value)
+    if key == "humidity":
+        return f"{float(value):,.1f}%" if isinstance(value, (int, float)) else "not available"
+    return format_count(value)
+
+
+def _group_caveat(analysis: StormGroupAnalysis) -> str:
+    region_note = (
+        " Regional groups use WISER default Connecticut county groupings; "
+        "sponsor service territories require sponsor-provided mapping data."
+        if analysis.group_by == "region" or analysis.region_rows
+        else ""
+    )
+    source_note = (
+        " Current-month groups use staged rows from CurrentWeatherObservation "
+        "when those rows are loaded."
+        if any(row.get("source") == "current_weather" for row in analysis.rows)
+        else ""
+    )
+    return (
+        "Caveat: grouped storm analytics use the current event-level "
+        "storm-county WeatherData table. Hourly peak timing and future metrics "
+        "such as humidity require the hourly source dataset."
+        f"{source_note}{region_note}"
+    )
+
+
+def _threshold_caveat(analysis: ThresholdAnalysis) -> str:
+    if analysis.source == "current_weather":
+        return (
+            "Caveat: this threshold check uses staged current-month observations "
+            "from CurrentWeatherObservation, not the historical WeatherData storm table."
+        )
+    if analysis.used_gust_exposure_fallback:
+        return (
+            "Caveat: gust checks use available wgt* threshold-hour columns, so "
+            "the result means hours above the nearest supported modeled gust "
+            "threshold, not an observed peak gust magnitude."
+        )
+    if analysis.threshold.metric_key == "peakGUST10":
+        return (
+            "Caveat: gust checks use peakGUST10 magnitude when source rows provide "
+            "it. Older historical rows may still have this field empty."
+        )
+    return (
+        "Caveat: threshold checks use event-level storm-county values from the "
+        "current WeatherData table. Hourly timing requires the hourly source "
+        "dataset."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Structured rows
 # ---------------------------------------------------------------------------
 
@@ -803,6 +1020,8 @@ def county_rows(summary: StormSummary) -> list[dict[str, Any]]:
                 "outage": row.outage,
                 "peakWSPD10": row.peak_wind_ms,
                 "peak_wind_mph": ms_to_mph(row.peak_wind_ms),
+                "peakGUST10": row.peak_gust_ms,
+                "peak_gust_mph": ms_to_mph(row.peak_gust_ms),
                 "sumAFWA_TOTPRECIP": row.precip_mm,
                 "precip_in": mm_to_inches(row.precip_mm),
                 "wgt5": row.wgt5,
@@ -984,6 +1203,10 @@ def display_rows(report: StormReport, *, forecast_wind_ms: float | None = None):
         return [
             _forecast_display_row(row, forecast_wind_ms) for row in report.rows
         ]
+    if report.kind == REPORT_STORM_GROUP_ANALYSIS:
+        return [_group_display_row(row) for row in report.rows]
+    if report.kind == REPORT_THRESHOLD_ANALYSIS:
+        return [_threshold_display_row(row) for row in report.rows]
     return report.rows
 
 
@@ -992,6 +1215,7 @@ def _summary_display_row(row: dict[str, Any]) -> dict[str, Any]:
         "County": row["county"],
         "Outages": format_count(row["outage"]),
         "Peak wind": format_mph(row["peakWSPD10"]),
+        "Peak gust": format_mph(row.get("peakGUST10")),
         "Rainfall": format_inches(row["sumAFWA_TOTPRECIP"]),
         "Hours gust >9 m/s": row["wgt9"],
         "Hours gust >13 m/s": row["wgt13"],
@@ -1049,6 +1273,62 @@ def _forecast_display_row(
     return display
 
 
+def _group_display_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "Group": row["group"],
+        "Region": row["region"] or "Statewide",
+        "Storms": format_count(row["storm_count"]),
+        "Counties": format_count(row["county_count"]),
+        "Outages": format_count(row["total_outage"]),
+        "Avg outages/storm": format_count(row["avg_outage_per_storm"]),
+        "Median outages/storm": format_count(row["median_outage_per_storm"]),
+        "Peak storm outages": format_count(row["max_storm_outage"]),
+        "Peak storm": row["max_storm_code"] or UNAVAILABLE_DISPLAY,
+        "Peak wind": format_mph(row["peak_wind_ms"]),
+        "Peak gust": format_mph(row.get("peak_gust_ms")),
+        "Max rain": format_inches(row["max_precip_mm"]),
+        "Avg rain": format_inches(row["avg_precip_mm"]),
+        "Max humidity": (
+            f"{float(row['max_humidity']):,.1f}%"
+            if isinstance(row.get("max_humidity"), (int, float))
+            else UNAVAILABLE_DISPLAY
+        ),
+        "Avg humidity": (
+            f"{float(row['avg_humidity']):,.1f}%"
+            if isinstance(row.get("avg_humidity"), (int, float))
+            else UNAVAILABLE_DISPLAY
+        ),
+        "Gust hours >9 m/s": format_count(row["gust_hours_9"]),
+        "Gust hours >13 m/s": format_count(row["gust_hours_13"]),
+        "Outages per 1M ohLine": _round_or_dash(
+            row["outage_per_million_ohline"], 1
+        ),
+    }
+
+
+def _threshold_display_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "Storm": row["stormCode"],
+        "Date": row["date"],
+        "County": row["county"],
+        "Metric": row["metric"],
+        "Value": _round_or_dash(row["metric_value"], 2),
+        "Threshold": row["threshold"],
+        "Outages": format_count(row["outage"]),
+        "Peak wind": format_mph(row["peakWSPD10"]),
+        "Peak gust": format_mph(row.get("peakGUST10")),
+        "Rainfall": format_inches(row["sumAFWA_TOTPRECIP"]),
+        "Humidity": (
+            f"{float(row['humidity']):,.1f}%"
+            if isinstance(row.get("humidity"), (int, float))
+            else UNAVAILABLE_DISPLAY
+        ),
+        "Gust hours >9 m/s": format_count(row["wgt9"]),
+        "Gust hours >13 m/s": format_count(row["wgt13"]),
+        "Gust hours >18 m/s": format_count(row["wgt18"]),
+    }
+
+
 UNAVAILABLE_DISPLAY = "—"
 
 
@@ -1060,6 +1340,8 @@ def _round_or_dash(value: object, digits: int) -> object:
 
 def _metric_display(metric: str, value: float | None) -> str:
     if metric == METRIC_MAX_WIND:
+        return format_mph(value)
+    if metric == METRIC_MAX_GUST:
         return format_mph(value)
     if metric == METRIC_MAX_PRECIP:
         return format_inches(value)

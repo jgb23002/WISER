@@ -15,6 +15,7 @@ import re
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Sequence, Union
 
@@ -43,28 +44,47 @@ from wiser.rag import DEFAULT_RAG_SOURCES, RagIndexSummary, RagResult
 from wiser import units
 from wiser.storm_analysis import (
     DEFAULT_STATE,
+    MONTH_NAMES,
+    PeriodSpec,
     StormAnalysisError,
+    ThresholdSpec,
+    all_period,
     compare_forecast,
     compare_storms,
+    current_threshold_analysis,
+    current_weather_available,
+    current_weather_group_analysis,
+    month_by_month_analysis,
+    month_period,
+    other_period,
+    region_group_analysis,
     resolve_storm,
     same_date_siblings,
+    season_by_season_analysis,
+    season_period,
     state_counties,
+    storm_group_analysis,
     storm_count,
     storm_ranking,
     storm_summary,
+    threshold_analysis,
 )
 from wiser.storm_reports import (
     DATASET_VINTAGE_NOTE,
     comparison_map_panels,
     REPORT_FORECAST_COMPARISON,
+    REPORT_STORM_GROUP_ANALYSIS,
     REPORT_STORM_COMPARISON,
     REPORT_STORM_RANKING,
     REPORT_STORM_SUMMARY,
+    REPORT_THRESHOLD_ANALYSIS,
     render_forecast_comparison,
+    render_storm_group_analysis,
     render_storm_comparison,
     display_rows,
     render_storm_ranking,
     render_storm_summary,
+    render_threshold_analysis,
 )
 from wiser.visualization import county_metric_rows
 
@@ -83,6 +103,10 @@ EXAMPLE_QUERIES: tuple[str, ...] = (
     "normalize county outages by overhead line exposure",
     "top storms by outage",
     "history for county Hartford",
+    "compare July storms with February storms",
+    "month-by-month storm outages",
+    "regional storm analysis",
+    "which storms had wind above 40mph?",
     "find storms similar to wind=9.2, precip=45 in Fairfield",
     "explain the storm similarity algorithm",
     "impact of the new storm in Connecticut",
@@ -234,6 +258,19 @@ class AnalyticsResult:
     # Two or more county maps meant to be read together, already sharing
     # one colour scale. Surfaces that can show maps render them side by side.
     map_panels: list[object] | None = None
+    charts: list["ChartSpec"] = field(default_factory=list)
+
+
+@dataclass
+class ChartSpec:
+    title: str
+    kind: str  # "bar" | "line" | "histogram" | "scatter"
+    rows: list[dict[str, object]]
+    x: str
+    y: str
+    color: str | None = None
+    x_label: str | None = None
+    y_label: str | None = None
 
 
 @dataclass
@@ -366,6 +403,10 @@ def handle_data_retrieval(ctx: HandlerContext) -> DataRetrievalResult:
 
 
 def handle_weather_analytics(ctx: HandlerContext) -> AnalyticsResult:
+    sponsor_result = _sponsor_group_analytics(ctx)
+    if sponsor_result is not None:
+        return sponsor_result
+
     agent = SqlAiAgent(model=ctx.sql_model, dry_run=ctx.dry_run_sql)
     # getattr: interface tests fake the context with SimpleNamespace objects
     # that may predate the history field.
@@ -530,6 +571,689 @@ def _weather_analytics_fallback(ctx: HandlerContext) -> AnalyticsResult:
             )
         ],
     )
+
+
+def _sponsor_group_analytics(ctx: HandlerContext) -> AnalyticsResult | None:
+    """Deterministic month/season/region/threshold analytics.
+
+    These sponsor-driven questions should work without an OpenAI key and should
+    return chart-ready rows for Streamlit.
+    """
+    if getattr(ctx, "conn", None) is None:
+        return None
+
+    text = ctx.query.lower()
+    if not _looks_like_sponsor_group_query(text):
+        return None
+
+    threshold, threshold_notices = _parse_threshold(ctx.query)
+    periods = _parse_periods(ctx.query)
+    regions = _parse_regions(ctx.query)
+    primary_region = regions[0] if len(regions) == 1 else None
+    county_scope = parse_storm_county(ctx) if not primary_region and len(regions) < 2 else None
+    period = periods[0] if periods else all_period()
+    today = date.today()
+    has_current_month = current_weather_available(
+        ctx.conn, year=today.year, month=today.month
+    )
+
+    if threshold is not None:
+        try:
+            if _should_use_current_threshold(
+                threshold,
+                periods,
+                has_current_month=has_current_month,
+                today=today,
+            ):
+                analysis = current_threshold_analysis(
+                    ctx.conn,
+                    threshold,
+                    year=today.year,
+                    month=today.month,
+                    region=primary_region,
+                    county=county_scope,
+                    limit=ctx.limit,
+                )
+            else:
+                analysis = threshold_analysis(
+                    ctx.conn,
+                    threshold,
+                    period=period,
+                    region=primary_region,
+                    county=county_scope,
+                    limit=ctx.limit,
+                )
+            report = render_threshold_analysis(analysis)
+        except StormAnalysisError as exc:
+            return AnalyticsResult(
+                rows=[],
+                notices=[*threshold_notices, Notice(str(exc), level="error")],
+                report_kind=REPORT_THRESHOLD_ANALYSIS,
+            )
+        return AnalyticsResult(
+            rows=report.rows,
+            display_rows=display_rows(report),
+            report=report.text,
+            report_kind=report.kind,
+            answer=(
+                f"{analysis.matched_rows:,} county-storm rows exceeded "
+                f"{threshold.label} > {threshold.display_threshold}."
+            ),
+            notices=threshold_notices,
+            charts=_threshold_charts(report.rows, threshold),
+        )
+    if threshold_notices and _looks_like_threshold_query(text):
+        return AnalyticsResult(
+            rows=[],
+            notices=threshold_notices,
+            report_kind=REPORT_THRESHOLD_ANALYSIS,
+        )
+
+    try:
+        if len(regions) >= 2:
+            analysis = storm_group_analysis(
+                ctx.conn,
+                (all_period(),),
+                title="Regional storm comparison",
+                group_by="region",
+                region=regions[0],
+            )
+            rows = []
+            distribution = []
+            for region in regions:
+                if _should_use_current_group((period,), today=today, has_current_month=has_current_month):
+                    regional = current_weather_group_analysis(
+                        ctx.conn,
+                        (period,),
+                        current_year=today.year,
+                        current_month=today.month,
+                        title="Regional storm comparison",
+                        group_by="region",
+                        region=region,
+                        county=county_scope,
+                    )
+                else:
+                    regional = storm_group_analysis(
+                        ctx.conn,
+                        (period,),
+                        title="Regional storm comparison",
+                        group_by="region",
+                        region=region,
+                        county=county_scope,
+                    )
+                if regional.rows:
+                    row = dict(regional.rows[0])
+                    row["group"] = region
+                    row["region"] = region
+                    rows.append(row)
+                distribution.extend(regional.distribution_rows)
+            analysis = _replace_group_rows(
+                analysis,
+                title="Regional storm comparison",
+                rows=rows,
+                distribution_rows=distribution,
+                group_by="region",
+            )
+        elif _requests_region_rollup(text) and not primary_region:
+            analysis = region_group_analysis(ctx.conn, period=period)
+        elif _requests_season_trend(text) and not periods:
+            analysis = season_by_season_analysis(
+                ctx.conn, region=primary_region, county=county_scope
+            )
+        elif _requests_month_trend(text) and not periods:
+            analysis = month_by_month_analysis(
+                ctx.conn, region=primary_region, county=county_scope
+            )
+        else:
+            selected_periods = periods
+            if len(selected_periods) == 1 and _requests_comparison_baseline(text):
+                selected_periods = [
+                    selected_periods[0],
+                    other_period(selected_periods[0]),
+                ]
+            if not selected_periods:
+                selected_periods = [all_period()]
+            if _should_use_current_group(
+                tuple(selected_periods),
+                today=today,
+                has_current_month=has_current_month,
+            ):
+                analysis = current_weather_group_analysis(
+                    ctx.conn,
+                    tuple(selected_periods),
+                    current_year=today.year,
+                    current_month=today.month,
+                    title=_group_title(selected_periods),
+                    group_by=selected_periods[0].kind,
+                    region=primary_region,
+                    county=county_scope,
+                )
+            else:
+                analysis = storm_group_analysis(
+                    ctx.conn,
+                    tuple(selected_periods),
+                    title=_group_title(selected_periods),
+                    group_by=selected_periods[0].kind,
+                    region=primary_region,
+                    county=county_scope,
+                )
+        report = render_storm_group_analysis(analysis)
+    except StormAnalysisError as exc:
+        return AnalyticsResult(
+            rows=[],
+            notices=[Notice(str(exc), level="error")],
+            report_kind=REPORT_STORM_GROUP_ANALYSIS,
+        )
+
+    notices = _group_notices(ctx.query, analysis)
+    return AnalyticsResult(
+        rows=report.rows,
+        display_rows=display_rows(report),
+        report=report.text,
+        report_kind=report.kind,
+        answer=report.text.split("\n", 1)[0],
+        notices=notices,
+        charts=_group_charts(analysis),
+    )
+
+
+_MONTH_ALIASES = {
+    "january": 1,
+    "jan": 1,
+    "february": 2,
+    "februrary": 2,
+    "feb": 2,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
+    "may": 5,
+    "june": 6,
+    "jun": 6,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sep": 9,
+    "sept": 9,
+    "october": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "december": 12,
+    "dec": 12,
+}
+_SEASON_ALIASES = {
+    "winter": "winter",
+    "spring": "spring",
+    "summer": "summer",
+    "fall": "fall",
+    "autumn": "fall",
+}
+_REGION_ALIASES = {
+    "north": "Northern CT",
+    "northern": "Northern CT",
+    "northern ct": "Northern CT",
+    "south": "Southern CT",
+    "southern": "Southern CT",
+    "southern ct": "Southern CT",
+    "east": "Eastern CT",
+    "eastern": "Eastern CT",
+    "eastern ct": "Eastern CT",
+    "west": "Western CT",
+    "western": "Western CT",
+    "western ct": "Western CT",
+    "central": "Central CT",
+    "central ct": "Central CT",
+}
+_THRESHOLD_METRICS = {
+    "wind": ("peakWSPD10", "Peak sustained wind", units.SPEED),
+    "winds": ("peakWSPD10", "Peak sustained wind", units.SPEED),
+    "gust": ("peakGUST10", "Peak wind gust", units.SPEED),
+    "gusts": ("peakGUST10", "Peak wind gust", units.SPEED),
+    "precip": ("sumAFWA_TOTPRECIP", "Precipitation", units.DEPTH),
+    "precipitation": ("sumAFWA_TOTPRECIP", "Precipitation", units.DEPTH),
+    "rain": ("sumAFWA_TOTPRECIP", "Precipitation", units.DEPTH),
+    "rainfall": ("sumAFWA_TOTPRECIP", "Precipitation", units.DEPTH),
+    "outage": ("outage", "Outages", units.COUNT),
+    "outages": ("outage", "Outages", units.COUNT),
+    "humidity": ("humidity", "Humidity", units.COUNT),
+}
+_THRESHOLD_PATTERN = re.compile(
+    r"\b(?P<metric>wind|winds|gust|gusts|precipitation|precip|rainfall|rain|"
+    r"outages?|humidity)\b"
+    r"(?:\s+\w+){0,4}?\s*"
+    r"(?:above|over|greater\s+than|more\s+than|exceed(?:s|ed|ing)?|>=|>)\s*"
+    r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>mph|m/s|ms|mps|mm|in|inch|inches|%)?",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_sponsor_group_query(text: str) -> bool:
+    return (
+        _looks_like_threshold_query(text)
+        or _requests_month_trend(text)
+        or _requests_season_trend(text)
+        or _requests_region_rollup(text)
+        or "this month" in text
+        or any(month in text for month in _MONTH_ALIASES)
+        or any(season in text for season in _SEASON_ALIASES)
+    ) and any(
+        word in text
+        for word in (
+            "storm",
+            "storms",
+            "weather",
+            "outage",
+            "outages",
+            "wind",
+            "gust",
+            "precip",
+            "rain",
+            "humidity",
+        )
+    )
+
+
+def _looks_like_threshold_query(text: str) -> bool:
+    return bool(_THRESHOLD_PATTERN.search(text)) or bool(
+        re.search(
+            r"\b(?:wind|gust|precip|rain|outage|humidity)\s*(?:>|>=)\s*\d",
+            text,
+        )
+    )
+
+
+def _requests_month_trend(text: str) -> bool:
+    return any(
+        phrase in text
+        for phrase in (
+            "month by month",
+            "month-to-month",
+            "month to month",
+            "monthly",
+            "by month",
+        )
+    )
+
+
+def _requests_season_trend(text: str) -> bool:
+    return any(
+        phrase in text
+        for phrase in (
+            "season by season",
+            "season-to-season",
+            "season to season",
+            "seasonal",
+            "by season",
+        )
+    )
+
+
+def _requests_region_rollup(text: str) -> bool:
+    return any(
+        phrase in text
+        for phrase in (
+            "regional",
+            "by region",
+            "region by region",
+            "region-to-region",
+            "northern",
+            "southern",
+            "eastern",
+            "western",
+            "central",
+        )
+    )
+
+
+def _requests_comparison_baseline(text: str) -> bool:
+    return any(
+        phrase in text
+        for phrase in (
+            "this month",
+            "more outages",
+            "larger",
+            "more intense",
+            "than",
+            "compare",
+            "comparison",
+        )
+    )
+
+
+def _should_use_current_group(
+    periods: Sequence[PeriodSpec],
+    *,
+    today: date,
+    has_current_month: bool,
+) -> bool:
+    return has_current_month and any(
+        _is_current_month_period(period, today=today) for period in periods
+    )
+
+
+def _should_use_current_threshold(
+    threshold: ThresholdSpec,
+    periods: Sequence[PeriodSpec],
+    *,
+    today: date,
+    has_current_month: bool,
+) -> bool:
+    if not has_current_month:
+        return False
+    if any(_is_current_month_period(period, today=today) for period in periods):
+        return True
+    return threshold.metric_key == "humidity"
+
+
+def _is_current_month_period(period: PeriodSpec, *, today: date) -> bool:
+    return (
+        period.kind == "month"
+        and period.month == today.month
+        and period.year in (None, today.year)
+    )
+
+
+def _parse_periods(query: str) -> list[PeriodSpec]:
+    text = query.lower()
+    periods: list[PeriodSpec] = []
+    if "this month" in text:
+        periods.append(month_period(date.today().month))
+
+    for match in re.finditer(
+        r"\b("
+        + "|".join(re.escape(name) for name in sorted(_MONTH_ALIASES, key=len, reverse=True))
+        + r")\b",
+        text,
+    ):
+        month = _MONTH_ALIASES[match.group(1)]
+        _append_period(periods, month_period(month))
+
+    for match in re.finditer(
+        r"\b(winter|spring|summer|fall|autumn)\b",
+        text,
+    ):
+        _append_period(periods, season_period(_SEASON_ALIASES[match.group(1)]))
+
+    return periods
+
+
+def _append_period(periods: list[PeriodSpec], period: PeriodSpec) -> None:
+    if all(existing.key != period.key for existing in periods):
+        periods.append(period)
+
+
+def _parse_regions(query: str) -> list[str]:
+    text = query.lower()
+    regions: list[str] = []
+    for alias, region in sorted(_REGION_ALIASES.items(), key=lambda item: -len(item[0])):
+        if re.search(rf"\b{re.escape(alias)}\b", text) and region not in regions:
+            regions.append(region)
+    return regions
+
+
+def _parse_threshold(query: str) -> tuple[ThresholdSpec | None, list[Notice]]:
+    match = _THRESHOLD_PATTERN.search(query)
+    if not match:
+        return None, []
+    metric_key, label, dimension = _THRESHOLD_METRICS[match.group("metric").lower()]
+    raw = f"{match.group('value')}{match.group('unit') or ''}"
+    notices: list[Notice] = []
+    if metric_key == "humidity":
+        unit = (match.group("unit") or "%").strip()
+        if unit != "%":
+            return None, [
+                Notice("Humidity thresholds should be percentages, such as humidity > 80%.", level="error")
+            ]
+        threshold = float(match.group("value"))
+    elif dimension == units.COUNT:
+        threshold = float(match.group("value"))
+    else:
+        try:
+            threshold = units.parse_measurement(raw, dimension=dimension)
+        except units.AmbiguousUnitError as exc:
+            return None, [Notice(str(exc), level="error")]
+        except (units.UnknownUnitError, ValueError) as exc:
+            return None, [Notice(str(exc), level="error")]
+
+    comparison_metric = None
+    display_threshold = _threshold_display(metric_key, threshold)
+    if metric_key == "peakGUST10":
+        comparison_metric = _gust_threshold_column(threshold)
+        display_threshold = _threshold_display(metric_key, threshold)
+
+    return (
+        ThresholdSpec(
+            metric_key=metric_key,
+            label=label,
+            stored_threshold=threshold,
+            display_threshold=display_threshold,
+            comparison_metric=comparison_metric,
+        ),
+        notices,
+    )
+
+
+def _gust_threshold_column(threshold_ms: float) -> str | None:
+    for supported in (5, 9, 13, 18):
+        if threshold_ms <= supported:
+            return f"wgt{supported}"
+    return None
+
+
+def _threshold_display(metric_key: str, threshold: float) -> str:
+    if metric_key in {"peakWSPD10", "peakGUST10"}:
+        return units.format_mph(threshold)
+    if metric_key == "sumAFWA_TOTPRECIP":
+        return units.format_inches(threshold)
+    if metric_key == "humidity":
+        return f"{threshold:g}%"
+    return units.format_count(threshold)
+
+
+def _group_title(periods: Sequence[PeriodSpec]) -> str:
+    if len(periods) >= 2:
+        return "Storm group comparison: " + " vs ".join(
+            period.label for period in periods
+        )
+    if periods and periods[0].kind == "baseline":
+        return "Storm group comparison"
+    return "Storm group analysis"
+
+
+def _replace_group_rows(
+    analysis,
+    *,
+    title: str,
+    rows: list[dict[str, object]],
+    distribution_rows: list[dict[str, object]],
+    group_by: str,
+):
+    from dataclasses import replace
+
+    return replace(
+        analysis,
+        title=title,
+        group_by=group_by,
+        rows=tuple(rows),
+        distribution_rows=tuple(distribution_rows),
+    )
+
+
+def _group_notices(query: str, analysis) -> list[Notice]:
+    notices: list[Notice] = []
+    text = query.lower()
+    if "this month" in text:
+        month_name = MONTH_NAMES[date.today().month - 1]
+        if _analysis_uses_current_weather(analysis):
+            notices.append(
+                Notice(
+                    f"Using staged current-weather observations for {month_name} "
+                    f"{date.today().year} from CurrentWeatherObservation."
+                )
+            )
+        else:
+            notices.append(
+                Notice(
+                    f"Interpreting 'this month' as calendar month {month_name} "
+                    "across the historical WISER dataset; no current-month "
+                    "weather observations are loaded in this database."
+                )
+            )
+    if analysis.group_by == "region":
+        notices.append(
+            Notice(
+                "Regional analysis uses WISER default CT county groupings. "
+                "Sponsor service territories need territory mapping data."
+            )
+        )
+    if "humidity" in text and not _analysis_has_metric(analysis, "avg_humidity"):
+        notices.append(
+            Notice(
+                "Humidity is registered for the upcoming mock dataset, but no "
+                "humidity observations are present in the current database.",
+                level="warning",
+            )
+        )
+    return notices
+
+
+def _analysis_uses_current_weather(analysis) -> bool:
+    return any(row.get("source") == "current_weather" for row in analysis.rows)
+
+
+def _analysis_has_metric(analysis, metric: str) -> bool:
+    return any(isinstance(row.get(metric), (int, float)) for row in analysis.rows)
+
+
+def _group_charts(analysis) -> list[ChartSpec]:
+    charts: list[ChartSpec] = []
+    rows = list(analysis.rows)
+    if len(rows) >= 2:
+        charts.extend(
+            [
+                ChartSpec(
+                    title="Outages by group",
+                    kind="bar",
+                    rows=rows,
+                    x="group",
+                    y="total_outage",
+                    x_label=analysis.group_by.capitalize(),
+                    y_label="Total outages",
+                ),
+                ChartSpec(
+                    title="Storm count by group",
+                    kind="bar",
+                    rows=rows,
+                    x="group",
+                    y="storm_count",
+                    x_label=analysis.group_by.capitalize(),
+                    y_label="Storm count",
+                ),
+                ChartSpec(
+                    title="Peak wind by group",
+                    kind="bar",
+                    rows=rows,
+                    x="group",
+                    y="peak_wind_ms",
+                    x_label=analysis.group_by.capitalize(),
+                    y_label="Peak sustained wind (m/s)",
+                ),
+            ]
+        )
+        if any(isinstance(row.get("peak_gust_ms"), (int, float)) for row in rows):
+            charts.append(
+                ChartSpec(
+                    title="Peak gust by group",
+                    kind="bar",
+                    rows=rows,
+                    x="group",
+                    y="peak_gust_ms",
+                    x_label=analysis.group_by.capitalize(),
+                    y_label="Peak wind gust (m/s)",
+                )
+            )
+        if any(isinstance(row.get("max_humidity"), (int, float)) for row in rows):
+            charts.append(
+                ChartSpec(
+                    title="Humidity by group",
+                    kind="bar",
+                    rows=rows,
+                    x="group",
+                    y="max_humidity",
+                    x_label=analysis.group_by.capitalize(),
+                    y_label="Maximum humidity (%)",
+                )
+            )
+    distribution_rows = list(analysis.distribution_rows)
+    if len(distribution_rows) >= 2:
+        charts.append(
+            ChartSpec(
+                title="Storm outage distribution",
+                kind="histogram",
+                rows=distribution_rows,
+                x="outage",
+                y="count",
+                color="group",
+                x_label="Storm outage total",
+                y_label="Storm count",
+            )
+        )
+    if len(rows) >= 2 and analysis.group_by in {"month", "season"}:
+        charts.append(
+            ChartSpec(
+                title="Outage trend",
+                kind="line",
+                rows=rows,
+                x="group",
+                y="total_outage",
+                x_label=analysis.group_by.capitalize(),
+                y_label="Total outages",
+            )
+        )
+    return charts
+
+
+def _threshold_charts(
+    rows: list[dict[str, object]],
+    threshold: ThresholdSpec,
+) -> list[ChartSpec]:
+    if len(rows) < 2:
+        return []
+    return [
+        ChartSpec(
+            title="Threshold exceedances by county",
+            kind="bar",
+            rows=_count_rows(rows, "county"),
+            x="label",
+            y="count",
+            x_label="County",
+            y_label="Matching rows",
+        ),
+        ChartSpec(
+            title="Weather metric vs outages",
+            kind="scatter",
+            rows=rows,
+            x="metric_value",
+            y="outage",
+            color="county",
+            x_label=threshold.label,
+            y_label="Outages",
+        ),
+    ]
+
+
+def _count_rows(rows: list[dict[str, object]], key: str) -> list[dict[str, object]]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        label = str(row.get(key))
+        counts[label] = counts.get(label, 0) + 1
+    return [
+        {"label": label, "count": count}
+        for label, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
 
 
 def _reasoning_comparison_rows(ctx: HandlerContext) -> list[dict[str, object]] | None:

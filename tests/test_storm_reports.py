@@ -290,7 +290,7 @@ class TestStormComparisonReport(unittest.TestCase):
 
     def test_kind_and_rows(self):
         self.assertEqual(self.report.kind, REPORT_STORM_COMPARISON)
-        self.assertEqual(len(self.report.rows), 4)
+        self.assertEqual(len(self.report.rows), 5)
 
     def test_section_order(self):
         positions = _order_of(
@@ -492,7 +492,20 @@ class TestGustExposureIsNeverAPeak(unittest.TestCase):
             [(2020080406, "Fairfield", 30.0, 9.5, 20, 8, 6, 0, 600)]
         )
         self.assertIn("measured floor", text)
-        self.assertIn("peak gust magnitude is not in the schema", text)
+        self.assertIn("legacy rows do not provide peak gust magnitude", text)
+
+    def test_true_peak_gust_renders_when_peakgust10_exists(self):
+        self.conn.execute(
+            "UPDATE WeatherData SET peakGUST10 = ? WHERE stormCode = ? AND county = ?",
+            (18.0, 2020080406, "Fairfield"),
+        )
+        self.conn.commit()
+
+        text = render_storm_summary(storm_summary(self.conn, 2020080406)).text
+
+        self.assertIn("Peak wind gust:", text)
+        self.assertIn("40.3 mph", text)
+        self.assertIn("source peakGUST10", text)
 
 
 class TestComparisonLeadsWithTheLargestDifference(unittest.TestCase):

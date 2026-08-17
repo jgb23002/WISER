@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -175,6 +176,29 @@ class TestHandleWeatherAnalytics(unittest.TestCase):
         )
         self.conn.commit()
 
+    def _insert_storm_weather(
+        self,
+        storm_code: int,
+        event_datetime: str,
+        county: str,
+        *,
+        outage: int,
+        wind: float,
+        precip: float,
+        wgt9: int = 0,
+        wgt13: int = 0,
+    ) -> None:
+        self.conn.execute(
+            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+            (storm_code, event_datetime, 48),
+        )
+        self.conn.execute(
+            "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,"
+            " wgt5, wgt9, wgt13, wgt18, outage) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (storm_code, county, precip, wind, wgt9, wgt9, wgt13, 0, outage),
+        )
+        self.conn.commit()
+
     def test_llm_success_populates_sql_rows_answer(self):
         payload = {
             "sql": "SELECT 1;",
@@ -319,6 +343,165 @@ class TestHandleWeatherAnalytics(unittest.TestCase):
         self.assertEqual(result.rows[0]["county"], "Hartford")
         self.assertEqual(result.rows[0]["stormCode"], 2012102806)
         self.assertIn("non-linear outage relationship", result.reasoning)
+
+    def test_sponsor_month_comparison_bypasses_sql_ai(self):
+        self._insert_storm_weather(
+            2026020100,
+            "2026-02-01 00:00:00",
+            "Fairfield",
+            outage=50,
+            wind=5.0,
+            precip=10.0,
+        )
+        self._insert_storm_weather(
+            2026070100,
+            "2026-07-01 00:00:00",
+            "Fairfield",
+            outage=500,
+            wind=12.0,
+            precip=40.0,
+            wgt9=4,
+            wgt13=1,
+        )
+        ctx = _make_ctx(
+            "how does storms in July and Februrary relate to storms",
+            self.conn,
+        )
+
+        with patch("wiser.agents.sql_ai_agent.SqlAiAgent.run") as mock_sql:
+            result = handle_weather_analytics(ctx)
+
+        mock_sql.assert_not_called()
+        self.assertEqual(result.report_kind, "storm_group_analysis")
+        self.assertIn("July", result.report)
+        self.assertIn("February", result.report)
+        self.assertTrue(result.display_rows)
+        self.assertTrue(any(chart.kind == "histogram" for chart in result.charts))
+
+    def test_sponsor_threshold_query_returns_matches_and_charts(self):
+        ctx = _make_ctx("which storms had wind above 20mph in Fairfield?", self.conn)
+
+        result = handle_weather_analytics(ctx)
+
+        self.assertEqual(result.report_kind, "threshold_analysis")
+        self.assertEqual(result.rows[0]["stormCode"], 2012102806)
+        self.assertEqual(result.rows[0]["county"], "Fairfield")
+        self.assertEqual({row["county"] for row in result.rows}, {"Fairfield"})
+        self.assertTrue(any(chart.kind == "scatter" for chart in result.charts))
+
+    def test_sponsor_region_comparison_uses_default_regions(self):
+        self._insert_county_weather(
+            "Hartford",
+            oh_line=5869550,
+            outage=500,
+            wind=9.0,
+        )
+        ctx = _make_ctx("compare northern and southern storm outages", self.conn)
+
+        result = handle_weather_analytics(ctx)
+
+        self.assertEqual(result.report_kind, "storm_group_analysis")
+        groups = {row["group"] for row in result.rows}
+        self.assertIn("Northern CT", groups)
+        self.assertIn("Southern CT", groups)
+        self.assertTrue(result.charts)
+
+    def test_this_month_query_uses_current_weather_when_loaded(self):
+        today = date.today()
+        observed_at = f"{today.year:04d}-{today.month:02d}-11 14:00:00"
+        self.conn.execute(
+            """
+            INSERT INTO CurrentWeatherObservation(
+                sourceSystem,
+                sourceRecordId,
+                observedAt,
+                county,
+                state,
+                peakWSPD10,
+                peakGUST10,
+                sumAFWA_TOTPRECIP,
+                humidity,
+                outage,
+                rawPayload
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "mock_feed",
+                "obs-1",
+                observed_at,
+                "Fairfield",
+                "CT",
+                9.0,
+                17.0,
+                10.0,
+                82.0,
+                44,
+                "{}",
+            ),
+        )
+        self.conn.commit()
+        ctx = _make_ctx("does the weather this month caused more outages?", self.conn)
+
+        result = handle_weather_analytics(ctx)
+
+        self.assertEqual(result.report_kind, "storm_group_analysis")
+        self.assertEqual(result.rows[0]["source"], "current_weather")
+        self.assertEqual(result.rows[0]["total_outage"], 44)
+        self.assertTrue(
+            any("Using staged current-weather observations" in notice.text for notice in result.notices)
+        )
+
+    def test_humidity_threshold_uses_current_weather_when_loaded(self):
+        today = date.today()
+        observed_at = f"{today.year:04d}-{today.month:02d}-11 14:00:00"
+        self.conn.execute(
+            """
+            INSERT INTO CurrentWeatherObservation(
+                sourceSystem,
+                sourceRecordId,
+                observedAt,
+                county,
+                state,
+                peakWSPD10,
+                peakGUST10,
+                sumAFWA_TOTPRECIP,
+                humidity,
+                outage,
+                rawPayload
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "mock_feed",
+                "obs-1",
+                observed_at,
+                "Fairfield",
+                "CT",
+                9.0,
+                17.0,
+                10.0,
+                82.0,
+                44,
+                "{}",
+            ),
+        )
+        self.conn.commit()
+        ctx = _make_ctx("which storms had humidity above 80%?", self.conn)
+
+        result = handle_weather_analytics(ctx)
+
+        self.assertEqual(result.report_kind, "threshold_analysis")
+        self.assertEqual(result.rows[0]["source"], "current_weather")
+        self.assertEqual(result.rows[0]["metric_value"], 82.0)
+
+    def test_humidity_threshold_returns_current_dataset_gap(self):
+        ctx = _make_ctx("which storms had humidity above 80%?", self.conn)
+
+        result = handle_weather_analytics(ctx)
+
+        self.assertEqual(result.report_kind, "threshold_analysis")
+        self.assertEqual(result.rows, [])
+        self.assertEqual(result.notices[0].level, "error")
+        self.assertIn("humidity observations", result.notices[0].text)
 
 
 # ---------------------------------------------------------------------------

@@ -70,6 +70,20 @@ class TestSchemaStructure(unittest.TestCase):
         )
         self.assertIsNotNone(cursor.fetchone())
 
+    def test_sponsor_support_tables_exist(self):
+        """Test that region, metric, and hourly support tables exist."""
+        for table_name in (
+            "RegionCountyMapping",
+            "StormMetricDefinition",
+            "HourlyWeatherObservation",
+        ):
+            with self.subTest(table=table_name):
+                cursor = self.conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                    (table_name,),
+                )
+                self.assertIsNotNone(cursor.fetchone())
+
     def test_storm_columns(self):
         """Test Storm table has correct columns."""
         cursor = self.conn.execute("PRAGMA table_info(Storm)")
@@ -140,6 +154,33 @@ class TestSchemaStructure(unittest.TestCase):
         for col_name, col_type in expected_columns.items():
             self.assertIn(col_name, columns)
             self.assertEqual(columns[col_name], col_type)
+
+    def test_hourly_weather_columns(self):
+        """Test HourlyWeatherObservation supports long-form hourly metrics."""
+        cursor = self.conn.execute("PRAGMA table_info(HourlyWeatherObservation)")
+        columns = {row[1]: row[2] for row in cursor.fetchall()}
+
+        expected_columns = {
+            "stormCode": "BIGINT",
+            "county": "VARCHAR(64)",
+            "hourOffset": "INTEGER",
+            "metricKey": "TEXT",
+            "metricValue": "REAL",
+            "observedAt": "TIMESTAMP",
+            "sourceColumn": "TEXT",
+        }
+
+        for col_name, col_type in expected_columns.items():
+            self.assertIn(col_name, columns)
+            self.assertEqual(columns[col_name], col_type)
+
+    def test_region_and_metric_indexes_exist(self):
+        cursor = self.conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        index_names = {row[0] for row in cursor.fetchall()}
+
+        self.assertIn("idx_region_county_state", index_names)
+        self.assertIn("idx_hourly_weather_storm_county_hour", index_names)
+        self.assertIn("idx_hourly_weather_metric", index_names)
 
     def test_storm_primary_key(self):
         """Test Storm has correct primary key."""

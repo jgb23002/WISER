@@ -163,6 +163,55 @@ class TaskRoutingAgent:
         "difference between",
         "differ",
     }
+    GROUP_ANALYTICS_CUES = {
+        "month",
+        "monthly",
+        "month to month",
+        "month-to-month",
+        "season",
+        "seasonal",
+        "season to season",
+        "season-to-season",
+        "year to year",
+        "year-to-year",
+        "threshold",
+        "above",
+        "over",
+        "greater than",
+        "exceed",
+        "exceeded",
+        "exceeds",
+        "intense",
+        "intensity",
+        "large",
+        "larger",
+        "region",
+        "regional",
+        "northern",
+        "southern",
+        "eastern",
+        "western",
+        "central",
+        "histogram",
+        "bar chart",
+        "plot",
+        "graph",
+    }
+    MONTH_CUES = {
+        "january",
+        "february",
+        "februrary",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    }
 
     # ISO dates only at the routing layer. Looser date forms ("8/4/2020",
     # "August 4 2020") are the handler's job, where a parse failure can
@@ -185,6 +234,11 @@ class TaskRoutingAgent:
         storm_decision = self._storm_intent(query, text)
         if storm_decision is not None:
             return storm_decision
+        if self._looks_like_group_analytics(text):
+            return RouteDecision(
+                route=Route.WEATHER_ANALYTICS,
+                reason="Matched storm group/time-window analytics keywords.",
+            )
         # RAG first: explanation queries match via "explain", "how does",
         # "algorithm", etc.  Numeric param queries are excluded so
         # "find storm similarity wind=9.2" reaches SIMILARITY_SEARCH below.
@@ -362,4 +416,29 @@ class TaskRoutingAgent:
             return True
         return "retrieve" in text and self._matches_word(
             text, self.DATA_METADATA_KEYWORDS
+        )
+
+    def _looks_like_group_analytics(self, text: str) -> bool:
+        has_group_cue = any(keyword in text for keyword in self.GROUP_ANALYTICS_CUES)
+        has_month = any(month in text for month in self.MONTH_CUES)
+        has_storm_or_weather = self._matches_word(
+            text,
+            (
+                "storm",
+                "storms",
+                "weather",
+                "outage",
+                "outages",
+                "wind",
+                "gust",
+                "precip",
+                "precipitation",
+                "rain",
+                "humidity",
+            ),
+        )
+        if (has_group_cue or has_month) and has_storm_or_weather:
+            return True
+        return bool(
+            re.search(r"\b(?:wind|gust|precip|rain|outage|humidity)\s*(?:>|>=)\s*\d", text)
         )

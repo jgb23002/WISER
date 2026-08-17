@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import json
+import re
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +21,52 @@ EXPECTED_COLUMNS = [
     "wgt18",
     "outage",
 ]
+
+HOURLY_WINDOW_HOURS = 48
+HOURLY_COLUMN_PATTERN = re.compile(
+    r"^(?P<metric>[A-Za-z][A-Za-z0-9_]*?)[_-]?(?:h|hr|hour)(?P<hour>[0-4]?\d)$",
+    re.IGNORECASE,
+)
+HOURLY_METRIC_ALIASES = {
+    "wind": "peakWSPD10",
+    "windspeed": "peakWSPD10",
+    "wind_speed": "peakWSPD10",
+    "peakwspd10": "peakWSPD10",
+    "precip": "sumAFWA_TOTPRECIP",
+    "precipitation": "sumAFWA_TOTPRECIP",
+    "rain": "sumAFWA_TOTPRECIP",
+    "rainfall": "sumAFWA_TOTPRECIP",
+    "humidity": "humidity",
+    "rh": "humidity",
+    "gust": "gust",
+    "peakgust": "peakGUST10",
+    "peak_gust": "peakGUST10",
+    "peakgust10": "peakGUST10",
+    "peak_gust10": "peakGUST10",
+}
+PEAK_GUST_ALIASES = (
+    "peakGUST10",
+    "peakGust",
+    "peak_gust",
+    "windGust",
+    "wind_gust",
+    "gust",
+    "maxGust",
+    "max_gust",
+)
+CURRENT_OBSERVED_AT_ALIASES = ("observedAt", "timestamp", "time", "dateTime", "datetime")
+CURRENT_COUNTY_ALIASES = ("county", "County")
+CURRENT_STATE_ALIASES = ("state", "State")
+CURRENT_WIND_ALIASES = ("peakWSPD10", "wind", "windSpeed", "wind_speed")
+CURRENT_PRECIP_ALIASES = (
+    "sumAFWA_TOTPRECIP",
+    "precip",
+    "precipitation",
+    "rain",
+    "rainfall",
+)
+CURRENT_HUMIDITY_ALIASES = ("humidity", "relativeHumidity", "relative_humidity", "rh")
+CURRENT_OUTAGE_ALIASES = ("outage", "outages", "outageCount", "outage_count")
 
 
 def parse_event_code(event_code: str) -> tuple[int, datetime, str]:
@@ -83,12 +131,21 @@ def normalize_rows(
             "ohLine": oh_line,
         }
 
+        direct_gust = _optional_float(row, PEAK_GUST_ALIASES)
+        hourly_peak_gust = _peak_hourly_metric(row, "peakGUST10")
         weather_data_rows.append(
             {
                 "stormCode": storm_code,
                 "county": county,
                 "sumAFWA_TOTPRECIP": float(row["sumAFWA_TOTPRECIP"]),
                 "peakWSPD10": float(row["peakWSPD10"]),
+                "peakGUST10": (
+                    direct_gust
+                    if direct_gust is not None
+                    else hourly_peak_gust
+                    if hourly_peak_gust is not None
+                    else _peak_hourly_metric(row, "gust")
+                ),
                 "wgt5": int(row["wgt5"]),
                 "wgt9": int(row["wgt9"]),
                 "wgt13": int(row["wgt13"]),
@@ -103,6 +160,149 @@ def normalize_rows(
         key=lambda item: (int(item["stormCode"]), str(item["county"]))
     )
     return storm_rows, county_rows, weather_data_rows
+
+
+def normalize_current_weather_rows(
+    rows: list[dict[str, str]],
+    *,
+    source_system: str = "current_weather_csv",
+) -> list[dict[str, object]]:
+    """Normalize current/live weather rows into the staging-table shape."""
+    current_rows: list[dict[str, object]] = []
+    for index, row in enumerate(rows, start=1):
+        observed_at = _first_present(row, CURRENT_OBSERVED_AT_ALIASES)
+        county = _first_present(row, CURRENT_COUNTY_ALIASES)
+        if not observed_at:
+            raise ValueError(f"current weather row {index} is missing observedAt")
+        source_record_id = (
+            _first_present(row, ("sourceRecordId", "recordId", "id"))
+            or f"{source_system}:{index}"
+        )
+        current_rows.append(
+            {
+                "sourceSystem": source_system,
+                "sourceRecordId": source_record_id,
+                "observedAt": _normalize_observed_at(observed_at),
+                "county": county or None,
+                "state": _first_present(row, CURRENT_STATE_ALIASES) or "CT",
+                "peakWSPD10": _optional_float(row, CURRENT_WIND_ALIASES),
+                "peakGUST10": _optional_float(row, PEAK_GUST_ALIASES),
+                "sumAFWA_TOTPRECIP": _optional_float(row, CURRENT_PRECIP_ALIASES),
+                "humidity": _optional_float(row, CURRENT_HUMIDITY_ALIASES),
+                "outage": _optional_int(row, CURRENT_OUTAGE_ALIASES),
+                "rawPayload": json.dumps(row, sort_keys=True),
+            }
+        )
+    current_rows.sort(
+        key=lambda item: (
+            str(item["observedAt"]),
+            str(item["county"] or ""),
+            str(item["sourceRecordId"]),
+        )
+    )
+    return current_rows
+
+
+def normalize_hourly_rows(rows: list[dict[str, str]]) -> list[dict[str, object]]:
+    """Normalize future wide hourly source columns into long metric rows.
+
+    The sponsor-mentioned hourly data is expected to carry 48 values per storm
+    window. Source columns can be named like ``wind_h00``, ``gust_hour12``, or
+    ``humidity_hr47``. Unknown metric prefixes are preserved as lowercase keys
+    so mock-data columns can flow into the hourly table without a code change.
+    """
+    hourly_rows: list[dict[str, object]] = []
+    for row in rows:
+        storm_code, event_datetime, _state = parse_event_code(row["eventCode"])
+        county = row["County"]
+        for column, raw_value in row.items():
+            match = HOURLY_COLUMN_PATTERN.match(column)
+            if not match or raw_value in (None, ""):
+                continue
+            hour_offset = int(match.group("hour"))
+            if not 0 <= hour_offset < HOURLY_WINDOW_HOURS:
+                continue
+            metric_key = _canonical_hourly_metric(match.group("metric"))
+            hourly_rows.append(
+                {
+                    "stormCode": storm_code,
+                    "county": county,
+                    "hourOffset": hour_offset,
+                    "metricKey": metric_key,
+                    "metricValue": float(raw_value),
+                    "observedAt": _hourly_timestamp(event_datetime, hour_offset),
+                    "sourceColumn": column,
+                }
+            )
+    hourly_rows.sort(
+        key=lambda item: (
+            int(item["stormCode"]),
+            str(item["county"]),
+            int(item["hourOffset"]),
+            str(item["metricKey"]),
+        )
+    )
+    return hourly_rows
+
+
+def _canonical_hourly_metric(raw: str) -> str:
+    compact = raw.lower().replace("-", "_")
+    compact = re.sub(r"_+", "_", compact).strip("_")
+    return HOURLY_METRIC_ALIASES.get(compact, compact)
+
+
+def _peak_hourly_metric(row: dict[str, str], metric_alias: str) -> float | None:
+    values: list[float] = []
+    for column, raw_value in row.items():
+        match = HOURLY_COLUMN_PATTERN.match(column)
+        if not match or raw_value in (None, ""):
+            continue
+        metric_key = _canonical_hourly_metric(match.group("metric"))
+        if metric_key == metric_alias:
+            values.append(float(raw_value))
+    return max(values) if values else None
+
+
+def _first_present(row: dict[str, str], aliases: tuple[str, ...]) -> str | None:
+    for alias in aliases:
+        value = row.get(alias)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
+def _optional_float(row: dict[str, str], aliases: tuple[str, ...]) -> float | None:
+    value = _first_present(row, aliases)
+    return float(value) if value not in (None, "") else None
+
+
+def _optional_int(row: dict[str, str], aliases: tuple[str, ...]) -> int | None:
+    value = _first_present(row, aliases)
+    return int(float(value)) if value not in (None, "") else None
+
+
+def _normalize_observed_at(raw: str) -> str:
+    text = str(raw).strip()
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d",
+    ):
+        try:
+            return datetime.strptime(text, fmt).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
+    return text
+
+
+def _hourly_timestamp(event_datetime: datetime, hour_offset: int) -> str:
+    from datetime import timedelta
+
+    return (event_datetime + timedelta(hours=hour_offset)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
 
 def write_normalized_csvs(
