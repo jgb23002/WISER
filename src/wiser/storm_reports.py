@@ -43,6 +43,7 @@ from wiser.units import (
     mm_to_inches,
     ms_to_mph,
 )
+from wiser.visualization import is_zero_anchored, metric_unit
 
 # Phase 2 fields: absent from the schema, never inferred.
 PHASE_2_UNAVAILABLE = "not available — requires external storm metadata (Phase 2)"
@@ -411,11 +412,36 @@ def _comparison_table(comparison: StormComparison) -> list[str]:
 
 
 def _signed_unit(value: float | None, formatter) -> str:
-    """'+1.4 mph' — sign from the raw value, unit from the formatter."""
+    """'+1.4 mph' — sign from the raw value, unit from the formatter.
+
+    A gap too small to survive the formatter's rounding is reported as a bound
+    instead of as a signed zero. 22.41 and 22.46 mph print as 22.4 and 22.5,
+    and "-0.0 mph" between them reads as a broken subtraction.
+    """
     if value is None:
         return "not available"
+    sign = "+" if value >= 0 else "-"
     rendered = formatter(abs(value))
-    return f"{'+' if value >= 0 else '-'}{rendered}"
+    if value != 0:
+        below = _below_resolution(rendered)
+        if below is not None:
+            # Keep the sign: this is the one row where both value columns
+            # print the same rounded number, so the Difference column is the
+            # only place the direction of the gap still exists.
+            return f"{sign}{below}"
+    return f"{sign}{rendered}"
+
+
+def _below_resolution(rendered: str) -> str | None:
+    """'0.0 mph' -> '<0.1 mph'. None when the value did not round to zero."""
+    number, _, unit = rendered.partition(" ")
+    try:
+        if float(number.replace(",", "")) != 0:
+            return None
+    except ValueError:
+        return None
+    step = f"{number[:-1]}1" if "." in number else "1"
+    return f"<{step} {unit}".rstrip()
 
 
 # Below this relative gap a metric is not worth calling a difference.
@@ -1059,9 +1085,13 @@ def comparison_map_panels(
 ) -> list[MapPanel]:
     """Two county maps for a storm comparison, on one shared colour scale.
 
-    Scaling each map to its own rows would paint the weaker storm as deep red
-    as the stronger one and invert the comparison being made, so the range
-    spans both storms.
+    Scaling each map to its own rows would paint the weaker storm as deep as
+    the stronger one and invert the comparison being made, so the range spans
+    both storms. For a metric with a meaningful zero it is anchored there
+    rather than at the lowest county in either storm: the floor of a magnitude
+    scale is "no outages", and starting it at, say, 5 makes the quietest county
+    of the quieter storm read as empty. Metrics without such a floor keep their
+    own minimum — see :func:`wiser.visualization.is_zero_anchored`.
     """
     panels: list[tuple[str, str, list[dict[str, Any]]]] = []
     for label, summary in (
@@ -1072,7 +1102,8 @@ def comparison_map_panels(
         panels.append(
             (
                 f"{label} — {summary.storm.date}",
-                f"{format_count(summary.statewide_outage)} {OUTAGE_UNIT_NOTE}",
+                f"{format_count(summary.statewide_outage)} {OUTAGE_UNIT_NOTE}"
+                f"{_peak_county_note(rows, metric)}",
                 rows,
             )
         )
@@ -1083,7 +1114,15 @@ def comparison_map_panels(
         for row in rows
         if isinstance(row.get(metric), (int, float))
     ]
-    shared = (min(values), max(values)) if values else (0.0, 0.0)
+    if not values:
+        shared = (0.0, 0.0)
+    elif is_zero_anchored(metric):
+        shared = (min(0.0, min(values)), max(values))
+    else:
+        # A quantity with no meaningful zero — wind speed, say — has no floor to
+        # anchor to. Forcing one turns a 12–18 m/s spread into a 0–18 scale and
+        # flattens every county into the top bands.
+        shared = (min(values), max(values))
 
     return [
         MapPanel(
@@ -1095,6 +1134,27 @@ def comparison_map_panels(
         )
         for title, subtitle, rows in panels
     ]
+
+
+def _peak_county_note(rows: list[dict[str, Any]], metric: str) -> str:
+    """Where this storm's own maximum sits, and what it was.
+
+    On a scale shared with a much larger storm, a quiet storm's map is faint by
+    design. Naming its own peak next to the map keeps that readable as a
+    comparison rather than as a missing layer.
+    """
+    scored = [row for row in rows if isinstance(row.get(metric), (int, float))]
+    if not scored:
+        return ""
+    peak = max(scored, key=lambda row: float(row[metric]))
+    # County before value: "peaks at 12.35 in Fairfield" reads the county as a
+    # unit, because "in" is also how format_inches spells inches. Naming the
+    # county first leaves no number in front of the preposition.
+    unit = metric_unit(metric)
+    measure = format_count(peak[metric])
+    if unit:
+        measure = f"{measure} {unit}"
+    return f" — peaks in {peak['county']} at {measure}"
 
 
 def forecast_rows(comparison: ForecastComparison) -> list[dict[str, Any]]:
@@ -1175,13 +1235,19 @@ def _ranking_display_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _comparison_display_row(row: dict[str, Any]) -> dict[str, Any]:
-    formatter = _COMPARISON_FORMATTERS.get(row["metric"], (format_count, None))[0]
+    # The Difference column takes the DIFFERENCE formatter, not the value one.
+    # Formatting a difference as a value drops the sign and turns a gap too
+    # small to print into a bare "0.0 mph", which is the same defect the text
+    # report was fixed for — this table is just the other rendering of it.
+    value_fmt, diff_fmt = _COMPARISON_FORMATTERS.get(
+        row["metric"], (format_count, format_signed)
+    )
     percent = row["percent_change"]
     return {
         "Metric": row["label"],
-        "Storm A": formatter(row["storm_a"]),
-        "Storm B": formatter(row["storm_b"]),
-        "Difference": formatter(row["difference"])
+        "Storm A": value_fmt(row["storm_a"]),
+        "Storm B": value_fmt(row["storm_b"]),
+        "Difference": diff_fmt(row["difference"])
         if row["difference"] is not None
         else UNAVAILABLE_DISPLAY,
         "Change": f"{percent:+,.0f}%" if percent is not None else "—",

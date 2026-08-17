@@ -1,6 +1,6 @@
 # WISER Documentation
 
-WISER, Weather Integrated Storm Event Response, is a Connecticut storm outage analytics system built around a small multi-agent architecture. It ingests raw storm CSV data, normalizes it into SQLite, answers natural-language analytics questions, finds historically similar storms, retrieves grounded project/external context, and can stage EagleEye/National Grid-style outage CSV exports with source provenance.
+WISER, Weather Integrated Storm Event Response, is a Connecticut storm outage analytics system built around a small multi-agent architecture. It ingests raw storm CSV data, normalizes it into SQLite, answers natural-language analytics questions, writes storm-scoped reports for a single storm or a pair, finds historically similar storms, retrieves grounded project/external context, and can stage EagleEye/National Grid-style outage CSV exports with source provenance.
 
 ## System Overview
 
@@ -24,6 +24,12 @@ flowchart TD
     DB --> VIZ
     ROUTER -->|similarity_search| SIM[SimilarityQueryAgent]
     SIM --> DB
+    ROUTER -->|storm_summary / storm_ranking / storm_comparison| SA[storm_analysis]
+    SA --> DB
+    SA --> REPORTS[storm_reports]
+    REPORTS --> UNITS[units: metric to imperial]
+    REPORTS --> VIZ
+    UNITS --> OUT
     ROUTER -->|rag_knowledge| RAG
     REASON --> OUT[Structured result]
     VIZ --> UI[Streamlit]
@@ -99,7 +105,7 @@ python3 scripts/bootstrap_wiser.py
 
 | Agent | Responsibility | Guardrail |
 |---|---|---|
-| `TaskRoutingAgent` | Classifies user intent into route enums. | Ground-truth fixture with 46 route cases. |
+| `TaskRoutingAgent` | Classifies user intent into route enums. | Ground-truth fixture with 68 route cases. |
 | `DataRetrievalProcessingAgent` | Builds/refreshes normalized CSVs and SQLite DB. | Schema and table-count tests. |
 | `SqlAiAgent` | Converts natural language analytics questions into SQLite `SELECT` queries. | Read-only validation and semantic SQL tests. |
 | `StormReasoningAgent` | Explains validated SQL/fallback rows with row-grounded reasoning and caveats. | Prompt/fallback tests. |
@@ -107,14 +113,17 @@ python3 scripts/bootstrap_wiser.py
 | `SimilarityQueryAgent` | Finds similar historical storms for a county. | Feature parsing and math tests. |
 | `RAGKnowledgeAgent` | Answers grounded documentation/context questions. | Citations and context tests. |
 
-Route priority:
+Route priority, as implemented in `TaskRoutingAgent.route`:
 
-1. RAG explanation/documentation queries, unless numeric similarity parameters are present.
-2. Similarity search when query uses similarity wording or known feature aliases.
-3. Explicit data-management commands such as build, load, file/database normalize, ingest, refresh, raw, or CSV.
-4. Weather analytics.
-5. Data/database metadata fallback.
-6. Unknown route with examples.
+1. Storm-scoped intents (summary, ranking, comparison). These run first because their verbs — "summarize", "compare", "rank" — are already owned by the RAG and similarity routes. An identifier gate inside keeps them from firing on anything that does not name a storm, and the gate yields to explicit data-management phrasing so `"load the raw storm csv 2020080406"` stays a data command.
+2. RAG explanation/documentation queries, unless numeric similarity parameters are present.
+3. Similarity search when query uses similarity wording or known feature aliases.
+4. Explicit data-management commands such as build, load, file/database normalize, ingest, refresh, raw, or CSV.
+5. Weather analytics.
+6. Data/database metadata fallback.
+7. Unknown route with examples.
+
+Documentation verbs deliberately do *not* block a storm intent — that behaviour is pinned by fixture `routing_guard_002`.
 
 Evaluate routing:
 
@@ -164,10 +173,57 @@ OpenAI configuration is read from the repo-root `.env` or environment:
 
 ```dotenv
 OPENAI_API_KEY=...
-WISER_OPENAI_MODEL=gpt-5.5
+WISER_OPENAI_MODEL=gpt-4o-mini
 ```
 
+`WISER_OPENAI_MODEL` overrides the model for every component that calls OpenAI.
+Left unset, the built-in defaults differ by component: `gpt-4o-mini` for SQL
+generation (`DEFAULT_SQL_MODEL`) and analytical reasoning
+(`DEFAULT_REASONING_MODEL`), `gpt-5.5` for impact summarization
+(`DEFAULT_OPENAI_MODEL` in `openai_summarizer.py`). `--sql-model` and
+`--openai-model` override the SQL and summarizer models for a single run.
+
 Never commit API keys.
+
+## Storm-Scoped Reports
+
+A query that names a specific storm routes away from ad-hoc SQL and into two
+modules: `src/wiser/storm_analysis.py` computes, `src/wiser/storm_reports.py`
+renders. A storm is named by 10-digit code (`2020080406`) or by date
+(`2020-08-04`); when a date resolves to more than one storm, the reports say so
+rather than silently picking one.
+
+| Capability | Route | What the report contains |
+|---|---|---|
+| 1 — Storm Summary | `storm_summary` | Statewide and per-county impact for one storm, its analysis window, and a relative-impact sentence. |
+| 2 — Storm Ranking | `storm_ranking` | Where the storm sits in the historical record, by percentile, per metric. |
+| 3 — Storm Comparison | `storm_comparison` | *Mode A*: two stored storms, metric by metric. *Mode B*: an inbound forecast against its closest historical analogues. |
+
+Rules the reports hold to:
+
+- **Units convert only at the boundary.** The database stores metric
+  (`m/s`, `mm`); reports render imperial (`mph`, `inches`) through
+  `src/wiser/units.py`. Nothing upstream of rendering sees imperial values.
+- **Forecast unit suffixes must touch the number.** `wind=12ms` and
+  `precip=1.2in` parse; a detached suffix does not, because
+  `"precip=1.2 in Fairfield"` would otherwise read the preposition as inches.
+- **An analogue's outage is history, never a forecast.** Mode B reports label
+  analogue outcomes as recorded history. A named reference storm in Mode B
+  renders as "Named reference storm (actual)" beside the analogues.
+- **Modeled values are labelled as modeled.** `peakWSPD10` and
+  `sumAFWA_TOTPRECIP` are AFWA model output, not station observations, and
+  carry `[modeled, …]` labels.
+- **Absent metadata is stated, not inferred.** Storm type, peak snowfall, and
+  wind gusts need the Phase 2 metadata table that has not been built, so
+  Capability 1 renders them as explicitly unavailable.
+- **Differences below display resolution say so.** Two values that render
+  identically report `<0.1 mph` rather than a spurious difference.
+
+Reasoning is attached to the summary only: its rows are county-shaped, which is
+what the reasoning layer reads. Ranking and comparison rows are metric-shaped
+and already carry their interpretation, computed deterministically.
+
+Design record and as-built notes: [STORM_SCOPED_ANALYSIS_PLAN.md](STORM_SCOPED_ANALYSIS_PLAN.md).
 
 ## County Heat Maps
 
@@ -178,18 +234,63 @@ The Streamlit app includes a `County heat maps` tab. It loads
 `Fairfield`, `Hartford`, `Litchfield`, `Middlesex`, `New Haven`, `New London`,
 `Tolland`, `Windham`
 
-Supported heat-map metrics:
+Supported heat-map metrics, registered in `COUNTY_HEATMAP_METRICS`:
 
-- total outage trouble spots
-- average outage trouble spots
-- peak outage trouble spots
-- average peak wind speed
-- maximum peak wind speed
-- outage trouble spots per 1,000,000 `ohLine`
+| Key | Metric | Zero-anchored |
+|---|---|---|
+| `outage` | outage trouble spots for a single storm | yes |
+| `total_outage` | total outage trouble spots | yes |
+| `avg_outage` | average outage trouble spots | yes |
+| `peak_outage` | peak outage trouble spots | yes |
+| `avg_peak_wind` | average peak wind speed | no |
+| `max_peak_wind` | maximum peak wind speed | no |
+| `outage_per_million_ohline` | outage trouble spots per 1,000,000 `ohLine` | yes |
 
 The renderer is dependency-free: `src/wiser/visualization.py` loads GeoJSON,
 aggregates county metrics from SQLite, projects lon/lat coordinates into an
 inline SVG, and includes a legend plus county tooltips.
+
+Colour scale:
+
+- **One hue, light to dark.** The quantity is a magnitude, so the colour has to
+  order itself the way the numbers do. An earlier blue→orange→red ramp read as
+  three categories rather than one scale.
+- **Two maps shown together share one range.** Scaled to themselves, a storm
+  with 975 outages paints as dark as one with 21,557 and inverts the comparison
+  the reader is making. `render_county_heatmap_svg(..., value_range=...)` pins
+  the scale; `comparison_map_panels` computes the range across both panels.
+- **Magnitude metrics are compressed, and which ones is declared, not guessed.**
+  Outage counts are heavily skewed, so a zero-anchored linear scale spends the
+  whole ramp on the top storm. Zero-anchored metrics position values by
+  `value ** 0.4`, which preserves ordering while giving the low end more of the
+  ramp. The `zero_anchored` flag on `CountyHeatmapMetric` decides this, so it
+  is a property of the quantity — wind speed has no meaningful zero and stays
+  linear — rather than of whether a particular slice happened to contain a zero.
+- **Compression has a limit, and it is not a defect.** It buys back contrast at
+  moderate ratios; it cannot at extreme ones. Storm `2020080406` (peak county
+  5,935) against `2017031606` (peak county 8) is 742:1, and every county of the
+  smaller storm lands in band 0 — positions 0.031 to 0.071, all inside the
+  first band's width. Rendering that storm with visible internal contrast would
+  assert a variation that is not there at the scale being compared on. The map
+  reads uniformly pale and the panel caption names the storm's own peak county
+  and value, which is where the detail belongs.
+- **The legend labels alternate band boundaries**, since unequal band widths
+  cannot be read off the colours. Labelling all eight collided at panel width;
+  both ends are always labelled, because a scale whose top is unstated cannot
+  be read. A map with no spread in it collapses to a single swatch naming the
+  value instead of repeating one range across seven bands.
+- **No data is a texture, not a shade.** A hatch over an opaque warm base,
+  against a cool ramp. Any single grey can collide with some step of a
+  seven-step ramp — the previous one sat at 1.04:1 against the ramp's lightest
+  colour — so the distinction is carried by texture and survives greyscale.
+- **Comparison panels render at their own size.** Type in an SVG is sized in
+  viewBox units, so it only arrives at its declared size when the viewBox
+  matches the frame. `PANEL_MAP_WIDTH`/`PANEL_MAP_HEIGHT` and a frame of equal
+  height keep the browser's scale at 1; squeezing the full-width map into a
+  column scaled the labels to roughly half, and no font size can compensate
+  for a transform applied after it.
+- **Label ink flips on dark fills**, so the heaviest counties do not carry
+  near-black text on a near-black fill.
 
 ## Storm Similarity
 
@@ -328,6 +429,15 @@ python3 scripts/wiser_cli.py "which county was affected the most overall?" --lim
 python3 scripts/wiser_cli.py "normalize outages by population" --limit 8
 ```
 
+Run storm-scoped reports:
+
+```bash
+python3 scripts/wiser_cli.py "storm summary for 2020080406"
+python3 scripts/wiser_cli.py "where does storm 2020080406 rank out of all storms"
+python3 scripts/wiser_cli.py "compare storm 2020080406 and 2011082800"
+python3 scripts/wiser_cli.py "compare an upcoming storm with wind=12ms to storm 2020080406"
+```
+
 Run SQL AI dry-run:
 
 ```bash
@@ -349,7 +459,7 @@ streamlit run streamlit_app.py
 The Streamlit interface includes presentation-ready tabs:
 
 - `Demo status`: routing and SQL ground-truth pass metrics, external feed readiness, and documentation location.
-- `County heat maps`: legacy CT county choropleths for outage, wind, and exposure-normalized metrics.
+- `County heat maps`: legacy CT county choropleths for single-storm outage, outage totals/averages/peaks, wind, and exposure-normalized metrics. A storm comparison draws both panels side by side on one shared colour scale.
 - `External outage staging`: one-click loading for the EagleEye and National Grid sample CSVs plus a preview of staged rows.
 
 For a no-install professor walkthrough, open `mock_interface/index.html`. It
@@ -379,12 +489,18 @@ Important test areas:
 - task routing ground truth
 - SQL AI validation and semantic ground truth
 - storm reasoning prompts and local fallback analysis
-- county heat-map aggregation and SVG rendering
+- exact-output characterization of the local reasoning fallback
+- storm summary/ranking/comparison analysis and Mode B forecast analogues
+- storm report structure, field order, and Mode B labelling
+- metric/imperial conversion and forecast measurement parsing
+- county heat-map aggregation, colour scale, and SVG rendering
 - handler dispatch and fallback behavior
+- conversational memory and sticky routing
 - storm similarity math
 - RAG retrieval and citations
 - external web/PDF parsing
 - EagleEye/National Grid CSV parser and staging-table loading
+- regression pins for previously shipped code-review fixes
 
 ## Source Map
 
@@ -397,6 +513,14 @@ Core code:
 - `src/wiser/rag.py`
 - `src/wiser/external_sources.py`
 - `src/wiser/similarity_engine.py`
+- `src/wiser/similarity.py`
+- `src/wiser/storm_analysis.py`
+- `src/wiser/storm_reports.py`
+- `src/wiser/units.py`
+- `src/wiser/visualization.py`
+- `src/wiser/conversation.py`
+- `src/wiser/cli_helpers.py`
+- `src/wiser/evaluation.py`
 - `src/wiser/integrations/`
 - `src/wiser/agents/`
 

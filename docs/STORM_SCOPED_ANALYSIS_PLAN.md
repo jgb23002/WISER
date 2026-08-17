@@ -16,6 +16,11 @@ Sections revised: §0.1 (new), §3.2, §4.1, §4.3, §4.4, §5, §7.1, §7.4, §
 
 ## 0.1 BLOCKER — process constraint 1 is not currently satisfied
 
+> **Resolved.** The six regression tests landed in `91cfdf9` and `e1b1f35`
+> before step 1, as `tests/test_code_review_regressions.py`. The section below
+> is left as written — it records the state of the repository when the plan was
+> drafted, not today's. See §12.
+
 The instruction was: *"The six code-review fixes must be committed with their
 regression tests written first."*
 
@@ -1205,3 +1210,57 @@ wind gust as explicitly unavailable until it lands.
 **Follow-ups filed by this work:** §8.6 storm-scoped follow-up memory; §4.4.0
 option (b), a storm-level statewide Z-score space for cross-county forecast
 analogues.
+
+### 12.1 After the plan closed
+
+Work that landed on top of the eight steps above. Recorded here because it
+changes behaviour the plan specified, not because it was planned.
+
+| Commit | Change |
+|---|---|
+| `cbe525d` | Demo feedback: gust semantics, percentile scoping, divergence, display |
+| `965674f` | Zero-baseline metrics are described rather than scored; same-date storm siblings flagged |
+| `0a71912` | The same-date sibling warning extended to summaries and disambiguation |
+| `6310a59` | Statewide forecast queries need no county, and honour the units given |
+| `78d4999` | Reasoning unit errors fixed; report prose wrapped for slides |
+| `02a5d79` | Side-by-side county maps for a comparison, on one shared colour scale |
+| `891f5dd` | Sequential one-hue palette, magnitude compression, banded value legend |
+
+**Then a code review of that map work, one commit per finding:**
+
+| Commit | Finding |
+|---|---|
+| `6e93336` | A stray module-level `unittest.main()` hid five test classes from direct runs |
+| `2aecf2a` | A regression guard compared hex strings, so `max()` returned the no-data grey and the assertion held no matter what the scale did |
+| `bd7b128` | The scale curve was inferred from the data (`min_value > 0`) rather than declared by the metric; one county reporting 0 reshaded the whole map, and zero-anchoring every metric flattened wind spreads into the top bands |
+| `42d2df9` | The No-data key was placed past the right edge once the swatches hit their minimum width |
+| `99ee7c0` | A flat range painted every county the darkest colour and labelled all seven legend bands identically |
+| `0807f36` | An unrelated pre-existing crash: one `_render_bar_chart` call site never got the axis labels the signature had required since `cbe525d` |
+
+**Design decisions taken during those fixes**, which the plan did not cover:
+
+1. **`zero_anchored` lives on the metric registry.** Whether a quantity's floor
+   is a meaningful zero is a property of the quantity, so `CountyHeatmapMetric`
+   declares it and `_scale_position`, `_band_edges` and `comparison_map_panels`
+   read it. Anything unregistered defaults to linear.
+2. **A flat map reads as empty at zero, neutral otherwise.** A range with no
+   spread cannot honestly claim either end of the ramp, so zero paints the light
+   end and any other flat value paints mid-ramp, with the legend naming the
+   value outright.
+3. **The No-data key wraps rather than shrinks.** Below the width where swatches
+   hit their 28px floor it drops to its own row instead of being pushed off the
+   canvas.
+
+**The rest of that review, closed afterwards:**
+
+| Commit | Finding |
+|---|---|
+| `53ab762` | Band labels were set at 10px and then the map was scaled to ~0.5 to fit a column; panels now render at their own size against a matching frame, and alternate boundaries carry the value |
+| `fe16c37` | No-data grey sat at 1.04:1 against the ramp's lightest colour; it is now a hatch over a warm base at 1.26:1 minimum against the whole ramp |
+| `1c17b00` | A below-resolution difference dropped its sign, on exactly the rows where both value columns print the same number |
+| `830662a` | "peaks at 12.35 in Fairfield" read the county as inches; the county is named first and the unit comes from the registry |
+| `b430be7` | The tooltip omitted the storm-scoped `outage` column, and the legend header printed "1M ohLine" twice |
+| `b951208` | Two number formatters in one image, one of them using banker's rounding |
+| `e18dae1` | The precision loop tested the previous iteration's result; tooltip units were copied out of the registry |
+
+All fifteen findings from that review are now closed.

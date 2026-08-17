@@ -2,13 +2,15 @@
 
 ![WISER Image](docs/WISER%20Image.png)
 
-**W**eather **I**ntegrated **S**torm **E**vent **R**esponse — a Connecticut storm outage analytics system built on a multi-agent architecture. It ingests raw storm CSV data, normalizes it into a relational SQLite database, answers natural-language analytics queries, and retrieves grounded RAG context from project docs/code. Query it from the CLI or the Streamlit web interface — both are thin renderers over the same shared handler layer (`src/wiser/handlers.py`), so there is exactly one implementation of routing, dispatch, and query logic.
+**W**eather **I**ntegrated **S**torm **E**vent **R**esponse — a Connecticut storm outage analytics system built on a multi-agent architecture. It ingests raw storm CSV data, normalizes it into a relational SQLite database, answers natural-language analytics queries, writes storm-scoped reports (summary, historical ranking, and storm-vs-storm or forecast-vs-history comparison), and retrieves grounded RAG context from project docs/code. Query it from the CLI or the Streamlit web interface — both are thin renderers over the same shared handler layer (`src/wiser/handlers.py`), so there is exactly one implementation of routing, dispatch, and query logic.
 
 > Reference for future integration: [wisermaci.engr.uconn.edu](http://wisermaci.engr.uconn.edu/) — the UConn WISER site (not connected to this repo).
 
 Documentation:
 
-- [WISER documentation](docs/WISER_DOCUMENTATION.md)
+- [WISER documentation](docs/WISER_DOCUMENTATION.md) — architecture, agents, schema, similarity, RAG, integrations
+- [Storm-scoped analysis plan](docs/STORM_SCOPED_ANALYSIS_PLAN.md) — the design record for the storm summary/ranking/comparison capabilities, with an as-built section recording where the build deviated from it
+- [Storm reasoning test cases](docs/storm_reasoning_presentation.md) — worked reasoning examples with their evaluations
 
 ---
 
@@ -94,6 +96,9 @@ python scripts/bootstrap_wiser.py \
 | RAG / knowledge retrieval | `rag`, `docs`, `explain`, `algorithm`, `reference`, `impact`, `hurricane`, `nhc`, `ncei` … | `RAGKnowledgeAgent` plus optional external web/PDF context |
 | Weather analytics | `outage`, `storm`, `county`, `top`, `trend`, `affected`, `normalize`, `population` … | `SqlAiAgent` (LLM → validated read-only SELECT) plus `StormReasoningAgent`; falls back to fixed analytical query wrappers |
 | Similarity search | `similar`, `find similar`, `rank storms`, or parameter patterns (e.g., `wind=`) … | `SimilarityQueryAgent` |
+| Storm summary | `summary/summarize/describe/impact of` + a storm identifier … | `storm_analysis` + `storm_reports` (Capability 1) |
+| Storm ranking | `rank`, `percentile`, `where does … rank` + a storm identifier … | `storm_analysis` + `storm_reports` (Capability 2) |
+| Storm comparison | `compare`, `vs`, `difference between` + two storms, or a forecast (`wind=12ms`) … | `storm_analysis` + `storm_reports` (Capability 3, Mode A/B) |
 
 ```bash
 # Top counties by total outage
@@ -122,6 +127,14 @@ python scripts/wiser_cli.py "find storms similar to wind=9.2 precip=45 in Fairfi
 
 # Ask for a short storm-impact summary from NOAA/NHC/NCEI web/PDF context
 python scripts/wiser_cli.py "impact of the new storm in Connecticut" --limit 5
+
+# Storm-scoped reports: one storm, its place in the record, or two compared
+python scripts/wiser_cli.py "storm summary for 2020080406"
+python scripts/wiser_cli.py "where does storm 2020080406 rank out of all storms"
+python scripts/wiser_cli.py "compare storm 2020080406 and 2011082800"
+
+# Compare an inbound forecast against the historical record (Mode B)
+python scripts/wiser_cli.py "compare an upcoming storm with wind=12ms to storm 2020080406"
 ```
 
 The `--limit` flag controls how many rows are returned for top-N queries (default: 10).
@@ -131,6 +144,14 @@ For similarity searches, `--county` overrides county auto-detection from query t
 Weather-analytics queries are answered in two stages. First, the **SqlAiAgent** generates a SQLite `SELECT`, which is validated (syntax + SELECT-only, via `sqlglot` when installed) and executed against a read-only connection. Then the **StormReasoningAgent** receives only the user question, validated SQL, and returned rows, and explains the pattern with concrete row values and caveats. On validation or API failure, the CLI falls back to fixed analytical query wrappers for top counties, top storms, county history, affected-most summaries, exposure normalization, and county comparisons. Related flags: `--sql-model <id>` picks the OpenAI model for SQL generation (default: `WISER_OPENAI_MODEL` or `gpt-4o-mini`), `--show-sql` prints the generated SQL alongside results, `--show-reasoning-prompt` prints the reasoning prompt built from result rows, and `--dry-run-sql` prints the exact SQL-generation prompt without making an API call.
 
 Population is not currently part of the WISER schema. If a user asks for per-capita normalization, WISER says that explicitly and shows the available infrastructure exposure normalization (`outage_per_million_ohline`) instead of inventing population values.
+
+**Storm-scoped reports.** A query naming a specific storm — by 10-digit code (`2020080406`) or by date (`2020-08-04`) — routes to one of three report capabilities in `storm_analysis.py` and `storm_reports.py` rather than to ad-hoc SQL:
+
+1. **Summary** — statewide and per-county impact for one storm.
+2. **Ranking** — where that storm sits in the historical record, by percentile.
+3. **Comparison** — *Mode A* compares two stored storms; *Mode B* compares an inbound forecast against its closest historical analogues, whose outages are recorded outcomes, never a prediction.
+
+The database stores metric units (`m/s`, `mm`); reports convert to imperial (`mph`, `inches`) at the presentation boundary only, in `units.py`. Forecast inputs accept either system when the suffix is attached to the number (`wind=12ms`, `wind=27mph`, `precip=1.2in`) — a detached token would read `"in Fairfield"` as inches. Fields that need storm metadata WISER does not yet hold (storm type, peak snowfall, wind gusts) are rendered as explicitly unavailable rather than inferred.
 
 **Conversational follow-ups.** `--interactive` (`-i`) starts a multi-turn session where analytics follow-ups reuse the conversation context — each successful turn's question, generated SQL, and answer are replayed to the LLM (last 5 turns), so *"what about Hartford?"* after *"top counties by outage"* resolves correctly. Follow-ups that match no routing keywords stick to the analytics route. Inside the session, `clear` resets the conversation and `exit`/`quit`/Ctrl-D leaves. The Streamlit app has the same behaviour through its chat interface.
 
@@ -200,8 +221,23 @@ streamlit run streamlit_app.py
 - County heat maps use the legacy 8-county Connecticut boundary layer in
   `data/geography/ct_counties_legacy.geojson`, matching the county names in
   the dataset rather than newer planning-region geography. The map can color
-  counties by outage totals, average/peak outage, average/maximum wind speed,
-  or outages normalized by overhead-line exposure, with an SVG legend.
+  counties by single-storm outages, outage totals, average/peak outage,
+  average/maximum wind speed, or outages normalized by overhead-line exposure.
+- A storm comparison draws both counties' maps side by side on **one shared
+  colour scale**, so the same shade means the same number in each — scaled
+  independently, the smaller storm would paint as dark as the larger one and
+  invert the comparison. The ramp runs one hue light-to-dark, and because
+  outage counts are heavily skewed it positions values by `value ** 0.4`, which
+  buys a moderately smaller storm back some of its own contrast. It does not
+  rescue every ratio: against a storm several hundred times larger, a quiet
+  storm's counties all land in the first band and its map reads uniformly pale.
+  That is the comparison rather than a missing layer — the caption above each
+  map names that storm's own peak county and value. The SVG legend labels
+  alternate band boundaries with their values —
+  both ends always — and counties with no data are drawn as a hatch rather
+  than another shade, so "we measured zero" and "we have no measurement" are
+  never the same fill. Panels render at their own size with a matching frame,
+  so nothing is scaled down and the labels arrive at the size they were set.
 - Without an `OPENAI_API_KEY`, a banner explains that analytics fall back to
   fixed queries and impact summaries use the local extractive mode — the app
   keeps working, nothing crashes.
@@ -288,7 +324,7 @@ python3 scripts/wiser_cli.py --evaluate-routing --evaluate-sql
 Expected output:
 
 ```text
-routing: 46/46 passed (100.0%)
+routing: 68/68 passed (100.0%)
 sql: 27/27 passed (100.0%)
 ```
 
@@ -305,6 +341,13 @@ The test files cover the following functionality:
 | `tests/test_sql_ai_agent.py` | Verifies SQL AI agent schema loading, fence stripping, SELECT-only validation, dry-run mode, mocked LLM pipeline, and handler fallback rendering. All LLM calls are mocked. |
 | `tests/test_sql_ai_ground_truth.py` | Runs the SQL AI ground-truth fixture against a deterministic SQLite seed DB and mocked `SqlAiAgent` responses. |
 | `tests/test_storm_reasoning_agent.py` | Verifies row-grounded reasoning prompts, local fallback analysis, population caveats, and wind/outage comparison behavior. |
+| `tests/test_reasoning_characterization.py` | Pins the exact output of every branch of the local reasoning fallback, so a refactor that changes wording has to say so. |
+| `tests/test_units.py` | Metric/imperial conversion and forecast measurement parsing — pure functions, no DB or network. |
+| `tests/test_storm_analysis.py` | Storm summary/ranking/comparison analysis, including Mode B forecast analogues. Each test seeds its own database and asserts on relationships, never on a magnitude from `data/wiser.db`. |
+| `tests/test_storm_reports.py` | Report structure and field order for all four report kinds, with the Mode B labelling rules that keep an analogue's outage from reading as a forecast. |
+| `tests/test_storm_handlers.py` | Storm-scoped handlers return structured dataclasses and never print. |
+| `tests/test_code_review_regressions.py` | One test class per production fix shipped in `7fd6fe4`, so a reintroduced defect fails here rather than in a demo. |
+| `tests/test_conversation_memory.py` | Multi-turn prompt construction, history trimming, sticky routing, and history threading through the analytics handler. |
 | `tests/test_handlers.py` | Verifies the shared handler layer returns structured results (no printing): analytics LLM/fallback/dry-run/reasoning paths, similarity validation errors, RAG answers, dispatch registry. |
 | `tests/test_streamlit_app.py` | Headless Streamlit smoke tests (AppTest): app loads, similarity and dry-run analytics render, errors surface without crashing. Skipped when `streamlit` is not installed. |
 | `tests/test_similarity_algorithm.py` | Validates Z-score calculations, statistics, symmetry, and legacy single-dimension mathematical correctness. |
@@ -325,9 +368,13 @@ WISER/
 │   ├── geography/
 │   │   ├── README.md             # Source notes for the legacy CT county boundary asset
 │   │   └── ct_counties_legacy.geojson
+│   ├── normalized/               # Generated by bootstrap — storm.csv, county.csv, weather_data.csv
+│   ├── wiser.db                  # Generated by bootstrap — the SQLite database
 │   └── testdata.csv              # Raw input — 2,352 storm-county rows
 ├── docs/
 │   ├── WISER_DOCUMENTATION.md    # Combined architecture, agents, schema, similarity, RAG, integrations
+│   ├── STORM_SCOPED_ANALYSIS_PLAN.md  # Design record for the storm capabilities, plus as-built notes
+│   ├── storm_reasoning_presentation.md # Worked reasoning test cases and their evaluations
 │   ├── WISER Database Info.png   # Schema diagram
 │   └── WISER Image.png           # README banner image
 ├── scripts/
@@ -353,6 +400,9 @@ WISER/
 │       ├── rag.py                # RAG document indexing + lexical retrieval
 │       ├── similarity.py         # Text-vector ranking (exact + optional FAISS backend)
 │       ├── similarity_engine.py  # Multi-dimensional L2 Z-score similarity calculations
+│       ├── storm_analysis.py     # Storm summary/ranking/comparison analysis + forecast analogues
+│       ├── storm_reports.py      # Renders those analyses as reports, tables, and map panels
+│       ├── units.py              # Metric↔imperial conversion at the presentation boundary
 │       └── agents/
 │           ├── task_routing_agent.py              # Keyword → route classifier
 │           ├── data_retrieval_processing_agent.py # Orchestrates pipeline + DB build
@@ -368,6 +418,7 @@ WISER/
 │   │   ├── national_grid_sample.csv
 │   │   ├── sql_ai_ground_truth.json
 │   │   └── task_routing_cases.json
+│   ├── test_code_review_regressions.py # One class per production fix shipped in 7fd6fe4
 │   ├── test_conversation_memory.py   # Multi-turn prompts, sticky routing, and REPL tests
 │   ├── test_data_pipeline.py         # Data pipeline and state extraction tests
 │   ├── test_database.py              # Database initialization compatibility tests
@@ -375,7 +426,12 @@ WISER/
 │   ├── test_external_integrations.py # EagleEye/National Grid fixture parser + staging tests
 │   ├── test_openai_summarizer.py     # OpenAI summarizer request/response tests
 │   ├── test_rag.py                   # RAG indexing/retrieval tests
+│   ├── test_reasoning_characterization.py # Exact-output pins for the local reasoning fallback
+│   ├── test_storm_analysis.py        # Storm summary/ranking/comparison + forecast analogue tests
+│   ├── test_storm_handlers.py        # Storm-scoped handler structured-result tests
+│   ├── test_storm_reports.py         # Report structure, field order, and Mode B labelling tests
 │   ├── test_storm_reasoning_agent.py # Row-grounded reasoning prompt/fallback tests
+│   ├── test_units.py                 # Metric/imperial conversion and forecast parsing tests
 │   ├── test_handlers.py              # Shared handler layer structured-result tests
 │   ├── test_schema.py                # 27 schema validation tests
 │   ├── test_sql_ai_agent.py          # SQL AI agent validation, pipeline, and fallback tests
@@ -387,6 +443,8 @@ WISER/
 │   ├── test_similarity_engine.py     # Multi-dimensional similarity engine tests
 │   ├── test_visualization.py         # County heat-map aggregation/rendering tests
 │   └── test_wiser_cli.py             # Similarity parsing and CLI rendering tests
+├── mock_interface/
+│   └── index.html                    # No-install presentation mock of the Streamlit UI
 ├── .env.example                      # Template for OPENAI_API_KEY / WISER_OPENAI_MODEL
 ├── requirements.txt
 ├── streamlit_app.py                  # Streamlit web interface (renders wiser.handlers results)
@@ -421,6 +479,17 @@ TaskRoutingAgent
     |   SimilarityQueryAgent ranks historical storms with weighted L2 Z-score
     |   similarity over up to 6 weather features in similarity_engine.py.
     |
+    |-- STORM_SUMMARY / STORM_RANKING / STORM_COMPARISON
+    |   "storm summary for 2020080406"
+    |   "where does storm 2020080406 rank out of all storms"
+    |   "compare storm 2020080406 and 2011082800"
+    |   "compare an upcoming storm with wind=12ms to storm 2020080406"
+    |   A query naming a storm (10-digit code or date) is analysed in
+    |   storm_analysis.py and rendered by storm_reports.py: impact summary,
+    |   historical percentile, storm-vs-storm (Mode A), or forecast-vs-
+    |   analogues (Mode B). Reports convert to imperial in units.py; fields
+    |   needing metadata WISER lacks render as explicitly unavailable.
+    |
     `-- RAG_KNOWLEDGE
         "explain the storm similarity algorithm"
         "impact of the new storm in Connecticut"
@@ -433,7 +502,7 @@ TaskRoutingAgent
 find_similar_storms.py bypasses TaskRoutingAgent and directly runs
 SimilarityQueryAgent for --county + weather-flag similarity searches.
 
-Handlers for all four routes live in src/wiser/handlers.py and return
+Handlers for every route live in src/wiser/handlers.py and return
 structured result dataclasses. scripts/wiser_cli.py (text) and
 streamlit_app.py (web) are interchangeable renderers over that one layer.
 ```

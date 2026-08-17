@@ -239,6 +239,37 @@ class TestHeatMapFraming(unittest.TestCase):
         self.assertIn("x_label", source)
         self.assertIn("y_label", source)
 
+    def test_every_bar_chart_call_passes_its_labels(self):
+        """The test above pins the signature; this one pins the callers to it.
+
+        The external-staging preview crashed with a TypeError because that one
+        call site was never updated when the labels became required, and a
+        signature-only check cannot see that.
+        """
+        definition = self.functions["_render_bar_chart"]
+        positional = definition.args.args
+        required = [
+            arg.arg
+            for arg in positional[: len(positional) - len(definition.args.defaults)]
+        ]
+        calls = [
+            node
+            for node in self.ast.walk(self.tree)
+            if isinstance(node, self.ast.Call)
+            and isinstance(node.func, self.ast.Name)
+            and node.func.id == "_render_bar_chart"
+        ]
+
+        self.assertTrue(calls, "no _render_bar_chart call sites found")
+        for call in calls:
+            supplied = len(call.args) + len(call.keywords)
+            self.assertEqual(
+                supplied,
+                len(required),
+                f"streamlit_app.py:{call.lineno} passes {supplied} of "
+                f"{len(required)} arguments ({', '.join(required)})",
+            )
+
     def test_single_bar_charts_are_suppressed(self):
         """One bar on the X axis conveys nothing."""
         source = self.ast.dump(self.functions["_render_bar_chart"])

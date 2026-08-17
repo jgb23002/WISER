@@ -56,6 +56,8 @@ from wiser.rag import format_excerpt
 from wiser.visualization import (
     COUNTY_HEATMAP_METRICS,
     CT_LEGACY_COUNTY_SOURCE_URL,
+    PANEL_MAP_HEIGHT,
+    PANEL_MAP_WIDTH,
     available_storm_options,
     county_metric_rows,
     load_county_geojson,
@@ -238,7 +240,12 @@ def _render_map_panels(result: AnalyticsResult) -> bool:
     st.subheader("County heat maps")
     st.caption(
         "Both maps share one colour scale, so the same shade means the same "
-        "number of outages in each."
+        "number of outages in each. The legend marks the values the bands run "
+        "between; they widen toward the top end, so a moderately smaller storm "
+        "keeps some of its own contrast. A storm orders of magnitude smaller "
+        "will read as uniformly pale — that is the comparison, not a missing "
+        "layer, and the caption above each map gives its own peak. Hatched "
+        "counties have no data, as distinct from a measured zero."
     )
     columns = st.columns(len(panels))
     for column, panel in zip(columns, panels):
@@ -252,11 +259,13 @@ def _render_map_panels(result: AnalyticsResult) -> bool:
                     panel.metric,
                     title=panel.title,
                     value_range=panel.value_range,
+                    width=PANEL_MAP_WIDTH,
+                    height=PANEL_MAP_HEIGHT,
                 )
             except Exception as exc:  # noqa: BLE001 - the table remains the source of truth
                 st.warning(f"Map unavailable: {type(exc).__name__}: {exc}")
                 continue
-            _render_svg(svg, height=460)
+            _render_svg(svg, height=_SVG_PANEL_HEIGHT)
     return True
 
 
@@ -613,8 +622,8 @@ def _render_external_preview(db_path: str, *, limit: int) -> None:
     if _has_columns(rows, "sourceRecordId", "outageCount"):
         _render_bar_chart(
             _chart_rows(rows, "sourceRecordId", "outageCount"),
-            "Record",
-            "Outage count",
+            "Source record",
+            "Outages",
         )
 
 
@@ -684,6 +693,11 @@ def _render_county_heatmaps(db_path: str) -> None:
 
 
 _SVG_FRAME_HEIGHT = 620
+#: A comparison panel's frame must equal PANEL_MAP_HEIGHT. preserveAspectRatio
+#: scales by min(frame_w/viewBox_w, frame_h/viewBox_h), so any frame shorter
+#: than the viewBox shrinks the whole drawing — text included — and no font
+#: size can compensate for a transform applied after it.
+_SVG_PANEL_HEIGHT = PANEL_MAP_HEIGHT
 
 # The SVG is served to the iframe as an HTML document. Two things have to be
 # right or the map breaks:
