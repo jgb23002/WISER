@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import sqlite3
+import psycopg
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -22,7 +23,7 @@ class RAGKnowledgeAgent:
 
     def ensure_index(
         self,
-        conn: sqlite3.Connection,
+        conn: psycopg.Connection,
         *,
         rebuild: bool = False,
     ) -> RagIndexSummary:
@@ -35,7 +36,7 @@ class RAGKnowledgeAgent:
 
     def answer(
         self,
-        conn: sqlite3.Connection,
+        conn: psycopg.Connection,
         query: str,
         *,
         limit: int = 5,

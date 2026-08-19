@@ -1,17 +1,14 @@
 """Smoke tests for the Streamlit interface.
 
-Runs the app headlessly via streamlit.testing.v1.AppTest against a temp
-database. No network calls: the analytics scenario uses dry-run mode and
+Runs the app headlessly via streamlit.testing.v1.AppTest against the shared
+PostgreSQL test schema. No network calls: the analytics scenario uses dry-run mode and
 the similarity scenario never touches an LLM. Skipped when streamlit is
 not installed (it is an optional dependency, see requirements.txt).
 """
 
 from __future__ import annotations
 
-import os
-import sqlite3
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -20,8 +17,13 @@ SRC_DIR = REPO_ROOT / "src"
 SCHEMA_PATH = REPO_ROOT / "sql" / "schema.sql"
 APP_PATH = REPO_ROOT / "streamlit_app.py"
 
+TESTS_DIR = Path(__file__).parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from pg_harness import TEST_DSN, make_conn  # noqa: E402
 
 try:
     from streamlit.testing.v1 import AppTest
@@ -31,41 +33,33 @@ except ImportError:
     _STREAMLIT_AVAILABLE = False
 
 
-def _build_temp_db() -> Path:
-    fd, tmp = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    tmp_path = Path(tmp)
-    conn = sqlite3.connect(str(tmp_path))
-    try:
-        conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
-        conn.execute(
-            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
-            (2012102806, "2012-10-28 06:00:00", 72),
-        )
-        conn.execute(
-            "INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Fairfield", 4887830)
-        )
-        conn.execute(
-            "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,"
-            " wgt5, wgt9, wgt13, wgt18, outage) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (2012102806, "Fairfield", 150.5, 12.3, 20, 8, 2, 0, 350),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return tmp_path
+def _build_temp_db() -> None:
+    """Seed the shared test schema.
+
+    This used to create a temp SQLite *file* and hand its path to the app's
+    sidebar. There is no file now: pg_harness pins DATABASE_URL at the test
+    schema, so the app connects there on its own.
+    """
+    conn = make_conn()
+    conn.execute(
+        "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
+        (2012102806, "2012-10-28 06:00:00", 72),
+    )
+    conn.execute(
+        "INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Fairfield", 4887830)
+    )
+    conn.execute(
+        "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,"
+        " wgt5, wgt9, wgt13, wgt18, outage) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (2012102806, "Fairfield", 150.5, 12.3, 20, 8, 2, 0, 350),
+    )
+    conn.commit()
 
 
 @unittest.skipUnless(_STREAMLIT_AVAILABLE, "streamlit is not installed")
 class TestStreamlitApp(unittest.TestCase):
     def setUp(self):
-        self.db_path = _build_temp_db()
-
-    def tearDown(self):
-        try:
-            self.db_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _build_temp_db()
 
     def _start_app(self) -> "AppTest":
         at = AppTest.from_file(str(APP_PATH), default_timeout=60)
@@ -79,7 +73,7 @@ class TestStreamlitApp(unittest.TestCase):
         return match
 
     def _run_query(self, at: "AppTest", query: str) -> "AppTest":
-        self._widget(at.text_input, "SQLite database").set_value(str(self.db_path))
+        self._widget(at.text_input, "PostgreSQL connection URL").set_value(TEST_DSN)
         at.chat_input[0].set_value(query).run()
         self.assertFalse(at.exception, f"app crashed on query: {at.exception}")
         return at

@@ -2,7 +2,7 @@
 
 Every test seeds its own in-memory database. Per the plan's decision on the
 294-vs-312 discrepancy, NO test hardcodes a storm count, storm code, or outage
-magnitude taken from data/wiser.db — assertions are on relationships (rank/
+magnitude taken from the production dataset — assertions are on relationships (rank/
 total consistency, ordering, aggregation identities) so the production dataset
 can land without re-baselining.
 """
@@ -10,8 +10,9 @@ can land without re-baselining.
 from __future__ import annotations
 
 import ast
-import sqlite3
 import sys
+
+import psycopg
 import unittest
 from pathlib import Path
 
@@ -20,8 +21,13 @@ SRC_DIR = REPO_ROOT / "src"
 SCHEMA_PATH = REPO_ROOT / "sql" / "schema.sql"
 MODULE_PATH = SRC_DIR / "wiser" / "storm_analysis.py"
 
+TESTS_DIR = Path(__file__).parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from pg_harness import executemany, make_conn, new_connection  # noqa: E402,F401
 
 from wiser.storm_analysis import (  # noqa: E402
     METRIC_MAX_PRECIP,
@@ -57,24 +63,23 @@ def _make_conn(
     storms=None,
     counties=None,
     weather=None,
-) -> sqlite3.Connection:
+) -> psycopg.Connection:
     """Seed a database. Defaults give three storms across two CT counties."""
     storms = storms if storms is not None else _DEFAULT_STORMS
     counties = counties if counties is not None else _DEFAULT_COUNTIES
     weather = weather if weather is not None else _DEFAULT_WEATHER
 
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(_SCHEMA_SQL)
-    conn.executemany(
-        "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+    conn = make_conn()
+    executemany(conn, 
+        "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
         storms,
     )
-    conn.executemany(
-        "INSERT INTO County(county, state, ohLine) VALUES(?, ?, ?)", counties
+    executemany(conn, 
+        "INSERT INTO County(county, state, ohLine) VALUES(%s, %s, %s)", counties
     )
-    conn.executemany(
+    executemany(conn, 
         "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,"
-        " wgt5, wgt9, wgt13, wgt18, outage) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " wgt5, wgt9, wgt13, wgt18, outage) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
         weather,
     )
     conn.commit()
@@ -263,7 +268,7 @@ class TestSponsorGroupAnalytics(unittest.TestCase):
 
     def test_group_analysis_includes_peak_gust_when_available(self):
         self.conn.execute(
-            "UPDATE WeatherData SET peakGUST10 = ? WHERE stormCode = ? AND county = ?",
+            "UPDATE WeatherData SET peakGUST10 = %s WHERE stormCode = %s AND county = %s",
             (19.0, 2026070100, "Hartford"),
         )
         self.conn.commit()
@@ -281,8 +286,8 @@ class TestSponsorGroupAnalytics(unittest.TestCase):
 
     def test_gust_threshold_uses_peak_magnitude_before_wgt_fallback(self):
         self.conn.execute(
-            "UPDATE WeatherData SET peakGUST10 = ?, wgt18 = ?"
-            " WHERE stormCode = ? AND county = ?",
+            "UPDATE WeatherData SET peakGUST10 = %s, wgt18 = %s"
+            " WHERE stormCode = %s AND county = %s",
             (20.0, 0, 2026070100, "Fairfield"),
         )
         self.conn.commit()
@@ -324,7 +329,7 @@ class TestSponsorGroupAnalytics(unittest.TestCase):
         self.assertEqual({row["metric_value"] for row in analysis.rows}, {5.0, 4.0})
 
     def test_current_weather_group_analysis_replaces_current_month_period(self):
-        self.conn.executemany(
+        executemany(self.conn, 
             """
             INSERT INTO CurrentWeatherObservation(
                 sourceSystem,
@@ -338,7 +343,7 @@ class TestSponsorGroupAnalytics(unittest.TestCase):
                 humidity,
                 outage,
                 rawPayload
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             [
                 (
@@ -404,7 +409,7 @@ class TestSponsorGroupAnalytics(unittest.TestCase):
                 humidity,
                 outage,
                 rawPayload
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 "mock_feed",
@@ -545,7 +550,7 @@ class TestStormSummary(unittest.TestCase):
 
     def test_peak_gust_is_reported_when_source_data_provides_it(self):
         self.conn.execute(
-            "UPDATE WeatherData SET peakGUST10 = ? WHERE stormCode = ? AND county = ?",
+            "UPDATE WeatherData SET peakGUST10 = %s WHERE stormCode = %s AND county = %s",
             (18.0, 2020080406, "Fairfield"),
         )
         self.conn.commit()

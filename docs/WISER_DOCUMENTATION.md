@@ -1,13 +1,13 @@
 # WISER Documentation
 
-WISER, Weather Integrated Storm Event Response, is a Connecticut storm outage analytics system built around a small multi-agent architecture. It ingests raw storm CSV data, normalizes it into SQLite, answers natural-language analytics questions, writes storm-scoped reports for a single storm or a pair, finds historically similar storms, retrieves grounded project/external context, and can stage EagleEye/National Grid-style outage CSV exports with source provenance.
+WISER, Weather Integrated Storm Event Response, is a Connecticut storm outage analytics system built around a small multi-agent architecture. It ingests raw storm CSV data, normalizes it into PostgreSQL, answers natural-language analytics questions, writes storm-scoped reports for a single storm or a pair, finds historically similar storms, retrieves grounded project/external context, and can stage EagleEye/National Grid-style outage CSV exports with source provenance.
 
 ## System Overview
 
 ```mermaid
 flowchart TD
     CSV[data/testdata.csv] --> PIPE[DataRetrievalProcessingAgent]
-    PIPE --> DB[(SQLite: WISER DB)]
+    PIPE --> DB[(PostgreSQL: WISER DB)]
     EXT[EagleEye / National Grid CSV exports] --> STAGE[ExternalOutageObservation]
     STAGE --> DB
     DOCS[README, docs, code, SQL schema] --> RAG[RAGKnowledgeAgent]
@@ -93,7 +93,7 @@ Pipeline flow:
    - weather observations
 3. `write_normalized_csvs()` writes normalized CSV artifacts.
 4. `src/wiser/database.py::initialize_schema()` loads `sql/schema.sql`.
-5. `load_normalized_rows()` populates SQLite.
+5. `load_normalized_rows()` populates PostgreSQL.
 
 Bootstrap command:
 
@@ -106,8 +106,8 @@ python3 scripts/bootstrap_wiser.py
 | Agent | Responsibility | Guardrail |
 |---|---|---|
 | `TaskRoutingAgent` | Classifies user intent into route enums. | Ground-truth fixture with 68 route cases. |
-| `DataRetrievalProcessingAgent` | Builds/refreshes normalized CSVs and SQLite DB. | Schema and table-count tests. |
-| `SqlAiAgent` | Converts natural language analytics questions into SQLite `SELECT` queries. | Read-only validation and semantic SQL tests. |
+| `DataRetrievalProcessingAgent` | Builds/refreshes normalized CSVs and the PostgreSQL database. | Schema and table-count tests. |
+| `SqlAiAgent` | Converts natural language analytics questions into PostgreSQL `SELECT` queries. | Read-only validation and semantic SQL tests. |
 | `StormReasoningAgent` | Explains validated SQL/fallback rows with row-grounded reasoning and caveats. | Prompt/fallback tests. |
 | `StormWeatherAnalyticsAgent` | Deterministic analytics fallback. | Fixed query wrappers. |
 | `SimilarityQueryAgent` | Finds similar historical storms for a county. | Feature parsing and math tests. |
@@ -133,7 +133,7 @@ python3 scripts/wiser_cli.py --evaluate-routing
 
 ## SQL AI Agent
 
-The SQL AI Agent asks an LLM to generate SQLite `SELECT` statements, validates the generated SQL, then executes it through a read-only database connection.
+The SQL AI Agent asks an LLM to generate PostgreSQL `SELECT` statements, validates the generated SQL, then executes it inside a server-enforced read-only transaction.
 
 Rules enforced by code/tests:
 
@@ -247,7 +247,7 @@ Supported heat-map metrics, registered in `COUNTY_HEATMAP_METRICS`:
 | `outage_per_million_ohline` | outage trouble spots per 1,000,000 `ohLine` | yes |
 
 The renderer is dependency-free: `src/wiser/visualization.py` loads GeoJSON,
-aggregates county metrics from SQLite, projects lon/lat coordinates into an
+aggregates county metrics from PostgreSQL, projects lon/lat coordinates into an
 inline SVG, and includes a legend plus county tooltips.
 
 Colour scale:
@@ -384,8 +384,7 @@ Load EagleEye-style CSV:
 python3 scripts/wiser_cli.py \
   --load-external \
   --external-source eagleeye \
-  --external-file tests/fixtures/eagleeye_sample.csv \
-  --db data/wiser.db
+  --external-file tests/fixtures/eagleeye_sample.csv
 ```
 
 Load National Grid-style CSV:
@@ -394,8 +393,7 @@ Load National Grid-style CSV:
 python3 scripts/wiser_cli.py \
   --load-external \
   --external-source national-grid \
-  --external-file tests/fixtures/national_grid_sample.csv \
-  --db data/wiser.db
+  --external-file tests/fixtures/national_grid_sample.csv
 ```
 
 Parser files:

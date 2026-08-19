@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import psycopg
+
+from wiser.database import executemany
 import csv
 import hashlib
 import json
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,11 +101,12 @@ CSV_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
-def ensure_external_outage_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(
+def ensure_external_outage_schema(conn: psycopg.Connection) -> None:
+    # psycopg runs the multi-statement DDL directly when no params are passed.
+    conn.execute(
         """
         CREATE TABLE IF NOT EXISTS ExternalOutageObservation (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             sourceSystem TEXT NOT NULL,
             sourceRecordId TEXT NOT NULL,
             observedAt TIMESTAMP NOT NULL,
@@ -207,7 +210,7 @@ def observation_from_csv_row(
 
 
 def load_external_observations(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     observations: Sequence[ExternalOutageObservation],
 ) -> ExternalLoadSummary:
     ensure_external_outage_schema(conn)
@@ -224,7 +227,8 @@ def load_external_observations(
     # Counted table-wide so a mixed-source batch still yields a correct insert
     # delta; only table_count is scoped to the batch's source.
     count_before = external_observation_count(conn)
-    conn.executemany(
+    executemany(
+            conn,
         """
         INSERT INTO ExternalOutageObservation(
             sourceSystem,
@@ -237,7 +241,7 @@ def load_external_observations(
             restorationStatus,
             rawPayload
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT(sourceSystem, sourceRecordId, observedAt) DO UPDATE SET
             county = excluded.county,
             serviceTerritory = excluded.serviceTerritory,
@@ -286,7 +290,7 @@ def load_external_observations(
 
 
 def external_observation_count(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     *,
     source_system: str | None = None,
 ) -> int:
@@ -296,7 +300,7 @@ def external_observation_count(
             conn.execute(
                 """
                 SELECT COUNT(*) FROM ExternalOutageObservation
-                WHERE sourceSystem = ?
+                WHERE sourceSystem = %s
                 """,
                 (source_system,),
             ).fetchone()[0]
@@ -307,7 +311,7 @@ def external_observation_count(
 
 
 def recent_external_observations(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     *,
     source_system: str | None = None,
     limit: int = 10,
@@ -327,11 +331,11 @@ def recent_external_observations(
     """
     params: tuple[object, ...]
     if source_system:
-        sql += " WHERE sourceSystem = ?"
+        sql += " WHERE sourceSystem = %s"
         params = (source_system, limit)
     else:
         params = (limit,)
-    sql += " ORDER BY observedAt DESC LIMIT ?"
+    sql += " ORDER BY observedAt DESC LIMIT %s"
     rows = conn.execute(sql, params).fetchall()
     return [
         {

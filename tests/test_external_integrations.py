@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import sqlite3
 import sys
+
+import psycopg
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,8 +12,13 @@ SRC_DIR = REPO_ROOT / "src"
 FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures"
 SCHEMA_PATH = REPO_ROOT / "sql" / "schema.sql"
 
+TESTS_DIR = Path(__file__).parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from pg_harness import executemany, make_conn, new_connection  # noqa: E402,F401
 
 from wiser.integrations.eagleeye import parse_eagleeye_csv  # noqa: E402
 from wiser.integrations.external_outage import (  # noqa: E402
@@ -116,8 +122,7 @@ class TestExternalOutageParsers(unittest.TestCase):
 
 class TestExternalOutageDatabase(unittest.TestCase):
     def setUp(self):
-        self.conn = sqlite3.connect(":memory:")
-        self.conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        self.conn = make_conn()
         self.conn.commit()
 
     def tearDown(self):
@@ -126,20 +131,27 @@ class TestExternalOutageDatabase(unittest.TestCase):
     def test_schema_table_and_indexes_exist(self):
         ensure_external_outage_schema(self.conn)
 
+        # information_schema/pg_indexes replace sqlite_master, and both
+        # store the folded identifier.
         tables = {
-            row[0]
+            str(row[0])
             for row in self.conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
+                """
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = current_schema()
+                  AND table_type = 'BASE TABLE'
+                """
             )
         }
         indexes = {
-            row[0]
+            str(row[0])
             for row in self.conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'index'"
+                "SELECT indexname FROM pg_indexes"
+                " WHERE schemaname = current_schema()"
             )
         }
 
-        self.assertIn("ExternalOutageObservation", tables)
+        self.assertIn("externaloutageobservation", tables)
         self.assertIn("idx_external_outage_source_time", indexes)
         self.assertIn("idx_external_outage_county", indexes)
 
@@ -186,7 +198,7 @@ class TestExternalOutageDatabase(unittest.TestCase):
 
     def test_schema_constraints_reject_negative_counts(self):
         ensure_external_outage_schema(self.conn)
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(psycopg.IntegrityError):
             self.conn.execute(
                 """
                 INSERT INTO ExternalOutageObservation(
@@ -196,7 +208,7 @@ class TestExternalOutageDatabase(unittest.TestCase):
                     outageCount,
                     rawPayload
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
                 ("Fixture", "bad", "2026-07-02T18:30:00Z", -1, "{}"),
             )

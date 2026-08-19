@@ -68,7 +68,7 @@ parametrization.
 
 ## 0. What I verified against the live database first
 
-Everything below is measured from `data/wiser.db`, not assumed. Several findings
+Everything below is measured from the WISER database, not assumed. Several findings
 change the design, so they lead.
 
 | Check | Result | Consequence |
@@ -81,7 +81,7 @@ change the design, so they lead.
 | Dates mapping to >1 storm | **3** (`2021-09-01` → `2021090100`, `2021090112`; also `2022-03-31`, `2022-10-13`) | Date input needs real disambiguation, not a TODO. |
 | `MAX(peakWSPD10)` statewide | 13.11 m/s (29.3 mph) | Wind range is narrow; ranking spreads are small. |
 | Storms with any county `wgt13 > 0` | **86 of 294** | Comparison row "counties above 13 m/s" is 0 for 71% of storms. |
-| SQLite version in env | 3.49.1 | Window functions available — ranking can use `RANK() OVER`. |
+| Engine | PostgreSQL 17 | Window functions available — ranking uses `RANK() OVER`. (Originally SQLite 3.49.1; see §2.3.) |
 
 Router probe of realistic new phrasings against the **current** agent:
 
@@ -181,7 +181,7 @@ silently claimed as handled.
    (§2.3). New code rounds in the presentation layer, which is also what the
    unit-conversion requirement asks for.
 5. **Window functions for ranking**, `RANK() OVER (ORDER BY …)` and
-   `COUNT(*) OVER ()`. Verified working on the env's SQLite 3.49.1; supported by
+   `COUNT(*) OVER ()`. Verified working on PostgreSQL 17; supported by
    Postgres since 8.4. This is the portable way to get "5th out of 294" in one
    pass, and it is faster than fetching 294 rows and ranking in Python.
 6. **Row → dataclass by positional index**, never by dict key. Unquoted
@@ -197,26 +197,43 @@ silently claimed as handled.
 
 ### 2.2 One-line hardening worth doing now
 
-`sql_ai_agent._validate_sql` hardcodes `dialect="sqlite"` in the `sqlglot` call.
-Promote it to a module constant `SQL_DIALECT = "sqlite"`. ~3 lines, makes the
-validator's dialect a single edit later.
+`sql_ai_agent._validate_sql` hardcoded `dialect="sqlite"` in the `sqlglot`
+call. It now passes `dialect="postgres"` (see §2.3).
 
-### 2.3 Pre-existing Postgres blockers — backlog, NOT in this change
+### 2.3 Postgres blockers — RESOLVED
 
-Listed so the estimate is honest. None are introduced by this work; all must be
-resolved before a real migration.
+This table was the checklist for the SQLite -> PostgreSQL migration. That
+migration has since landed as a hard cutover; every row below is done.
 
-| Blocker | Location |
+| Blocker | Resolution |
 |---|---|
-| `ROUND(float, n)` — errors on Postgres | `handlers.py:519-527,546-550`, `query_engine.py:23`, `visualization.py:145-149` |
-| `PRAGMA database_list` + `file:…?mode=ro` for read-only exec | `sql_ai_agent.py:403-421` |
-| `strftime('%Y', …)` in the SQL-AI system prompt + 3 few-shot examples | `sql_ai_agent.py:46,99,123-127` |
-| `sqlite_master` introspection | `database.py:30-37` |
-| `AUTOINCREMENT`, `executescript`, `PRAGMA foreign_keys` | `schema.sql`, `database.py:24-26,51-54` |
-| `sqlite3.Connection` annotations throughout | 9 modules |
+| `ROUND(float, n)` — errors on Postgres | Cast at all 12 sites: `ROUND(x::numeric, 2)` |
+| `PRAGMA database_list` + `file:...?mode=ro` for read-only exec | `SET LOCAL transaction_read_only = on` on the same connection; the server rejects writes |
+| `strftime('%Y', ...)` in the SQL-AI prompt + few-shot examples | `EXTRACT(YEAR FROM ...)`, comparing against numbers rather than quoted years |
+| `sqlite_master` introspection | `information_schema.tables` / `.columns`, comparing folded lowercase names |
+| `AUTOINCREMENT`, `executescript`, `PRAGMA foreign_keys` | `GENERATED ALWAYS AS IDENTITY`; parameterless `conn.execute()`; PRAGMAs deleted (Postgres always enforces FKs) |
+| `sqlite3.Connection` annotations throughout | `storm_analysis.DbConnection` for read-only surfaces, `psycopg.Connection` where the code writes and commits |
 
-The SQL-AI prompt one is the nastiest: the LLM is *taught* SQLite dialect, so a
-port needs a prompt variant plus a re-run of `test_sql_ai_ground_truth.py`.
+Four further dialect differences surfaced during execution that this table did
+not anticipate:
+
+* **A SELECT alias cannot be reused in `HAVING`** (or `WHERE`). SQLite allowed
+  `HAVING county_count > 1`; Postgres needs the expression repeated. This was
+  present in the SQL-AI few-shot examples, so the LLM was being taught invalid
+  Postgres.
+* **A failed statement aborts the whole transaction.** Every later statement is
+  refused until rollback, so one bad query in a batch reads as many failures.
+  The evaluation harness now wraps each case in a savepoint.
+* **`datetime('now')` is SQLite-only** — replaced with
+  `to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')` to preserve the
+  exact text format the TEXT column stored.
+* **`ORDER BY <ungrouped column>` in a `GROUP BY` query.** SQLite sorted by an
+  arbitrary row's value; Postgres rejects it. Found in
+  `visualization.county_metric_rows`.
+
+Timestamps are the standing behavioural difference: psycopg returns real
+`datetime` objects where SQLite returned strings. Code that formats them needs
+checking — `f"{dt:<19}"` renders the format spec, not the date.
 
 ---
 
@@ -671,12 +688,13 @@ half-report:
 
 ## 5. Test plan
 
-All new tests use in-memory SQLite seeded from `sql/schema.sql`, matching the
+Tests seed a dedicated PostgreSQL schema from `sql/schema.sql` via
+`tests/pg_harness.py` (originally in-memory SQLite), matching the
 existing `tests/test_handlers.py::_make_conn` pattern. No network.
 **`unittest` only — pytest is not installed in this environment** (§0.1).
 
 **Dataset-independence rule (§8.2).** No test hardcodes a storm count, a storm
-code, an outage magnitude, or a county total from `data/wiser.db`. Every test
+code, an outage magnitude, or a county total from the production dataset. Every test
 seeds its own fixture DB and asserts on *relationships*:
 
 - rank/total consistency — `1 <= rank <= total`, `total == COUNT(DISTINCT stormCode)`
@@ -1198,7 +1216,7 @@ routing change rather than two.
    derive it from `Route`, so a future route fails them until it is wired up.
 
 **Unchanged from plan but worth restating:** `state` is a bound parameter
-throughout; no test hardcodes a storm count or magnitude from `data/wiser.db`;
+throughout; no test hardcodes a storm count or magnitude from the production dataset;
 the portability guard extracts the module's SQL literals with `ast` and asserts
 against those; duration is not rankable and requesting it is refused rather
 than silently substituted.

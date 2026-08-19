@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import io
 import os
-import sqlite3
 import sys
-import tempfile
+
+import psycopg
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -26,9 +26,13 @@ SRC_DIR = REPO_ROOT / "src"
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 SCHEMA_PATH = REPO_ROOT / "sql" / "schema.sql"
 
-for _p in (str(SRC_DIR), str(SCRIPTS_DIR)):
+TESTS_DIR = Path(__file__).parent
+
+for _p in (str(SRC_DIR), str(SCRIPTS_DIR), str(TESTS_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+from pg_harness import make_conn  # noqa: E402
 
 from wiser.agents.sql_ai_agent import (  # noqa: E402
     SqlAiAgent,
@@ -55,49 +59,39 @@ _COUNTY_HARTFORD = ("Hartford", 5869550)
 _WD_FAIRFIELD = (2012102806, "Fairfield", 150.5, 12.3, 20, 8, 2, 0, 350)
 
 
-def _make_memory_conn() -> sqlite3.Connection:
+def _make_memory_conn() -> psycopg.Connection:
     """In-memory DB — suitable for tests that do NOT call _execute_ro."""
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(_SCHEMA_SQL)
+    conn = make_conn()
     conn.commit()
-    conn.execute("INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)", _STORM_ROW)
-    conn.execute("INSERT INTO County(county, ohLine) VALUES(?, ?)", _COUNTY_FAIRFIELD)
-    conn.execute("INSERT INTO County(county, ohLine) VALUES(?, ?)", _COUNTY_HARTFORD)
+    conn.execute("INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)", _STORM_ROW)
+    conn.execute("INSERT INTO County(county, ohLine) VALUES(%s, %s)", _COUNTY_FAIRFIELD)
+    conn.execute("INSERT INTO County(county, ohLine) VALUES(%s, %s)", _COUNTY_HARTFORD)
     conn.execute(
         "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,"
-        " wgt5, wgt9, wgt13, wgt18, outage) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " wgt5, wgt9, wgt13, wgt18, outage) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
         _WD_FAIRFIELD,
     )
     conn.commit()
     return conn
 
 
-def _make_file_conn() -> tuple[sqlite3.Connection, Path]:
-    """Temp-file DB — required for tests that call _execute_ro (needs a real path)."""
-    fd, tmp = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    tmp_path = Path(tmp)
-    conn = sqlite3.connect(str(tmp_path))
-    conn.executescript(_SCHEMA_SQL)
-    conn.commit()
-    conn.execute("INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)", _STORM_ROW)
-    conn.execute("INSERT INTO County(county, ohLine) VALUES(?, ?)", _COUNTY_FAIRFIELD)
-    conn.execute("INSERT INTO County(county, ohLine) VALUES(?, ?)", _COUNTY_HARTFORD)
-    conn.execute(
-        "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,"
-        " wgt5, wgt9, wgt13, wgt18, outage) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        _WD_FAIRFIELD,
-    )
-    conn.commit()
-    return conn, tmp_path
+def _make_file_conn() -> psycopg.Connection:
+    """Alias kept for call-site compatibility.
+
+    Under SQLite this returned a temp-*file* database because ``_execute_ro``
+    reopened the file via a ``file:...?mode=ro`` URI and therefore needed a
+    real path. PostgreSQL enforces read-only inside a transaction on the same
+    connection, so this is now just ``_make_memory_conn``.
+    """
+    return _make_memory_conn()
 
 
-def _make_ctx(query: str, conn: sqlite3.Connection, **overrides) -> SimpleNamespace:
+def _make_ctx(query: str, conn: psycopg.Connection, **overrides) -> SimpleNamespace:
     """Minimal HandlerContext-compatible namespace for handler tests."""
     defaults = dict(
         query=query,
         conn=conn,
-        db_path=":memory:",
+        dsn=None,
         limit=5,
         county=None,
         data_agent=None,
@@ -378,7 +372,7 @@ _EXAMPLE_QUERIES: list[tuple[str, str]] = [
     (
         "How many storms happened between 2010 and 2015?",
         "SELECT COUNT(DISTINCT s.stormCode) AS storm_count FROM Storm s"
-        " WHERE strftime('%Y', s.eventDateTime) BETWEEN '2010' AND '2015';",
+        " WHERE EXTRACT(YEAR FROM s.eventDateTime) BETWEEN 2010 AND 2015;",
     ),
     (
         "Which county had more outages, Fairfield or Hartford?",
@@ -389,7 +383,7 @@ _EXAMPLE_QUERIES: list[tuple[str, str]] = [
     (
         "Which storms hit more than one county?",
         "SELECT stormCode, COUNT(DISTINCT county) AS county_count FROM WeatherData"
-        " GROUP BY stormCode HAVING county_count > 1"
+        " GROUP BY stormCode HAVING COUNT(DISTINCT county) > 1"
         " ORDER BY county_count DESC LIMIT 10;",
     ),
     (
@@ -404,7 +398,7 @@ class TestMockedLlmPipeline(unittest.TestCase):
     """Full pipeline: LLM mocked to return specific SQL for each query type."""
 
     def setUp(self):
-        self.conn, self.db_path = _make_file_conn()
+        self.conn = _make_file_conn()
         self.agent = SqlAiAgent()
         # patch.dict restores any pre-existing key on stop, so a real
         # OPENAI_API_KEY in the environment survives this test class.
@@ -413,11 +407,9 @@ class TestMockedLlmPipeline(unittest.TestCase):
         self.addCleanup(env_patcher.stop)
 
     def tearDown(self):
-        self.conn.close()
-        try:
-            self.db_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        # The harness owns the shared connection and rebuilds the schema on the
+        # next make_conn(); there is no file to unlink.
+        self.conn.rollback()
 
     def _run_with_sql(self, query_text: str, sql: str) -> dict:
         with patch("wiser.agents.sql_ai_agent._call_chat_llm", return_value=sql):

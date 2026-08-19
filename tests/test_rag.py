@@ -1,12 +1,16 @@
-import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 SRC_DIR = Path(__file__).parent.parent / "src"
+TESTS_DIR = Path(__file__).parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from pg_harness import executemany, make_conn, new_connection  # noqa: E402,F401
 
 from wiser.rag import (  # noqa: E402
     answer_rag,
@@ -58,7 +62,7 @@ class TestRagIndexAndSearch(unittest.TestCase):
             "        return ['algorithm', 'wind', 'distance', 'score']\n",
             encoding="utf-8",
         )
-        self.conn = sqlite3.connect(":memory:")
+        self.conn = make_conn()
 
     def tearDown(self):
         self.conn.close()

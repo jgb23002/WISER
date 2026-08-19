@@ -17,9 +17,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import sqlite3
 import sys
 from pathlib import Path
+
+import psycopg
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
@@ -91,7 +92,7 @@ def print_results(
             f"{result['similarity']:<12.1%} "
             f"{result['outage']:<10} "
             f"{feat_vals} "
-            f"{result['eventDateTime']:<19}"
+            f"{str(result['eventDateTime']):<19}"
         )
 
     print("\n" + "=" * 100 + "\n")
@@ -158,9 +159,12 @@ def main() -> None:
         help="Number of similar storms to return (default: 5)",
     )
     parser.add_argument(
-        "--db",
-        default="data/wiser.db",
-        help="Path to SQLite database (default: data/wiser.db)",
+        "--dsn",
+        default=None,
+        help=(
+            "PostgreSQL connection URL "
+            "(default: $DATABASE_URL, else the local Docker Compose instance)."
+        ),
     )
 
     args = parser.parse_args()
@@ -185,7 +189,7 @@ def main() -> None:
         parser.error(err)
 
     try:
-        conn = open_weather_db(args.db)
+        conn = open_weather_db(args.dsn)
         try:
             total = county_historical_count(conn, args.county)
             agent = SimilarityQueryAgent()
@@ -197,11 +201,12 @@ def main() -> None:
 
         print_results(args.county, query_params, results, total_historical=total)
 
-    except FileNotFoundError:
-        print(f"\nError: Database not found at {args.db}")
-        print("Please run: python scripts/bootstrap_wiser.py")
+    except psycopg.OperationalError as e:
+        print(f"\nError: {e}")
+        print("Is PostgreSQL running?  docker compose up -d")
+        print("Then build the schema: python scripts/bootstrap_wiser.py")
         sys.exit(1)
-    except sqlite3.OperationalError as e:
+    except psycopg.Error as e:
         print(f"\nError: {e}")
         sys.exit(1)
     except Exception as e:

@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
-import tempfile
+from datetime import date, datetime
+from decimal import Decimal
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+import psycopg
+from psycopg.rows import dict_row
+
 from wiser.agents.sql_ai_agent import _validate_sql
+from wiser.database import connect
 from wiser.agents.task_routing_agent import TaskRoutingAgent
 
 
@@ -109,16 +114,20 @@ def evaluate_sql_ground_truth(
     if not isinstance(fixture, dict) or "cases" not in fixture:
         raise ValueError("SQL fixture must contain a top-level 'cases' list.")
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        db_path = Path(tmp_dir) / "sql_ground_truth.db"
-        conn = sqlite3.connect(str(db_path))
-        try:
-            build_sql_fixture_database(conn, fixture, schema_path=schema_path)
-            results = [
-                _evaluate_sql_case(conn, case) for case in fixture["cases"]
-            ]
-        finally:
-            conn.close()
+    # PostgreSQL has no throwaway file database. A uniquely named schema gives
+    # the same isolation: the fixture tables live there and are dropped after.
+    schema_name = f"wiser_eval_{secrets.token_hex(8)}"
+    conn = connect()
+    try:
+        conn.execute(f"CREATE SCHEMA {schema_name}")
+        conn.execute(f"SET search_path TO {schema_name}")
+        conn.commit()
+        build_sql_fixture_database(conn, fixture, schema_path=schema_path)
+        results = [
+            _evaluate_sql_case(conn, case) for case in fixture["cases"]
+        ]
+    finally:
+        _drop_eval_schema(conn, schema_name)
 
     passed = sum(1 for result in results if result.passed)
     return EvaluationSummary(
@@ -129,19 +138,53 @@ def evaluate_sql_ground_truth(
     )
 
 
+def _drop_eval_schema(conn: psycopg.Connection, schema_name: str) -> None:
+    """Drop the temp schema without letting cleanup mask the real failure.
+
+    If the server dropped the connection mid-run, every statement here raises.
+    Unguarded, the first one would replace the original traceback and skip the
+    DROP entirely, leaving an orphaned 8-table schema behind on every run. So
+    each step is best-effort, and a dead connection gets one fresh connection
+    to finish the job.
+    """
+    try:
+        conn.rollback()
+        conn.execute("SET search_path TO public")
+        conn.execute(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE")
+        conn.commit()
+        return
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    try:
+        cleanup = connect()
+        try:
+            cleanup.execute(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE")
+            cleanup.commit()
+        finally:
+            cleanup.close()
+    except Exception:
+        pass
+
+
 def build_sql_fixture_database(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     fixture: dict,
     *,
     schema_path: str | Path,
 ) -> None:
-    conn.executescript(Path(schema_path).read_text(encoding="utf-8"))
+    conn.execute(Path(schema_path).read_text(encoding="utf-8"))
 
     for storm in fixture["database"]["storms"]:
         conn.execute(
             """
             INSERT INTO Storm(stormCode, eventDateTime, eventLength)
-            VALUES(:stormCode, :eventDateTime, :eventLength)
+            VALUES(%(stormCode)s, %(eventDateTime)s, %(eventLength)s)
             """,
             storm,
         )
@@ -150,7 +193,7 @@ def build_sql_fixture_database(
         conn.execute(
             """
             INSERT INTO County(county, state, ohLine)
-            VALUES(:county, :state, :ohLine)
+            VALUES(%(county)s, %(state)s, %(ohLine)s)
             """,
             county,
         )
@@ -163,8 +206,8 @@ def build_sql_fixture_database(
                 wgt5, wgt9, wgt13, wgt18, outage
             )
             VALUES(
-                :stormCode, :county, :sumAFWA_TOTPRECIP, :peakWSPD10,
-                :wgt5, :wgt9, :wgt13, :wgt18, :outage
+                %(stormCode)s, %(county)s, %(sumAFWA_TOTPRECIP)s, %(peakWSPD10)s,
+                %(wgt5)s, %(wgt9)s, %(wgt13)s, %(wgt18)s, %(outage)s
             )
             """,
             row,
@@ -187,7 +230,7 @@ def format_evaluation_summary(summary: EvaluationSummary) -> str:
 
 
 def _evaluate_sql_case(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     case: dict,
 ) -> EvaluationCaseResult:
     sql = case["expected_sql"]
@@ -218,12 +261,43 @@ def _evaluate_sql_case(
     )
 
 
-def _execute(conn: sqlite3.Connection, sql: str) -> list[dict[str, object]]:
-    conn.row_factory = sqlite3.Row
-    try:
-        return [dict(row) for row in conn.execute(sql).fetchall()]
-    finally:
-        conn.row_factory = None
+def _execute(conn: psycopg.Connection, sql: str) -> list[dict[str, object]]:
+    """Run one fixture query and return dict rows.
+
+    psycopg's default row factory yields tuples, so ``dict_row`` is required
+    here. Its keys are the columns PostgreSQL actually returned, which means
+    unquoted camelCase selections arrive folded to lowercase.
+    """
+    # A failed statement aborts the whole PostgreSQL transaction, so without
+    # this savepoint one bad case would fail every case after it. SQLite had
+    # no such coupling between statements.
+    with conn.transaction():
+        with conn.cursor(row_factory=dict_row) as cursor:
+            cursor.execute(sql)
+            return [_render_row(row) for row in cursor.fetchall()]
+
+
+def _render_row(row: dict[str, object]) -> dict[str, object]:
+    """Normalize driver-native values so fixtures stay engine-neutral JSON.
+
+    SQLite handed back TIMESTAMP columns as text; psycopg builds real
+    ``datetime`` objects. ``str()`` on one reproduces the text SQLite stored,
+    so the fixture keeps recording a value JSON can express. This is a
+    rendering concern only -- application code still receives real datetimes.
+    """
+    return {key: _render_value(value) for key, value in row.items()}
+
+
+def _render_value(value: object) -> object:
+    if isinstance(value, (datetime, date)):
+        return str(value)
+    if isinstance(value, Decimal):
+        # AVG() over integers and every ROUND(x::numeric, 2) come back as
+        # Decimal. Decimal('7.35') != 7.35, because the float nearest 7.35
+        # is 7.34999999999999964..., so a JSON fixture can never match one
+        # unless the value happens to be binary-exact.
+        return float(value)
+    return value
 
 
 def _assert_required_tokens(sql: str, required_tokens: Sequence[str]) -> None:

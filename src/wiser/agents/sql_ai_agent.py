@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import os
 import re
-import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import psycopg
+from psycopg.rows import dict_row
 from typing import Any, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -27,23 +29,35 @@ DEFAULT_SQL_MODEL = "gpt-4o-mini"
 DEFAULT_ROW_LIMIT = 10
 
 _WRITE_PATTERN = re.compile(
-    r"^\s*(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|TRUNCATE|ATTACH|DETACH)\b",
+    r"^\s*(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|COPY|CALL|VACUUM)\b",
     re.IGNORECASE,
 )
+_SELECT_INTO_PATTERN = re.compile(
+    r"^\s*(?:WITH\b.*?)?\bSELECT\b.*?\bINTO\b",
+    re.IGNORECASE | re.DOTALL,
+)
 _WRITE_KEYWORD_PATTERN = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|TRUNCATE|ATTACH|DETACH|PRAGMA)\b",
+    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|COPY|CALL|VACUUM)\b",
     re.IGNORECASE,
 )
 
 _SYSTEM_PROMPT = """\
-You are a SQLite expert for the WISER weather analytics system.
-Generate a valid SQLite SELECT query for the user's question.
+You are a PostgreSQL expert for the WISER weather analytics system.
+Generate a valid PostgreSQL SELECT query for the user's question.
 
 RULES:
-- SQLite only. Use LOWER() not ILIKE. No double-quoted column names.
+- PostgreSQL only. Use LOWER() not ILIKE. No double-quoted column names:
+  PostgreSQL folds unquoted identifiers to lowercase, so stormCode and
+  stormcode are the same column, but "stormCode" is a different one that
+  does not exist.
+- A SELECT alias may be used in GROUP BY and ORDER BY, but NOT in WHERE or
+  HAVING. Repeat the expression there: HAVING COUNT(DISTINCT county) > 1.
+- ROUND(x, 2) requires a numeric argument. Wind, precipitation and derived
+  ratios are double precision, so cast first: ROUND(AVG(x)::numeric, 2).
 - Valid counties: Fairfield, Hartford, Litchfield, Middlesex, New Haven, New London, Tolland, Windham.
   Always compare county names with LOWER(): WHERE LOWER(county) = 'fairfield'
-- stormCode is YYYYMMDDHH. For year filtering use strftime('%Y', eventDateTime) via JOIN with Storm.
+- stormCode is YYYYMMDDHH. For year filtering use EXTRACT(YEAR FROM eventDateTime)
+  via JOIN with Storm; it yields a number, so compare against 2012, not '2012'.
   Do not use SUBSTR on stormCode.
 - wgt5/wgt9/wgt13/wgt18 = hours wind exceeded that m/s threshold.
   "storms above 13 m/s" maps to wgt13 > 0. NOT peakWSPD10 > 13.
@@ -99,35 +113,35 @@ Q: What was the outage count for storm 2012102806?
 A: SELECT w.county, w.outage FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode WHERE s.stormCode = 2012102806;
 
 Q: How many storms happened between 2010 and 2015?
-A: SELECT COUNT(DISTINCT s.stormCode) AS storm_count FROM Storm s WHERE strftime('%Y', s.eventDateTime) BETWEEN '2010' AND '2015';
+A: SELECT COUNT(DISTINCT s.stormCode) AS storm_count FROM Storm s WHERE EXTRACT(YEAR FROM s.eventDateTime) BETWEEN 2010 AND 2015;
 
 Q: Which county had more outages, Fairfield or Hartford?
 A: SELECT county, SUM(outage) AS total_outage FROM WeatherData WHERE LOWER(county) IN ('fairfield', 'hartford') GROUP BY county ORDER BY total_outage DESC;
 
 Q: Which storms hit more than one county?
-A: SELECT stormCode, COUNT(DISTINCT county) AS county_count FROM WeatherData GROUP BY stormCode HAVING county_count > 1 ORDER BY county_count DESC LIMIT 10;
+A: SELECT stormCode, COUNT(DISTINCT county) AS county_count FROM WeatherData GROUP BY stormCode HAVING COUNT(DISTINCT county) > 1 ORDER BY county_count DESC LIMIT 10;
 
 Q: Which storms lasted longer than 48 hours?
 A: SELECT s.stormCode, s.eventDateTime, s.eventLength FROM Storm s WHERE s.eventLength > 48 ORDER BY s.eventLength DESC LIMIT 10;
 
 Q: Which county was affected the most overall?
-A: SELECT w.county, SUM(w.outage) AS total_outage, ROUND(AVG(w.peakWSPD10), 2) AS avg_peak_wind, c.ohLine, ROUND(SUM(w.outage) * 1000000.0 / c.ohLine, 2) AS outage_per_million_ohline FROM WeatherData w JOIN County c ON LOWER(c.county) = LOWER(w.county) GROUP BY w.county, c.ohLine ORDER BY total_outage DESC LIMIT 10;
+A: SELECT w.county, SUM(w.outage) AS total_outage, ROUND(AVG(w.peakWSPD10)::numeric, 2) AS avg_peak_wind, c.ohLine, ROUND((SUM(w.outage) * 1000000.0 / c.ohLine)::numeric, 2) AS outage_per_million_ohline FROM WeatherData w JOIN County c ON LOWER(c.county) = LOWER(w.county) GROUP BY w.county, c.ohLine ORDER BY total_outage DESC LIMIT 10;
 
 Q: Normalize county outages by overhead line exposure.
-A: SELECT w.county, SUM(w.outage) AS total_outage, c.ohLine, ROUND(SUM(w.outage) * 1000000.0 / c.ohLine, 2) AS outage_per_million_ohline FROM WeatherData w JOIN County c ON LOWER(c.county) = LOWER(w.county) GROUP BY w.county, c.ohLine ORDER BY outage_per_million_ohline DESC LIMIT 10;
+A: SELECT w.county, SUM(w.outage) AS total_outage, c.ohLine, ROUND((SUM(w.outage) * 1000000.0 / c.ohLine)::numeric, 2) AS outage_per_million_ohline FROM WeatherData w JOIN County c ON LOWER(c.county) = LOWER(w.county) GROUP BY w.county, c.ohLine ORDER BY outage_per_million_ohline DESC LIMIT 10;
 
 Q: For storm 2020080406, why did Hartford have more outages than New Haven despite lower wind?
-A: SELECT w.county, w.stormCode, w.outage, w.peakWSPD10, w.sumAFWA_TOTPRECIP, w.wgt5, w.wgt9, w.wgt13, w.wgt18, c.ohLine, ROUND(w.outage * 1000000.0 / c.ohLine, 2) AS outage_per_million_ohline FROM WeatherData w JOIN County c ON LOWER(c.county) = LOWER(w.county) WHERE w.stormCode = 2020080406 AND LOWER(w.county) IN ('hartford', 'new haven') ORDER BY w.outage DESC;
+A: SELECT w.county, w.stormCode, w.outage, w.peakWSPD10, w.sumAFWA_TOTPRECIP, w.wgt5, w.wgt9, w.wgt13, w.wgt18, c.ohLine, ROUND((w.outage * 1000000.0 / c.ohLine)::numeric, 2) AS outage_per_million_ohline FROM WeatherData w JOIN County c ON LOWER(c.county) = LOWER(w.county) WHERE w.stormCode = 2020080406 AND LOWER(w.county) IN ('hartford', 'new haven') ORDER BY w.outage DESC;
 
 FOLLOW-UP EXAMPLE (one conversation; each answer refines the previous SQL):
 Q: What were the top 5 storms by precipitation in Hartford?
 A: SELECT w.stormCode, w.sumAFWA_TOTPRECIP FROM WeatherData w WHERE LOWER(w.county) = 'hartford' ORDER BY w.sumAFWA_TOTPRECIP DESC LIMIT 5;
 Q: only storms after 2012
-A: SELECT w.stormCode, w.sumAFWA_TOTPRECIP FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode WHERE LOWER(w.county) = 'hartford' AND strftime('%Y', s.eventDateTime) > '2012' ORDER BY w.sumAFWA_TOTPRECIP DESC LIMIT 5;
+A: SELECT w.stormCode, w.sumAFWA_TOTPRECIP FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode WHERE LOWER(w.county) = 'hartford' AND EXTRACT(YEAR FROM s.eventDateTime) > 2012 ORDER BY w.sumAFWA_TOTPRECIP DESC LIMIT 5;
 Q: what about fairfield county
-A: SELECT w.stormCode, w.sumAFWA_TOTPRECIP FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode WHERE LOWER(w.county) = 'fairfield' AND strftime('%Y', s.eventDateTime) > '2012' ORDER BY w.sumAFWA_TOTPRECIP DESC LIMIT 5;
+A: SELECT w.stormCode, w.sumAFWA_TOTPRECIP FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode WHERE LOWER(w.county) = 'fairfield' AND EXTRACT(YEAR FROM s.eventDateTime) > 2012 ORDER BY w.sumAFWA_TOTPRECIP DESC LIMIT 5;
 Q: just the top 3
-A: SELECT w.stormCode, w.sumAFWA_TOTPRECIP FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode WHERE LOWER(w.county) = 'fairfield' AND strftime('%Y', s.eventDateTime) > '2012' ORDER BY w.sumAFWA_TOTPRECIP DESC LIMIT 3;
+A: SELECT w.stormCode, w.sumAFWA_TOTPRECIP FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode WHERE LOWER(w.county) = 'fairfield' AND EXTRACT(YEAR FROM s.eventDateTime) > 2012 ORDER BY w.sumAFWA_TOTPRECIP DESC LIMIT 3;
 """
 
 
@@ -137,7 +151,7 @@ class SqlValidationError(ValueError):
 
 @dataclass
 class SqlAiAgent:
-    """Translates natural-language questions into SQLite SELECT queries via an LLM.
+    """Translates natural-language questions into PostgreSQL SELECT queries via an LLM.
 
     Stateless: no connection is stored; pass conn to run() each call.
     The schema DDL is loaded once at __post_init__ from schema_path.
@@ -155,7 +169,7 @@ class SqlAiAgent:
     def run(
         self,
         query: str,
-        conn: sqlite3.Connection,
+        conn: psycopg.Connection,
         *,
         limit: int = DEFAULT_ROW_LIMIT,
         history: Sequence[ConversationTurn] | None = None,
@@ -206,8 +220,7 @@ class SqlAiAgent:
         sql = _clean_sql(raw)
         _validate_sql(sql)
 
-        db_path = _get_db_path(conn)
-        rows = _execute_ro(sql, db_path)
+        rows = _execute_ro(sql, conn)
         answer = _make_answer(rows)
 
         return {"sql": sql, "rows": rows, "answer": answer, "dry_run": False}
@@ -362,6 +375,17 @@ def _validate_sql(sql: str) -> None:
             f"Non-SELECT statement is not allowed: {sql[:60]!r}"
         )
 
+    # PostgreSQL's SELECT ... INTO creates a table. It starts with SELECT, so
+    # the leading-keyword check above misses it, and sqlglot models it as a
+    # plain exp.Select so the isinstance check below passes it too. This
+    # syntax did not parse under the old sqlite dialect. The read-only
+    # transaction in _execute_ro would still refuse it, but that is the last
+    # line of defence rather than the only one.
+    if _SELECT_INTO_PATTERN.search(sql):
+        raise SqlValidationError(
+            "SELECT ... INTO creates a table; only read-only SELECT is allowed."
+        )
+
     if not _SQLGLOT_AVAILABLE:
         if not re.match(r"^\s*(?:SELECT|WITH)\b", sql, re.IGNORECASE):
             raise SqlValidationError(
@@ -372,8 +396,8 @@ def _validate_sql(sql: str) -> None:
         # parser we reject conservatively rather than risk a second statement.
         if ";" in sql.strip().rstrip(";"):
             raise SqlValidationError("Only a single SQL statement is allowed.")
-        # SQLite allows WITH before INSERT/UPDATE/DELETE, so a CTE prefix is
-        # not proof of a read-only query — scan for write keywords too.
+        # PostgreSQL allows WITH before INSERT/UPDATE/DELETE, so a CTE prefix
+        # is not proof of a read-only query — scan for write keywords too.
         if re.match(r"^\s*WITH\b", sql, re.IGNORECASE) and _WRITE_KEYWORD_PATTERN.search(sql):
             raise SqlValidationError(
                 "CTE contains a write keyword; only read-only SELECT is allowed."
@@ -383,7 +407,7 @@ def _validate_sql(sql: str) -> None:
     try:
         statements = sqlglot.parse(
             sql,
-            dialect="sqlite",
+            dialect="postgres",
             error_level=sqlglot.errors.ErrorLevel.RAISE,
         )
     except sqlglot.errors.ParseError as exc:
@@ -403,25 +427,22 @@ def _validate_sql(sql: str) -> None:
         )
 
 
-def _get_db_path(conn: sqlite3.Connection) -> str:
-    row = conn.execute("PRAGMA database_list").fetchone()
-    db_path = row[2] if row else ""
-    if not db_path:
-        raise SqlValidationError(
-            "Cannot determine database path from connection for read-only execution."
-        )
-    return db_path
+def _execute_ro(sql: str, conn: psycopg.Connection) -> list[dict[str, Any]]:
+    """Run LLM-generated SQL in a server-enforced read-only transaction.
 
+    SQLite used a second connection opened on a ``file:...?mode=ro`` URI.
+    PostgreSQL has no file to reopen, so the guarantee comes from the server
+    instead: inside the transaction below any write is rejected with
+    ``ReadOnlySqlTransaction`` even if ``_validate_sql`` were bypassed.
 
-def _execute_ro(sql: str, db_path: str) -> list[dict[str, Any]]:
-    ro_uri = Path(db_path).as_uri() + "?mode=ro"
-    ro_conn = sqlite3.connect(ro_uri, uri=True)
-    try:
-        ro_conn.row_factory = sqlite3.Row
-        cursor = ro_conn.execute(sql)
-        return [dict(row) for row in cursor.fetchall()]
-    finally:
-        ro_conn.close()
+    Keys arrive folded to lowercase (``stormCode`` selects ``stormcode``),
+    which is what the ground-truth fixture records.
+    """
+    with conn.transaction():
+        conn.execute("SET LOCAL transaction_read_only = on")
+        with conn.cursor(row_factory=dict_row) as cursor:
+            cursor.execute(sql)
+            return [dict(row) for row in cursor.fetchall()]
 
 
 _ANSWER_PREVIEW_ROWS = 3

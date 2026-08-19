@@ -32,7 +32,7 @@ from wiser.integrations.external_outage import (
 )
 from wiser.integrations.national_grid import parse_national_grid_csv
 from wiser.handlers import (
-    DEFAULT_DB_PATH,
+    DEFAULT_DSN,
     DEFAULT_INPUT_CSV,
     DEFAULT_LIMIT,
     DEFAULT_MAX_LINKED_PDFS,
@@ -77,7 +77,7 @@ def print_rows(rows: list[dict[str, object]]) -> None:
 
 def load_external_source(
     *,
-    db_path: str,
+    dsn: str | None,
     source: str,
     file_path: str,
     preview_limit: int,
@@ -85,7 +85,7 @@ def load_external_source(
     parser = EXTERNAL_SOURCE_PARSERS[source]
     observations = parser(file_path)
 
-    conn = connect(db_path)
+    conn = connect(dsn)
     try:
         summary = load_external_observations(conn, observations)
         preview_rows = recent_external_observations(
@@ -307,7 +307,7 @@ def run_query_once(
     ctx = build_context(
         query,
         input_csv=args.input,
-        db_path=args.db,
+        dsn=args.dsn,
         limit=args.limit,
         county=args.county,
         rag_sources=args.rag_source or None,
@@ -434,9 +434,12 @@ def main() -> None:
         help="Path to the source CSV file.",
     )
     parser.add_argument(
-        "--db",
-        default=DEFAULT_DB_PATH,
-        help="Path to the SQLite database.",
+        "--dsn",
+        default=DEFAULT_DSN,
+        help=(
+            "PostgreSQL connection URL "
+            "(default: $DATABASE_URL, else the local Docker Compose instance)."
+        ),
     )
     parser.add_argument(
         "--limit",
@@ -595,7 +598,7 @@ def main() -> None:
         if not args.external_file:
             parser.error("--external-file is required with --load-external")
         load_external_source(
-            db_path=args.db,
+            dsn=args.dsn,
             source=args.external_source,
             file_path=args.external_file,
             preview_limit=args.external_preview_limit,

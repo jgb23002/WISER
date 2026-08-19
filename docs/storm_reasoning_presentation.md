@@ -183,7 +183,7 @@ County heat maps use `data/geography/ct_counties_legacy.geojson`, the State of
 Connecticut legacy 8-county layer. This matches the dataset's older county
 names instead of newer planning-region geography.
 
-Every table and response on this page was re-run against `data/wiser.db` and
+Every table and response on this page was re-run against the WISER database and
 matches, except where slide 2 records a routing change. Slides 1, 3, and 4
 reproduce byte-for-byte through the local analytical fallback.
 

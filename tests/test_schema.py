@@ -11,10 +11,82 @@ This test suite validates:
 7. Constraint enforcement with actual data
 """
 
-import sqlite3
+import sys
 import unittest
 from datetime import datetime
 from pathlib import Path
+
+import psycopg
+from psycopg.rows import dict_row
+
+TESTS_DIR = Path(__file__).parent
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from pg_harness import make_conn  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Introspection helpers
+#
+# SQLite exposed its catalogue through PRAGMA table_info and sqlite_master.
+# PostgreSQL uses the SQL-standard information_schema plus pg_catalog. Two
+# consequences run through every assertion below: identifiers come back
+# folded to lowercase, and the type names are PostgreSQL's own -- REAL is
+# reported as 'double precision', TIMESTAMP as 'timestamp without time zone'.
+# ---------------------------------------------------------------------------
+
+
+def _table_exists(conn, table: str) -> bool:
+    return conn.execute(
+        """
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = current_schema()
+          AND table_type = 'BASE TABLE'
+          AND table_name = %s
+        """,
+        (table.lower(),),
+    ).fetchone() is not None
+
+
+def _columns(conn, table: str) -> dict[str, str]:
+    """Replacement for PRAGMA table_info: {folded column name: type}."""
+    rows = conn.execute(
+        """
+        SELECT column_name,
+               CASE WHEN character_maximum_length IS NOT NULL
+                    THEN data_type || '(' || character_maximum_length || ')'
+                    ELSE data_type END
+        FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = %s
+        """,
+        (table.lower(),),
+    ).fetchall()
+    return {str(row[0]): str(row[1]) for row in rows}
+
+
+def _primary_key(conn, table: str) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT a.attname
+        FROM pg_index i
+        JOIN pg_attribute a
+          ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+        WHERE i.indrelid = (current_schema() || '.' || %s)::regclass
+          AND i.indisprimary
+        """,
+        (table.lower(),),
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _indexes(conn) -> set[str]:
+    return {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()"
+        ).fetchall()
+    }
 
 
 class TestSchemaStructure(unittest.TestCase):
@@ -22,53 +94,29 @@ class TestSchemaStructure(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        """Create in-memory database and load schema."""
-        cls.conn = sqlite3.connect(":memory:")
-        cls.conn.row_factory = sqlite3.Row
-
-        # Load schema from file
-        schema_path = Path(__file__).parent.parent / "sql" / "schema.sql"
-        with open(schema_path, "r") as f:
-            schema_sql = f.read()
-
-        cls.conn.executescript(schema_sql)
-        cls.conn.commit()
+        """Rebuild the test schema and load sql/schema.sql."""
+        cls.conn = make_conn()
 
     @classmethod
     def tearDownClass(cls):
-        """Close database connection."""
-        cls.conn.close()
+        """The harness owns the shared connection; just clear any state."""
+        cls.conn.rollback()
 
     def test_storm_table_exists(self):
         """Test that Storm table exists."""
-        cursor = self.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='Storm'"
-        )
-        self.assertIsNotNone(cursor.fetchone())
+        self.assertTrue(_table_exists(self.conn, "Storm"))
 
     def test_county_table_exists(self):
         """Test that County table exists."""
-        cursor = self.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='County'"
-        )
-        self.assertIsNotNone(cursor.fetchone())
+        self.assertTrue(_table_exists(self.conn, "County"))
 
     def test_weatherdata_table_exists(self):
         """Test that WeatherData table exists."""
-        cursor = self.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='WeatherData'"
-        )
-        self.assertIsNotNone(cursor.fetchone())
+        self.assertTrue(_table_exists(self.conn, "WeatherData"))
 
     def test_external_outage_table_exists(self):
         """Test that ExternalOutageObservation table exists."""
-        cursor = self.conn.execute(
-            """
-            SELECT name FROM sqlite_master
-            WHERE type='table' AND name='ExternalOutageObservation'
-            """
-        )
-        self.assertIsNotNone(cursor.fetchone())
+        self.assertTrue(_table_exists(self.conn, "ExternalOutageObservation"))
 
     def test_sponsor_support_tables_exist(self):
         """Test that region, metric, and hourly support tables exist."""
@@ -78,55 +126,48 @@ class TestSchemaStructure(unittest.TestCase):
             "HourlyWeatherObservation",
         ):
             with self.subTest(table=table_name):
-                cursor = self.conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-                    (table_name,),
-                )
-                self.assertIsNotNone(cursor.fetchone())
+                self.assertTrue(_table_exists(self.conn, table_name))
 
     def test_storm_columns(self):
         """Test Storm table has correct columns."""
-        cursor = self.conn.execute("PRAGMA table_info(Storm)")
-        columns = {row[1]: row[2] for row in cursor.fetchall()}
+        columns = _columns(self.conn, "Storm")
 
-        self.assertIn("stormCode", columns)
-        self.assertIn("eventDateTime", columns)
-        self.assertIn("eventLength", columns)
+        self.assertIn("stormcode", columns)
+        self.assertIn("eventdatetime", columns)
+        self.assertIn("eventlength", columns)
 
         # Verify data types
-        self.assertEqual(columns["stormCode"], "BIGINT")
-        self.assertEqual(columns["eventDateTime"], "TIMESTAMP")
-        self.assertEqual(columns["eventLength"], "INTEGER")
+        self.assertEqual(columns["stormcode"], "bigint")
+        self.assertEqual(columns["eventdatetime"], "timestamp without time zone")
+        self.assertEqual(columns["eventlength"], "integer")
 
     def test_county_columns(self):
         """Test County table has correct columns."""
-        cursor = self.conn.execute("PRAGMA table_info(County)")
-        columns = {row[1]: row[2] for row in cursor.fetchall()}
+        columns = _columns(self.conn, "County")
 
         self.assertIn("county", columns)
         self.assertIn("state", columns)
-        self.assertIn("ohLine", columns)
+        self.assertIn("ohline", columns)
 
         # Verify data types
-        self.assertEqual(columns["county"], "VARCHAR(64)")
-        self.assertEqual(columns["state"], "VARCHAR(2)")
-        self.assertEqual(columns["ohLine"], "BIGINT")
+        self.assertEqual(columns["county"], "character varying(64)")
+        self.assertEqual(columns["state"], "character varying(2)")
+        self.assertEqual(columns["ohline"], "bigint")
 
     def test_weatherdata_columns(self):
         """Test WeatherData table has correct columns."""
-        cursor = self.conn.execute("PRAGMA table_info(WeatherData)")
-        columns = {row[1]: row[2] for row in cursor.fetchall()}
+        columns = _columns(self.conn, "WeatherData")
 
         expected_columns = {
-            "stormCode": "BIGINT",
-            "county": "VARCHAR(64)",
-            "sumAFWA_TOTPRECIP": "REAL",
-            "peakWSPD10": "REAL",
-            "wgt5": "INTEGER",
-            "wgt9": "INTEGER",
-            "wgt13": "INTEGER",
-            "wgt18": "INTEGER",
-            "outage": "INTEGER",
+            "stormcode": "bigint",
+            "county": "character varying(64)",
+            "sumafwa_totprecip": "double precision",
+            "peakwspd10": "double precision",
+            "wgt5": "integer",
+            "wgt9": "integer",
+            "wgt13": "integer",
+            "wgt18": "integer",
+            "outage": "integer",
         }
 
         for col_name, col_type in expected_columns.items():
@@ -135,20 +176,19 @@ class TestSchemaStructure(unittest.TestCase):
 
     def test_external_outage_columns(self):
         """Test ExternalOutageObservation table has correct columns."""
-        cursor = self.conn.execute("PRAGMA table_info(ExternalOutageObservation)")
-        columns = {row[1]: row[2] for row in cursor.fetchall()}
+        columns = _columns(self.conn, "ExternalOutageObservation")
 
         expected_columns = {
-            "id": "INTEGER",
-            "sourceSystem": "TEXT",
-            "sourceRecordId": "TEXT",
-            "observedAt": "TIMESTAMP",
-            "county": "VARCHAR(64)",
-            "serviceTerritory": "TEXT",
-            "outageCount": "INTEGER",
-            "customerCount": "INTEGER",
-            "restorationStatus": "TEXT",
-            "rawPayload": "TEXT",
+            "id": "integer",
+            "sourcesystem": "text",
+            "sourcerecordid": "text",
+            "observedat": "timestamp without time zone",
+            "county": "character varying(64)",
+            "serviceterritory": "text",
+            "outagecount": "integer",
+            "customercount": "integer",
+            "restorationstatus": "text",
+            "rawpayload": "text",
         }
 
         for col_name, col_type in expected_columns.items():
@@ -157,17 +197,16 @@ class TestSchemaStructure(unittest.TestCase):
 
     def test_hourly_weather_columns(self):
         """Test HourlyWeatherObservation supports long-form hourly metrics."""
-        cursor = self.conn.execute("PRAGMA table_info(HourlyWeatherObservation)")
-        columns = {row[1]: row[2] for row in cursor.fetchall()}
+        columns = _columns(self.conn, "HourlyWeatherObservation")
 
         expected_columns = {
-            "stormCode": "BIGINT",
-            "county": "VARCHAR(64)",
-            "hourOffset": "INTEGER",
-            "metricKey": "TEXT",
-            "metricValue": "REAL",
-            "observedAt": "TIMESTAMP",
-            "sourceColumn": "TEXT",
+            "stormcode": "bigint",
+            "county": "character varying(64)",
+            "houroffset": "integer",
+            "metrickey": "text",
+            "metricvalue": "double precision",
+            "observedat": "timestamp without time zone",
+            "sourcecolumn": "text",
         }
 
         for col_name, col_type in expected_columns.items():
@@ -175,8 +214,7 @@ class TestSchemaStructure(unittest.TestCase):
             self.assertEqual(columns[col_name], col_type)
 
     def test_region_and_metric_indexes_exist(self):
-        cursor = self.conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
-        index_names = {row[0] for row in cursor.fetchall()}
+        index_names = _indexes(self.conn)
 
         self.assertIn("idx_region_county_state", index_names)
         self.assertIn("idx_hourly_weather_storm_county_hour", index_names)
@@ -184,26 +222,22 @@ class TestSchemaStructure(unittest.TestCase):
 
     def test_storm_primary_key(self):
         """Test Storm has correct primary key."""
-        cursor = self.conn.execute("PRAGMA table_info(Storm)")
-        pk_columns = [row[1] for row in cursor.fetchall() if row[5] != 0]
-        self.assertEqual(pk_columns, ["stormCode"])
+        pk_columns = _primary_key(self.conn, "Storm")
+        self.assertEqual(pk_columns, ["stormcode"])
 
     def test_county_primary_key(self):
         """Test County has correct primary key."""
-        cursor = self.conn.execute("PRAGMA table_info(County)")
-        pk_columns = [row[1] for row in cursor.fetchall() if row[5] != 0]
+        pk_columns = _primary_key(self.conn, "County")
         self.assertEqual(pk_columns, ["county"])
 
     def test_weatherdata_primary_key(self):
         """Test WeatherData has composite primary key."""
-        cursor = self.conn.execute("PRAGMA table_info(WeatherData)")
-        pk_columns = sorted([row[1] for row in cursor.fetchall() if row[5] != 0])
-        self.assertEqual(pk_columns, ["county", "stormCode"])
+        pk_columns = sorted(_primary_key(self.conn, "WeatherData"))
+        self.assertEqual(pk_columns, ["county", "stormcode"])
 
     def test_indexes_exist(self):
         """Test that all required indexes are created."""
-        cursor = self.conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
-        index_names = {row[0] for row in cursor.fetchall()}
+        index_names = _indexes(self.conn)
 
         self.assertIn("idx_weatherdata_outage", index_names)
         self.assertIn("idx_weatherdata_county", index_names)
@@ -216,42 +250,33 @@ class TestConstraints(unittest.TestCase):
     """Test constraint enforcement."""
 
     def setUp(self):
-        """Create fresh in-memory database for each test."""
-        self.conn = sqlite3.connect(":memory:")
-        self.conn.row_factory = sqlite3.Row
-
-        # Load schema from file
-        schema_path = Path(__file__).parent.parent / "sql" / "schema.sql"
-        with open(schema_path, "r") as f:
-            schema_sql = f.read()
-
-        self.conn.executescript(schema_sql)
-        self.conn.commit()
+        """Rebuild the test schema before each test."""
+        self.conn = make_conn()
 
     def tearDown(self):
-        """Close database connection."""
-        self.conn.close()
+        """A failed statement aborts the transaction, so always roll back."""
+        self.conn.rollback()
 
     def test_insert_valid_storm(self):
         """Test inserting valid storm record."""
         self.conn.execute(
-            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
             (2005100800, "2005-10-08 00:00:00", 48),
         )
         self.conn.commit()
 
         cursor = self.conn.execute(
-            "SELECT * FROM Storm WHERE stormCode = ?", (2005100800,)
+            "SELECT stormCode FROM Storm WHERE stormCode = %s", (2005100800,)
         )
         row = cursor.fetchone()
         self.assertIsNotNone(row)
-        self.assertEqual(row["stormCode"], 2005100800)
+        self.assertEqual(row[0], 2005100800)
 
     def test_storm_eventlength_check_constraint(self):
         """Test that eventLength must be > 0."""
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(psycopg.IntegrityError):
             self.conn.execute(
-                "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+                "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
                 (2005100800, "2005-10-08 00:00:00", 0),
             )
             self.conn.commit()
@@ -260,15 +285,15 @@ class TestConstraints(unittest.TestCase):
         """Test that eventDateTime must be unique."""
         # Insert first record
         self.conn.execute(
-            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
             (2005100800, "2005-10-08 00:00:00", 48),
         )
         self.conn.commit()
 
         # Try to insert duplicate datetime
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(psycopg.IntegrityError):
             self.conn.execute(
-                "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+                "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
                 (2005100801, "2005-10-08 00:00:00", 48),
             )
             self.conn.commit()
@@ -277,31 +302,31 @@ class TestConstraints(unittest.TestCase):
         """Test that county name is unique primary key."""
         # Insert first record
         self.conn.execute(
-            "INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Fairfield", 4887830)
+            "INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Fairfield", 4887830)
         )
         self.conn.commit()
 
         # Try to insert duplicate county
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(psycopg.IntegrityError):
             self.conn.execute(
-                "INSERT INTO County(county, ohLine) VALUES(?, ?)",
+                "INSERT INTO County(county, ohLine) VALUES(%s, %s)",
                 ("Fairfield", 5000000),
             )
             self.conn.commit()
 
     def test_county_ohline_check_constraint(self):
         """Test that ohLine must be > 0."""
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(psycopg.IntegrityError):
             self.conn.execute(
-                "INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Fairfield", 0)
+                "INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Fairfield", 0)
             )
             self.conn.commit()
 
     def test_county_ohline_negative_check_constraint(self):
         """Test that ohLine must not be negative."""
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(psycopg.IntegrityError):
             self.conn.execute(
-                "INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Fairfield", -1000)
+                "INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Fairfield", -1000)
             )
             self.conn.commit()
 
@@ -309,11 +334,11 @@ class TestConstraints(unittest.TestCase):
         """Test inserting valid weather data record."""
         # Insert prerequisite storm and county
         self.conn.execute(
-            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
             (2005100800, "2005-10-08 00:00:00", 48),
         )
         self.conn.execute(
-            "INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Fairfield", 4887830)
+            "INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Fairfield", 4887830)
         )
         self.conn.commit()
 
@@ -322,13 +347,13 @@ class TestConstraints(unittest.TestCase):
             """INSERT INTO WeatherData(
                 stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,
                 wgt5, wgt9, wgt13, wgt18, outage
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (2005100800, "Fairfield", 231.98, 5.79, 9, 0, 0, 0, 186),
         )
         self.conn.commit()
 
         cursor = self.conn.execute(
-            "SELECT * FROM WeatherData WHERE stormCode = ? AND county = ?",
+            "SELECT * FROM WeatherData WHERE stormCode = %s AND county = %s",
             (2005100800, "Fairfield"),
         )
         row = cursor.fetchone()
@@ -338,17 +363,17 @@ class TestConstraints(unittest.TestCase):
         """Test that stormCode must exist in Storm table."""
         # Insert county but not storm
         self.conn.execute(
-            "INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Fairfield", 4887830)
+            "INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Fairfield", 4887830)
         )
         self.conn.commit()
 
         # Try to insert weather data with non-existent storm
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(psycopg.IntegrityError):
             self.conn.execute(
                 """INSERT INTO WeatherData(
                     stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,
                     wgt5, wgt9, wgt13, wgt18, outage
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (2005100800, "Fairfield", 231.98, 5.79, 9, 0, 0, 0, 186),
             )
             self.conn.commit()
@@ -357,18 +382,18 @@ class TestConstraints(unittest.TestCase):
         """Test that county must exist in County table."""
         # Insert storm but not county
         self.conn.execute(
-            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
             (2005100800, "2005-10-08 00:00:00", 48),
         )
         self.conn.commit()
 
         # Try to insert weather data with non-existent county
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(psycopg.IntegrityError):
             self.conn.execute(
                 """INSERT INTO WeatherData(
                     stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,
                     wgt5, wgt9, wgt13, wgt18, outage
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (2005100800, "Fairfield", 231.98, 5.79, 9, 0, 0, 0, 186),
             )
             self.conn.commit()
@@ -377,21 +402,21 @@ class TestConstraints(unittest.TestCase):
         """Test that sumAFWA_TOTPRECIP must be >= 0."""
         # Setup
         self.conn.execute(
-            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
             (2005100800, "2005-10-08 00:00:00", 48),
         )
         self.conn.execute(
-            "INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Fairfield", 4887830)
+            "INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Fairfield", 4887830)
         )
         self.conn.commit()
 
         # Try to insert with negative precipitation
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(psycopg.IntegrityError):
             self.conn.execute(
                 """INSERT INTO WeatherData(
                     stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,
                     wgt5, wgt9, wgt13, wgt18, outage
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (2005100800, "Fairfield", -10.0, 5.79, 9, 0, 0, 0, 186),
             )
             self.conn.commit()
@@ -400,21 +425,21 @@ class TestConstraints(unittest.TestCase):
         """Test that peakWSPD10 must be > 0."""
         # Setup
         self.conn.execute(
-            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
             (2005100800, "2005-10-08 00:00:00", 48),
         )
         self.conn.execute(
-            "INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Fairfield", 4887830)
+            "INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Fairfield", 4887830)
         )
         self.conn.commit()
 
         # Try to insert with zero wind speed
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(psycopg.IntegrityError):
             self.conn.execute(
                 """INSERT INTO WeatherData(
                     stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,
                     wgt5, wgt9, wgt13, wgt18, outage
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (2005100800, "Fairfield", 231.98, 0.0, 9, 0, 0, 0, 186),
             )
             self.conn.commit()
@@ -423,21 +448,21 @@ class TestConstraints(unittest.TestCase):
         """Test that wgt5-18 values must be >= 0."""
         # Setup
         self.conn.execute(
-            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
             (2005100800, "2005-10-08 00:00:00", 48),
         )
         self.conn.execute(
-            "INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Fairfield", 4887830)
+            "INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Fairfield", 4887830)
         )
         self.conn.commit()
 
         # Try with negative wgt5
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(psycopg.IntegrityError):
             self.conn.execute(
                 """INSERT INTO WeatherData(
                     stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,
                     wgt5, wgt9, wgt13, wgt18, outage
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (2005100800, "Fairfield", 231.98, 5.79, -1, 0, 0, 0, 186),
             )
             self.conn.commit()
@@ -446,21 +471,21 @@ class TestConstraints(unittest.TestCase):
         """Test that outage must be >= 0."""
         # Setup
         self.conn.execute(
-            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
             (2005100800, "2005-10-08 00:00:00", 48),
         )
         self.conn.execute(
-            "INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Fairfield", 4887830)
+            "INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Fairfield", 4887830)
         )
         self.conn.commit()
 
         # Try with negative outage
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(psycopg.IntegrityError):
             self.conn.execute(
                 """INSERT INTO WeatherData(
                     stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,
                     wgt5, wgt9, wgt13, wgt18, outage
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (2005100800, "Fairfield", 231.98, 5.79, 9, 0, 0, 0, -10),
             )
             self.conn.commit()
@@ -469,11 +494,11 @@ class TestConstraints(unittest.TestCase):
         """Test that (stormCode, county) composite key is enforced."""
         # Setup
         self.conn.execute(
-            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
             (2005100800, "2005-10-08 00:00:00", 48),
         )
         self.conn.execute(
-            "INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Fairfield", 4887830)
+            "INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Fairfield", 4887830)
         )
         self.conn.commit()
 
@@ -482,18 +507,18 @@ class TestConstraints(unittest.TestCase):
             """INSERT INTO WeatherData(
                 stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,
                 wgt5, wgt9, wgt13, wgt18, outage
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (2005100800, "Fairfield", 231.98, 5.79, 9, 0, 0, 0, 186),
         )
         self.conn.commit()
 
         # Try to insert duplicate composite key
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(psycopg.IntegrityError):
             self.conn.execute(
                 """INSERT INTO WeatherData(
                     stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,
                     wgt5, wgt9, wgt13, wgt18, outage
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (2005100800, "Fairfield", 100.0, 6.0, 10, 1, 0, 0, 200),
             )
             self.conn.commit()
@@ -503,21 +528,12 @@ class TestDataIntegrity(unittest.TestCase):
     """Test data integrity scenarios."""
 
     def setUp(self):
-        """Create fresh in-memory database for each test."""
-        self.conn = sqlite3.connect(":memory:")
-        self.conn.row_factory = sqlite3.Row
-
-        # Load schema from file
-        schema_path = Path(__file__).parent.parent / "sql" / "schema.sql"
-        with open(schema_path, "r") as f:
-            schema_sql = f.read()
-
-        self.conn.executescript(schema_sql)
-        self.conn.commit()
+        """Rebuild the test schema before each test."""
+        self.conn = make_conn()
 
     def tearDown(self):
-        """Close database connection."""
-        self.conn.close()
+        """A failed statement aborts the transaction, so always roll back."""
+        self.conn.rollback()
 
     def test_insert_realistic_data(self):
         """Test inserting realistic weather data from testdata.csv."""
@@ -542,13 +558,13 @@ class TestDataIntegrity(unittest.TestCase):
         # Insert storms
         for storm in storm_data:
             self.conn.execute(
-                "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+                "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
                 storm,
             )
 
         # Insert counties
         for county in county_data:
-            self.conn.execute("INSERT INTO County(county, ohLine) VALUES(?, ?)", county)
+            self.conn.execute("INSERT INTO County(county, ohLine) VALUES(%s, %s)", county)
 
         # Insert weather data
         for wd in weather_data:
@@ -556,7 +572,7 @@ class TestDataIntegrity(unittest.TestCase):
                 """INSERT INTO WeatherData(
                     stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,
                     wgt5, wgt9, wgt13, wgt18, outage
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 wd,
             )
 
@@ -576,11 +592,11 @@ class TestDataIntegrity(unittest.TestCase):
         """Test that zero outage values are allowed (>= 0 constraint)."""
         # Setup
         self.conn.execute(
-            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
             (2005100800, "2005-10-08 00:00:00", 48),
         )
         self.conn.execute(
-            "INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Fairfield", 4887830)
+            "INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Fairfield", 4887830)
         )
         self.conn.commit()
 
@@ -589,27 +605,27 @@ class TestDataIntegrity(unittest.TestCase):
             """INSERT INTO WeatherData(
                 stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,
                 wgt5, wgt9, wgt13, wgt18, outage
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (2005100800, "Fairfield", 231.98, 5.79, 9, 0, 0, 0, 0),
         )
         self.conn.commit()
 
         cursor = self.conn.execute(
-            "SELECT outage FROM WeatherData WHERE stormCode = ? AND county = ?",
+            "SELECT outage FROM WeatherData WHERE stormCode = %s AND county = %s",
             (2005100800, "Fairfield"),
         )
         row = cursor.fetchone()
-        self.assertEqual(row["outage"], 0)
+        self.assertEqual(row[0], 0)
 
     def test_zero_precipitation_allowed(self):
         """Test that zero precipitation values are allowed (>= 0 constraint)."""
         # Setup
         self.conn.execute(
-            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
             (2005100800, "2005-10-08 00:00:00", 48),
         )
         self.conn.execute(
-            "INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Fairfield", 4887830)
+            "INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Fairfield", 4887830)
         )
         self.conn.commit()
 
@@ -618,17 +634,17 @@ class TestDataIntegrity(unittest.TestCase):
             """INSERT INTO WeatherData(
                 stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,
                 wgt5, wgt9, wgt13, wgt18, outage
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (2005100800, "Fairfield", 0.0, 5.79, 9, 0, 0, 0, 186),
         )
         self.conn.commit()
 
         cursor = self.conn.execute(
-            "SELECT sumAFWA_TOTPRECIP FROM WeatherData WHERE stormCode = ? AND county = ?",
+            "SELECT sumAFWA_TOTPRECIP FROM WeatherData WHERE stormCode = %s AND county = %s",
             (2005100800, "Fairfield"),
         )
         row = cursor.fetchone()
-        self.assertEqual(row["sumAFWA_TOTPRECIP"], 0.0)
+        self.assertEqual(row[0], 0.0)
 
 
 if __name__ == "__main__":

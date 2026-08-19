@@ -1,38 +1,258 @@
 {
   "database": {
     "storms": [
-      {"stormCode": 2010010100, "eventDateTime": "2010-01-01 00:00:00", "eventLength": 24},
-      {"stormCode": 2011082800, "eventDateTime": "2011-08-28 00:00:00", "eventLength": 36},
-      {"stormCode": 2012102806, "eventDateTime": "2012-10-28 06:00:00", "eventLength": 72},
-      {"stormCode": 2015060100, "eventDateTime": "2015-06-01 00:00:00", "eventLength": 12},
-      {"stormCode": 2018121500, "eventDateTime": "2018-12-15 00:00:00", "eventLength": 60},
-      {"stormCode": 2020070412, "eventDateTime": "2020-07-04 12:00:00", "eventLength": 48}
+      {
+        "stormCode": 2010010100,
+        "eventDateTime": "2010-01-01 00:00:00",
+        "eventLength": 24
+      },
+      {
+        "stormCode": 2011082800,
+        "eventDateTime": "2011-08-28 00:00:00",
+        "eventLength": 36
+      },
+      {
+        "stormCode": 2012102806,
+        "eventDateTime": "2012-10-28 06:00:00",
+        "eventLength": 72
+      },
+      {
+        "stormCode": 2015060100,
+        "eventDateTime": "2015-06-01 00:00:00",
+        "eventLength": 12
+      },
+      {
+        "stormCode": 2018121500,
+        "eventDateTime": "2018-12-15 00:00:00",
+        "eventLength": 60
+      },
+      {
+        "stormCode": 2020070412,
+        "eventDateTime": "2020-07-04 12:00:00",
+        "eventLength": 48
+      }
     ],
     "counties": [
-      {"county": "Fairfield", "state": "CT", "ohLine": 4887830},
-      {"county": "Hartford", "state": "CT", "ohLine": 5869550},
-      {"county": "New Haven", "state": "CT", "ohLine": 3233197},
-      {"county": "Windham", "state": "CT", "ohLine": 2400780}
+      {
+        "county": "Fairfield",
+        "state": "CT",
+        "ohLine": 4887830
+      },
+      {
+        "county": "Hartford",
+        "state": "CT",
+        "ohLine": 5869550
+      },
+      {
+        "county": "New Haven",
+        "state": "CT",
+        "ohLine": 3233197
+      },
+      {
+        "county": "Windham",
+        "state": "CT",
+        "ohLine": 2400780
+      }
     ],
     "weather_data": [
-      {"stormCode": 2010010100, "county": "Fairfield", "sumAFWA_TOTPRECIP": 10.0, "peakWSPD10": 6.0, "wgt5": 5, "wgt9": 0, "wgt13": 0, "wgt18": 0, "outage": 20},
-      {"stormCode": 2010010100, "county": "Hartford", "sumAFWA_TOTPRECIP": 12.0, "peakWSPD10": 7.5, "wgt5": 8, "wgt9": 0, "wgt13": 0, "wgt18": 0, "outage": 40},
-      {"stormCode": 2011082800, "county": "Fairfield", "sumAFWA_TOTPRECIP": 80.0, "peakWSPD10": 9.1, "wgt5": 12, "wgt9": 3, "wgt13": 0, "wgt18": 0, "outage": 120},
-      {"stormCode": 2011082800, "county": "Hartford", "sumAFWA_TOTPRECIP": 70.0, "peakWSPD10": 10.5, "wgt5": 14, "wgt9": 5, "wgt13": 0, "wgt18": 0, "outage": 180},
-      {"stormCode": 2011082800, "county": "New Haven", "sumAFWA_TOTPRECIP": 90.0, "peakWSPD10": 8.7, "wgt5": 10, "wgt9": 0, "wgt13": 0, "wgt18": 0, "outage": 90},
-      {"stormCode": 2012102806, "county": "Fairfield", "sumAFWA_TOTPRECIP": 150.5, "peakWSPD10": 12.3, "wgt5": 20, "wgt9": 8, "wgt13": 2, "wgt18": 0, "outage": 350},
-      {"stormCode": 2012102806, "county": "Hartford", "sumAFWA_TOTPRECIP": 130.0, "peakWSPD10": 14.2, "wgt5": 22, "wgt9": 10, "wgt13": 4, "wgt18": 0, "outage": 500},
-      {"stormCode": 2012102806, "county": "New Haven", "sumAFWA_TOTPRECIP": 140.0, "peakWSPD10": 13.5, "wgt5": 21, "wgt9": 9, "wgt13": 3, "wgt18": 0, "outage": 420},
-      {"stormCode": 2012102806, "county": "Windham", "sumAFWA_TOTPRECIP": 110.0, "peakWSPD10": 11.0, "wgt5": 18, "wgt9": 4, "wgt13": 0, "wgt18": 0, "outage": 160},
-      {"stormCode": 2015060100, "county": "Fairfield", "sumAFWA_TOTPRECIP": 25.0, "peakWSPD10": 5.5, "wgt5": 2, "wgt9": 0, "wgt13": 0, "wgt18": 0, "outage": 10},
-      {"stormCode": 2015060100, "county": "New Haven", "sumAFWA_TOTPRECIP": 30.0, "peakWSPD10": 6.1, "wgt5": 3, "wgt9": 0, "wgt13": 0, "wgt18": 0, "outage": 15},
-      {"stormCode": 2018121500, "county": "Fairfield", "sumAFWA_TOTPRECIP": 60.0, "peakWSPD10": 15.0, "wgt5": 16, "wgt9": 8, "wgt13": 5, "wgt18": 0, "outage": 280},
-      {"stormCode": 2018121500, "county": "Hartford", "sumAFWA_TOTPRECIP": 55.0, "peakWSPD10": 16.5, "wgt5": 17, "wgt9": 9, "wgt13": 6, "wgt18": 1, "outage": 310},
-      {"stormCode": 2018121500, "county": "Windham", "sumAFWA_TOTPRECIP": 40.0, "peakWSPD10": 18.4, "wgt5": 19, "wgt9": 12, "wgt13": 8, "wgt18": 2, "outage": 220},
-      {"stormCode": 2020070412, "county": "Fairfield", "sumAFWA_TOTPRECIP": 45.0, "peakWSPD10": 8.0, "wgt5": 6, "wgt9": 0, "wgt13": 0, "wgt18": 0, "outage": 75},
-      {"stormCode": 2020070412, "county": "Hartford", "sumAFWA_TOTPRECIP": 50.0, "peakWSPD10": 9.4, "wgt5": 7, "wgt9": 2, "wgt13": 0, "wgt18": 0, "outage": 95},
-      {"stormCode": 2020070412, "county": "New Haven", "sumAFWA_TOTPRECIP": 52.0, "peakWSPD10": 10.0, "wgt5": 9, "wgt9": 3, "wgt13": 0, "wgt18": 0, "outage": 105},
-      {"stormCode": 2020070412, "county": "Windham", "sumAFWA_TOTPRECIP": 48.0, "peakWSPD10": 8.8, "wgt5": 8, "wgt9": 0, "wgt13": 0, "wgt18": 0, "outage": 65}
+      {
+        "stormCode": 2010010100,
+        "county": "Fairfield",
+        "sumAFWA_TOTPRECIP": 10.0,
+        "peakWSPD10": 6.0,
+        "wgt5": 5,
+        "wgt9": 0,
+        "wgt13": 0,
+        "wgt18": 0,
+        "outage": 20
+      },
+      {
+        "stormCode": 2010010100,
+        "county": "Hartford",
+        "sumAFWA_TOTPRECIP": 12.0,
+        "peakWSPD10": 7.5,
+        "wgt5": 8,
+        "wgt9": 0,
+        "wgt13": 0,
+        "wgt18": 0,
+        "outage": 40
+      },
+      {
+        "stormCode": 2011082800,
+        "county": "Fairfield",
+        "sumAFWA_TOTPRECIP": 80.0,
+        "peakWSPD10": 9.1,
+        "wgt5": 12,
+        "wgt9": 3,
+        "wgt13": 0,
+        "wgt18": 0,
+        "outage": 120
+      },
+      {
+        "stormCode": 2011082800,
+        "county": "Hartford",
+        "sumAFWA_TOTPRECIP": 70.0,
+        "peakWSPD10": 10.5,
+        "wgt5": 14,
+        "wgt9": 5,
+        "wgt13": 0,
+        "wgt18": 0,
+        "outage": 180
+      },
+      {
+        "stormCode": 2011082800,
+        "county": "New Haven",
+        "sumAFWA_TOTPRECIP": 90.0,
+        "peakWSPD10": 8.7,
+        "wgt5": 10,
+        "wgt9": 0,
+        "wgt13": 0,
+        "wgt18": 0,
+        "outage": 90
+      },
+      {
+        "stormCode": 2012102806,
+        "county": "Fairfield",
+        "sumAFWA_TOTPRECIP": 150.5,
+        "peakWSPD10": 12.3,
+        "wgt5": 20,
+        "wgt9": 8,
+        "wgt13": 2,
+        "wgt18": 0,
+        "outage": 350
+      },
+      {
+        "stormCode": 2012102806,
+        "county": "Hartford",
+        "sumAFWA_TOTPRECIP": 130.0,
+        "peakWSPD10": 14.2,
+        "wgt5": 22,
+        "wgt9": 10,
+        "wgt13": 4,
+        "wgt18": 0,
+        "outage": 500
+      },
+      {
+        "stormCode": 2012102806,
+        "county": "New Haven",
+        "sumAFWA_TOTPRECIP": 140.0,
+        "peakWSPD10": 13.5,
+        "wgt5": 21,
+        "wgt9": 9,
+        "wgt13": 3,
+        "wgt18": 0,
+        "outage": 420
+      },
+      {
+        "stormCode": 2012102806,
+        "county": "Windham",
+        "sumAFWA_TOTPRECIP": 110.0,
+        "peakWSPD10": 11.0,
+        "wgt5": 18,
+        "wgt9": 4,
+        "wgt13": 0,
+        "wgt18": 0,
+        "outage": 160
+      },
+      {
+        "stormCode": 2015060100,
+        "county": "Fairfield",
+        "sumAFWA_TOTPRECIP": 25.0,
+        "peakWSPD10": 5.5,
+        "wgt5": 2,
+        "wgt9": 0,
+        "wgt13": 0,
+        "wgt18": 0,
+        "outage": 10
+      },
+      {
+        "stormCode": 2015060100,
+        "county": "New Haven",
+        "sumAFWA_TOTPRECIP": 30.0,
+        "peakWSPD10": 6.1,
+        "wgt5": 3,
+        "wgt9": 0,
+        "wgt13": 0,
+        "wgt18": 0,
+        "outage": 15
+      },
+      {
+        "stormCode": 2018121500,
+        "county": "Fairfield",
+        "sumAFWA_TOTPRECIP": 60.0,
+        "peakWSPD10": 15.0,
+        "wgt5": 16,
+        "wgt9": 8,
+        "wgt13": 5,
+        "wgt18": 0,
+        "outage": 280
+      },
+      {
+        "stormCode": 2018121500,
+        "county": "Hartford",
+        "sumAFWA_TOTPRECIP": 55.0,
+        "peakWSPD10": 16.5,
+        "wgt5": 17,
+        "wgt9": 9,
+        "wgt13": 6,
+        "wgt18": 1,
+        "outage": 310
+      },
+      {
+        "stormCode": 2018121500,
+        "county": "Windham",
+        "sumAFWA_TOTPRECIP": 40.0,
+        "peakWSPD10": 18.4,
+        "wgt5": 19,
+        "wgt9": 12,
+        "wgt13": 8,
+        "wgt18": 2,
+        "outage": 220
+      },
+      {
+        "stormCode": 2020070412,
+        "county": "Fairfield",
+        "sumAFWA_TOTPRECIP": 45.0,
+        "peakWSPD10": 8.0,
+        "wgt5": 6,
+        "wgt9": 0,
+        "wgt13": 0,
+        "wgt18": 0,
+        "outage": 75
+      },
+      {
+        "stormCode": 2020070412,
+        "county": "Hartford",
+        "sumAFWA_TOTPRECIP": 50.0,
+        "peakWSPD10": 9.4,
+        "wgt5": 7,
+        "wgt9": 2,
+        "wgt13": 0,
+        "wgt18": 0,
+        "outage": 95
+      },
+      {
+        "stormCode": 2020070412,
+        "county": "New Haven",
+        "sumAFWA_TOTPRECIP": 52.0,
+        "peakWSPD10": 10.0,
+        "wgt5": 9,
+        "wgt9": 3,
+        "wgt13": 0,
+        "wgt18": 0,
+        "outage": 105
+      },
+      {
+        "stormCode": 2020070412,
+        "county": "Windham",
+        "sumAFWA_TOTPRECIP": 48.0,
+        "peakWSPD10": 8.8,
+        "wgt5": 8,
+        "wgt9": 0,
+        "wgt13": 0,
+        "wgt18": 0,
+        "outage": 65
+      }
     ]
   },
   "cases": [
@@ -40,270 +260,963 @@
       "id": "sql_001",
       "question": "What is the total outage count for Fairfield county?",
       "expected_sql": "SELECT SUM(outage) AS total_outage FROM WeatherData WHERE LOWER(county) = 'fairfield';",
-      "expected_rows": [{"total_outage": 855}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["outage", "county"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "total_outage": 855
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "outage",
+        "county"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Aggregation by county."
     },
     {
       "id": "sql_002",
       "question": "What is the total outage count for Hartford county?",
       "expected_sql": "SELECT SUM(outage) AS total_outage FROM WeatherData WHERE LOWER(county) = 'hartford';",
-      "expected_rows": [{"total_outage": 1125}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["outage", "county"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "total_outage": 1125
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "outage",
+        "county"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Second county aggregation."
     },
     {
       "id": "sql_003",
       "question": "Which are the top 3 counties by outage?",
       "expected_sql": "SELECT county, SUM(outage) AS total_outage FROM WeatherData GROUP BY county ORDER BY total_outage DESC LIMIT 3;",
-      "expected_rows": [{"county": "Hartford", "total_outage": 1125}, {"county": "Fairfield", "total_outage": 855}, {"county": "New Haven", "total_outage": 630}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["county", "outage"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "county": "Hartford",
+          "total_outage": 1125
+        },
+        {
+          "county": "Fairfield",
+          "total_outage": 855
+        },
+        {
+          "county": "New Haven",
+          "total_outage": 630
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "county",
+        "outage"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Top-N county ranking."
     },
     {
       "id": "sql_004",
       "question": "What were the top 2 storms by outage?",
       "expected_sql": "SELECT w.stormCode, SUM(w.outage) AS total_outage FROM WeatherData w GROUP BY w.stormCode ORDER BY total_outage DESC LIMIT 2;",
-      "expected_rows": [{"stormCode": 2012102806, "total_outage": 1430}, {"stormCode": 2018121500, "total_outage": 810}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["stormCode", "outage"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "stormcode": 2012102806,
+          "total_outage": 1430
+        },
+        {
+          "stormcode": 2018121500,
+          "total_outage": 810
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "stormCode",
+        "outage"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Top-N storm ranking."
     },
     {
       "id": "sql_005",
       "question": "What were the top 5 storms by outage in New Haven?",
       "expected_sql": "SELECT w.stormCode, SUM(w.outage) AS total_outage FROM WeatherData w WHERE LOWER(w.county) = 'new haven' GROUP BY w.stormCode ORDER BY total_outage DESC LIMIT 5;",
-      "expected_rows": [{"stormCode": 2012102806, "total_outage": 420}, {"stormCode": 2020070412, "total_outage": 105}, {"stormCode": 2011082800, "total_outage": 90}, {"stormCode": 2015060100, "total_outage": 15}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["stormCode", "county", "outage"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "stormcode": 2012102806,
+          "total_outage": 420
+        },
+        {
+          "stormcode": 2020070412,
+          "total_outage": 105
+        },
+        {
+          "stormcode": 2011082800,
+          "total_outage": 90
+        },
+        {
+          "stormcode": 2015060100,
+          "total_outage": 15
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "stormCode",
+        "county",
+        "outage"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "County-filtered storm ranking."
     },
     {
       "id": "sql_006",
       "question": "Which storms had wind above 9 m/s in Hartford?",
       "expected_sql": "SELECT w.stormCode, w.peakWSPD10, w.outage FROM WeatherData w WHERE LOWER(w.county) = 'hartford' AND w.wgt9 > 0 ORDER BY w.peakWSPD10 DESC LIMIT 10;",
-      "expected_rows": [{"stormCode": 2018121500, "peakWSPD10": 16.5, "outage": 310}, {"stormCode": 2012102806, "peakWSPD10": 14.2, "outage": 500}, {"stormCode": 2011082800, "peakWSPD10": 10.5, "outage": 180}, {"stormCode": 2020070412, "peakWSPD10": 9.4, "outage": 95}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["stormCode", "peakWSPD10", "outage", "county", "wgt9"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "stormcode": 2018121500,
+          "peakwspd10": 16.5,
+          "outage": 310
+        },
+        {
+          "stormcode": 2012102806,
+          "peakwspd10": 14.2,
+          "outage": 500
+        },
+        {
+          "stormcode": 2011082800,
+          "peakwspd10": 10.5,
+          "outage": 180
+        },
+        {
+          "stormcode": 2020070412,
+          "peakwspd10": 9.4,
+          "outage": 95
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "stormCode",
+        "peakWSPD10",
+        "outage",
+        "county",
+        "wgt9"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Wind threshold maps to wgt9, not peak wind filtering."
     },
     {
       "id": "sql_007",
       "question": "Which Hartford storms were above 13 m/s?",
       "expected_sql": "SELECT w.stormCode, w.wgt13, w.outage FROM WeatherData w WHERE LOWER(w.county) = 'hartford' AND w.wgt13 > 0 ORDER BY w.wgt13 DESC;",
-      "expected_rows": [{"stormCode": 2018121500, "wgt13": 6, "outage": 310}, {"stormCode": 2012102806, "wgt13": 4, "outage": 500}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["stormCode", "county", "wgt13", "outage"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "stormcode": 2018121500,
+          "wgt13": 6,
+          "outage": 310
+        },
+        {
+          "stormcode": 2012102806,
+          "wgt13": 4,
+          "outage": 500
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "stormCode",
+        "county",
+        "wgt13",
+        "outage"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Higher wind-duration threshold."
     },
     {
       "id": "sql_008",
       "question": "What was the fastest storm in Windham?",
       "expected_sql": "SELECT w.stormCode, w.peakWSPD10 FROM WeatherData w WHERE LOWER(w.county) = 'windham' ORDER BY w.peakWSPD10 DESC LIMIT 1;",
-      "expected_rows": [{"stormCode": 2018121500, "peakWSPD10": 18.4}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["stormCode", "county", "peakWSPD10"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "stormcode": 2018121500,
+          "peakwspd10": 18.4
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "stormCode",
+        "county",
+        "peakWSPD10"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Fastest maps to peakWSPD10."
     },
     {
       "id": "sql_009",
       "question": "What was the outage count for storm 2012102806?",
       "expected_sql": "SELECT w.county, w.outage FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode WHERE s.stormCode = 2012102806 ORDER BY w.county;",
-      "expected_rows": [{"county": "Fairfield", "outage": 350}, {"county": "Hartford", "outage": 500}, {"county": "New Haven", "outage": 420}, {"county": "Windham", "outage": 160}],
-      "required_tables": ["WeatherData", "Storm"],
-      "required_columns": ["stormCode", "county", "outage"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "county": "Fairfield",
+          "outage": 350
+        },
+        {
+          "county": "Hartford",
+          "outage": 500
+        },
+        {
+          "county": "New Haven",
+          "outage": 420
+        },
+        {
+          "county": "Windham",
+          "outage": 160
+        }
+      ],
+      "required_tables": [
+        "WeatherData",
+        "Storm"
+      ],
+      "required_columns": [
+        "stormCode",
+        "county",
+        "outage"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Storm-code lookup with join."
     },
     {
       "id": "sql_010",
       "question": "What was the total outage for storm 2018121500?",
       "expected_sql": "SELECT SUM(w.outage) AS total_outage FROM WeatherData w WHERE w.stormCode = 2018121500;",
-      "expected_rows": [{"total_outage": 810}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["stormCode", "outage"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "total_outage": 810
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "stormCode",
+        "outage"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Storm total aggregation."
     },
     {
       "id": "sql_011",
       "question": "How many storms happened between 2010 and 2015?",
-      "expected_sql": "SELECT COUNT(DISTINCT s.stormCode) AS storm_count FROM Storm s WHERE strftime('%Y', s.eventDateTime) BETWEEN '2010' AND '2015';",
-      "expected_rows": [{"storm_count": 4}],
-      "required_tables": ["Storm"],
-      "required_columns": ["stormCode", "eventDateTime"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_sql": "SELECT COUNT(DISTINCT s.stormCode) AS storm_count FROM Storm s WHERE EXTRACT(YEAR FROM s.eventDateTime) BETWEEN 2010 AND 2015;",
+      "expected_rows": [
+        {
+          "storm_count": 4
+        }
+      ],
+      "required_tables": [
+        "Storm"
+      ],
+      "required_columns": [
+        "stormCode",
+        "eventDateTime"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Date range via eventDateTime."
     },
     {
       "id": "sql_012",
       "question": "How many storms happened in 2012?",
-      "expected_sql": "SELECT COUNT(DISTINCT s.stormCode) AS storm_count FROM Storm s WHERE strftime('%Y', s.eventDateTime) = '2012';",
-      "expected_rows": [{"storm_count": 1}],
-      "required_tables": ["Storm"],
-      "required_columns": ["stormCode", "eventDateTime"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_sql": "SELECT COUNT(DISTINCT s.stormCode) AS storm_count FROM Storm s WHERE EXTRACT(YEAR FROM s.eventDateTime) = 2012;",
+      "expected_rows": [
+        {
+          "storm_count": 1
+        }
+      ],
+      "required_tables": [
+        "Storm"
+      ],
+      "required_columns": [
+        "stormCode",
+        "eventDateTime"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Single-year filter."
     },
     {
       "id": "sql_013",
       "question": "Which county had more outages, Fairfield or Hartford?",
       "expected_sql": "SELECT county, SUM(outage) AS total_outage FROM WeatherData WHERE LOWER(county) IN ('fairfield', 'hartford') GROUP BY county ORDER BY total_outage DESC;",
-      "expected_rows": [{"county": "Hartford", "total_outage": 1125}, {"county": "Fairfield", "total_outage": 855}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["county", "outage"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "county": "Hartford",
+          "total_outage": 1125
+        },
+        {
+          "county": "Fairfield",
+          "total_outage": 855
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "county",
+        "outage"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "County comparison."
     },
     {
       "id": "sql_014",
       "question": "Which storms hit more than one county?",
-      "expected_sql": "SELECT stormCode, COUNT(DISTINCT county) AS county_count FROM WeatherData GROUP BY stormCode HAVING county_count > 1 ORDER BY county_count DESC, stormCode ASC LIMIT 10;",
-      "expected_rows": [{"stormCode": 2012102806, "county_count": 4}, {"stormCode": 2020070412, "county_count": 4}, {"stormCode": 2011082800, "county_count": 3}, {"stormCode": 2018121500, "county_count": 3}, {"stormCode": 2010010100, "county_count": 2}, {"stormCode": 2015060100, "county_count": 2}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["stormCode", "county"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_sql": "SELECT stormCode, COUNT(DISTINCT county) AS county_count FROM WeatherData GROUP BY stormCode HAVING COUNT(DISTINCT county) > 1 ORDER BY county_count DESC, stormCode ASC LIMIT 10;",
+      "expected_rows": [
+        {
+          "stormcode": 2012102806,
+          "county_count": 4
+        },
+        {
+          "stormcode": 2020070412,
+          "county_count": 4
+        },
+        {
+          "stormcode": 2011082800,
+          "county_count": 3
+        },
+        {
+          "stormcode": 2018121500,
+          "county_count": 3
+        },
+        {
+          "stormcode": 2010010100,
+          "county_count": 2
+        },
+        {
+          "stormcode": 2015060100,
+          "county_count": 2
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "stormCode",
+        "county"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Multi-county grouping."
     },
     {
       "id": "sql_015",
       "question": "Which storms lasted longer than 48 hours?",
       "expected_sql": "SELECT s.stormCode, s.eventDateTime, s.eventLength FROM Storm s WHERE s.eventLength > 48 ORDER BY s.eventLength DESC;",
-      "expected_rows": [{"stormCode": 2012102806, "eventDateTime": "2012-10-28 06:00:00", "eventLength": 72}, {"stormCode": 2018121500, "eventDateTime": "2018-12-15 00:00:00", "eventLength": 60}],
-      "required_tables": ["Storm"],
-      "required_columns": ["stormCode", "eventDateTime", "eventLength"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "stormcode": 2012102806,
+          "eventdatetime": "2012-10-28 06:00:00",
+          "eventlength": 72
+        },
+        {
+          "stormcode": 2018121500,
+          "eventdatetime": "2018-12-15 00:00:00",
+          "eventlength": 60
+        }
+      ],
+      "required_tables": [
+        "Storm"
+      ],
+      "required_columns": [
+        "stormCode",
+        "eventDateTime",
+        "eventLength"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Duration filter."
     },
     {
       "id": "sql_016",
       "question": "What was the average outage in New Haven?",
       "expected_sql": "SELECT AVG(outage) AS avg_outage FROM WeatherData WHERE LOWER(county) = 'new haven';",
-      "expected_rows": [{"avg_outage": 157.5}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["outage", "county"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "avg_outage": 157.5
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "outage",
+        "county"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Average aggregation."
     },
     {
       "id": "sql_017",
       "question": "What was the peak outage in Hartford?",
       "expected_sql": "SELECT MAX(outage) AS peak_outage FROM WeatherData WHERE LOWER(county) = 'hartford';",
-      "expected_rows": [{"peak_outage": 500}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["outage", "county"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "peak_outage": 500
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "outage",
+        "county"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Max aggregation."
     },
     {
       "id": "sql_018",
       "question": "How many storm-county records had outage over 100?",
       "expected_sql": "SELECT COUNT(*) AS record_count FROM WeatherData WHERE outage > 100;",
-      "expected_rows": [{"record_count": 10}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["outage"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "record_count": 10
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "outage"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Filtered count."
     },
     {
       "id": "sql_019",
       "question": "Which county had the highest average outage?",
       "expected_sql": "SELECT county, AVG(outage) AS avg_outage FROM WeatherData GROUP BY county ORDER BY avg_outage DESC LIMIT 1;",
-      "expected_rows": [{"county": "Hartford", "avg_outage": 225.0}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["county", "outage"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "county": "Hartford",
+          "avg_outage": 225.0
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "county",
+        "outage"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Average ranking."
     },
     {
       "id": "sql_020",
       "question": "Show the top 2 Fairfield storm events by outage.",
       "expected_sql": "SELECT s.stormCode, s.eventDateTime, w.outage FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode WHERE LOWER(w.county) = 'fairfield' ORDER BY w.outage DESC, s.eventDateTime DESC LIMIT 2;",
-      "expected_rows": [{"stormCode": 2012102806, "eventDateTime": "2012-10-28 06:00:00", "outage": 350}, {"stormCode": 2018121500, "eventDateTime": "2018-12-15 00:00:00", "outage": 280}],
-      "required_tables": ["WeatherData", "Storm"],
-      "required_columns": ["stormCode", "eventDateTime", "county", "outage"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "stormcode": 2012102806,
+          "eventdatetime": "2012-10-28 06:00:00",
+          "outage": 350
+        },
+        {
+          "stormcode": 2018121500,
+          "eventdatetime": "2018-12-15 00:00:00",
+          "outage": 280
+        }
+      ],
+      "required_tables": [
+        "WeatherData",
+        "Storm"
+      ],
+      "required_columns": [
+        "stormCode",
+        "eventDateTime",
+        "county",
+        "outage"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "County history with date join."
     },
     {
       "id": "sql_021",
       "question": "Which Fairfield storms had precipitation over 50 mm?",
       "expected_sql": "SELECT w.stormCode, w.sumAFWA_TOTPRECIP, w.outage FROM WeatherData w WHERE LOWER(w.county) = 'fairfield' AND w.sumAFWA_TOTPRECIP > 50 ORDER BY w.sumAFWA_TOTPRECIP DESC;",
-      "expected_rows": [{"stormCode": 2012102806, "sumAFWA_TOTPRECIP": 150.5, "outage": 350}, {"stormCode": 2011082800, "sumAFWA_TOTPRECIP": 80.0, "outage": 120}, {"stormCode": 2018121500, "sumAFWA_TOTPRECIP": 60.0, "outage": 280}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["stormCode", "sumAFWA_TOTPRECIP", "county", "outage"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "stormcode": 2012102806,
+          "sumafwa_totprecip": 150.5,
+          "outage": 350
+        },
+        {
+          "stormcode": 2011082800,
+          "sumafwa_totprecip": 80.0,
+          "outage": 120
+        },
+        {
+          "stormcode": 2018121500,
+          "sumafwa_totprecip": 60.0,
+          "outage": 280
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "stormCode",
+        "sumAFWA_TOTPRECIP",
+        "county",
+        "outage"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Precipitation threshold."
     },
     {
       "id": "sql_022",
       "question": "What is the total outage by year?",
-      "expected_sql": "SELECT strftime('%Y', s.eventDateTime) AS year, SUM(w.outage) AS total_outage FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode GROUP BY year ORDER BY year;",
-      "expected_rows": [{"year": "2010", "total_outage": 60}, {"year": "2011", "total_outage": 390}, {"year": "2012", "total_outage": 1430}, {"year": "2015", "total_outage": 25}, {"year": "2018", "total_outage": 810}, {"year": "2020", "total_outage": 340}],
-      "required_tables": ["WeatherData", "Storm"],
-      "required_columns": ["eventDateTime", "stormCode", "outage"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_sql": "SELECT EXTRACT(YEAR FROM s.eventDateTime) AS year, SUM(w.outage) AS total_outage FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode GROUP BY year ORDER BY year;",
+      "expected_rows": [
+        {
+          "year": 2010,
+          "total_outage": 60
+        },
+        {
+          "year": 2011,
+          "total_outage": 390
+        },
+        {
+          "year": 2012,
+          "total_outage": 1430
+        },
+        {
+          "year": 2015,
+          "total_outage": 25
+        },
+        {
+          "year": 2018,
+          "total_outage": 810
+        },
+        {
+          "year": 2020,
+          "total_outage": 340
+        }
+      ],
+      "required_tables": [
+        "WeatherData",
+        "Storm"
+      ],
+      "required_columns": [
+        "eventDateTime",
+        "stormCode",
+        "outage"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Time-series aggregation."
     },
     {
       "id": "sql_023",
       "question": "Which counties had wind above 18 m/s?",
       "expected_sql": "SELECT w.county, w.stormCode, w.wgt18 FROM WeatherData w WHERE w.wgt18 > 0 ORDER BY w.county;",
-      "expected_rows": [{"county": "Hartford", "stormCode": 2018121500, "wgt18": 1}, {"county": "Windham", "stormCode": 2018121500, "wgt18": 2}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["county", "stormCode", "wgt18"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "county": "Hartford",
+          "stormcode": 2018121500,
+          "wgt18": 1
+        },
+        {
+          "county": "Windham",
+          "stormcode": 2018121500,
+          "wgt18": 2
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "county",
+        "stormCode",
+        "wgt18"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Highest threshold feature."
     },
     {
       "id": "sql_024",
       "question": "What is the overhead line value for Hartford?",
       "expected_sql": "SELECT ohLine FROM County WHERE LOWER(county) = 'hartford';",
-      "expected_rows": [{"ohLine": 5869550}],
-      "required_tables": ["County"],
-      "required_columns": ["ohLine", "county"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "ohline": 5869550
+        }
+      ],
+      "required_tables": [
+        "County"
+      ],
+      "required_columns": [
+        "ohLine",
+        "county"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "County metadata lookup."
     },
     {
       "id": "sql_025",
       "question": "How many Fairfield storms had no wind over 13 m/s?",
       "expected_sql": "SELECT COUNT(*) AS storm_count FROM WeatherData WHERE LOWER(county) = 'fairfield' AND wgt13 = 0;",
-      "expected_rows": [{"storm_count": 4}],
-      "required_tables": ["WeatherData"],
-      "required_columns": ["county", "wgt13"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "storm_count": 4
+        }
+      ],
+      "required_tables": [
+        "WeatherData"
+      ],
+      "required_columns": [
+        "county",
+        "wgt13"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Negative threshold condition."
     },
     {
       "id": "sql_026",
       "question": "What was the longest storm?",
       "expected_sql": "SELECT stormCode, eventLength FROM Storm ORDER BY eventLength DESC LIMIT 1;",
-      "expected_rows": [{"stormCode": 2012102806, "eventLength": 72}],
-      "required_tables": ["Storm"],
-      "required_columns": ["stormCode", "eventLength"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_rows": [
+        {
+          "stormcode": 2012102806,
+          "eventlength": 72
+        }
+      ],
+      "required_tables": [
+        "Storm"
+      ],
+      "required_columns": [
+        "stormCode",
+        "eventLength"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Duration ranking."
     },
     {
       "id": "sql_027",
       "question": "What were county outage totals in 2020?",
-      "expected_sql": "SELECT w.county, SUM(w.outage) AS total_outage FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode WHERE strftime('%Y', s.eventDateTime) = '2020' GROUP BY w.county ORDER BY total_outage DESC;",
-      "expected_rows": [{"county": "New Haven", "total_outage": 105}, {"county": "Hartford", "total_outage": 95}, {"county": "Fairfield", "total_outage": 75}, {"county": "Windham", "total_outage": 65}],
-      "required_tables": ["WeatherData", "Storm"],
-      "required_columns": ["county", "outage", "stormCode", "eventDateTime"],
-      "forbidden_tokens": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "PRAGMA"],
+      "expected_sql": "SELECT w.county, SUM(w.outage) AS total_outage FROM WeatherData w JOIN Storm s ON s.stormCode = w.stormCode WHERE EXTRACT(YEAR FROM s.eventDateTime) = 2020 GROUP BY w.county ORDER BY total_outage DESC;",
+      "expected_rows": [
+        {
+          "county": "New Haven",
+          "total_outage": 105
+        },
+        {
+          "county": "Hartford",
+          "total_outage": 95
+        },
+        {
+          "county": "Fairfield",
+          "total_outage": 75
+        },
+        {
+          "county": "Windham",
+          "total_outage": 65
+        }
+      ],
+      "required_tables": [
+        "WeatherData",
+        "Storm"
+      ],
+      "required_columns": [
+        "county",
+        "outage",
+        "stormCode",
+        "eventDateTime"
+      ],
+      "forbidden_tokens": [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "REPLACE",
+        "TRUNCATE",
+        "PRAGMA"
+      ],
       "notes": "Year-filtered county grouping."
     }
   ]

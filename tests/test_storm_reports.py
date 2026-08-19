@@ -11,8 +11,9 @@ labelled actual, and no outage figure may ever appear on the forecast side.
 from __future__ import annotations
 
 import re
-import sqlite3
 import sys
+
+import psycopg
 import unittest
 from pathlib import Path
 
@@ -20,8 +21,13 @@ REPO_ROOT = Path(__file__).parent.parent
 SRC_DIR = REPO_ROOT / "src"
 SCHEMA_PATH = REPO_ROOT / "sql" / "schema.sql"
 
+TESTS_DIR = Path(__file__).parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from pg_harness import executemany, make_conn, new_connection  # noqa: E402,F401
 
 from wiser.storm_analysis import (  # noqa: E402
     compare_forecast,
@@ -65,19 +71,18 @@ _WEATHER = [
 ]
 
 
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(_SCHEMA_SQL)
-    conn.executemany(
-        "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+def _make_conn() -> psycopg.Connection:
+    conn = make_conn()
+    executemany(conn, 
+        "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
         _STORMS,
     )
-    conn.executemany(
-        "INSERT INTO County(county, state, ohLine) VALUES(?, ?, ?)", _COUNTIES
+    executemany(conn, 
+        "INSERT INTO County(county, state, ohLine) VALUES(%s, %s, %s)", _COUNTIES
     )
-    conn.executemany(
+    executemany(conn, 
         "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,"
-        " wgt5, wgt9, wgt13, wgt18, outage) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " wgt5, wgt9, wgt13, wgt18, outage) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
         _WEATHER,
     )
     conn.commit()
@@ -326,10 +331,10 @@ class TestStormComparisonReport(unittest.TestCase):
         conn = _make_conn()
         self.addCleanup(conn.close)
         conn.execute("DELETE FROM WeatherData")
-        conn.executemany(
+        executemany(conn, 
             "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP,"
             " peakWSPD10, wgt5, wgt9, wgt13, wgt18, outage)"
-            " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             [
                 (2020080406, "Fairfield", 30.0, 9.5, 1, 0, 0, 0, 600),
                 (2020080406, "Hartford", 25.0, 11.0, 1, 0, 0, 0, 400),
@@ -447,10 +452,10 @@ class TestGustExposureIsNeverAPeak(unittest.TestCase):
 
     def _summary_text(self, weather) -> str:
         self.conn.execute("DELETE FROM WeatherData")
-        self.conn.executemany(
+        executemany(self.conn, 
             "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP,"
             " peakWSPD10, wgt5, wgt9, wgt13, wgt18, outage)"
-            " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             weather,
         )
         self.conn.commit()
@@ -496,7 +501,7 @@ class TestGustExposureIsNeverAPeak(unittest.TestCase):
 
     def test_true_peak_gust_renders_when_peakgust10_exists(self):
         self.conn.execute(
-            "UPDATE WeatherData SET peakGUST10 = ? WHERE stormCode = ? AND county = ?",
+            "UPDATE WeatherData SET peakGUST10 = %s WHERE stormCode = %s AND county = %s",
             (18.0, 2020080406, "Fairfield"),
         )
         self.conn.commit()
@@ -515,10 +520,10 @@ class TestComparisonLeadsWithTheLargestDifference(unittest.TestCase):
 
     def _seed(self, weather):
         self.conn.execute("DELETE FROM WeatherData")
-        self.conn.executemany(
+        executemany(self.conn, 
             "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP,"
             " peakWSPD10, wgt5, wgt9, wgt13, wgt18, outage)"
-            " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             weather,
         )
         self.conn.commit()
@@ -631,10 +636,10 @@ class TestComparisonLeadsWithTheLargestDifference(unittest.TestCase):
 
     def test_identical_storms_are_not_listed_under_differ_most(self):
         self.conn.execute("DELETE FROM WeatherData")
-        self.conn.executemany(
+        executemany(self.conn, 
             "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP,"
             " peakWSPD10, wgt5, wgt9, wgt13, wgt18, outage)"
-            " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             [
                 (2020080406, "Fairfield", 30.0, 9.5, 20, 8, 0, 0, 600),
                 (2021090100, "Fairfield", 30.0, 9.5, 20, 8, 0, 0, 600),

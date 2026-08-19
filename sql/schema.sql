@@ -1,12 +1,22 @@
 -- ============================================================================
 -- WISER Weather Database Schema
 -- Connecticut Storm & Weather Analytics
+--
+-- Target: PostgreSQL 17
+--
+-- Note on identifier case: PostgreSQL folds unquoted identifiers to lowercase,
+-- so `stormCode` below is physically stored as `stormcode`. Unquoted references
+-- in queries fold the same way, so camelCase stays readable here and in the
+-- application SQL. Never double-quote these names -- "stormCode" would create a
+-- genuinely case-sensitive column that unquoted references can no longer find.
 -- ============================================================================
-
-PRAGMA foreign_keys = OFF;
 
 -- ============================================================================
 -- Drop existing tables (reverse dependency order)
+--
+-- PostgreSQL enforces foreign keys unconditionally; there is no equivalent of
+-- SQLite's `PRAGMA foreign_keys = OFF` to suspend them around this block. The
+-- reverse dependency order below is what makes the drops succeed.
 -- ============================================================================
 DROP TABLE IF EXISTS WeatherData;
 DROP TABLE IF EXISTS HourlyWeatherObservation;
@@ -17,8 +27,6 @@ DROP TABLE IF EXISTS RegionCountyMapping;
 DROP TABLE IF EXISTS StormCounty;
 DROP TABLE IF EXISTS County;
 DROP TABLE IF EXISTS Storm;
-
-PRAGMA foreign_keys = ON;
 
 -- ============================================================================
 -- Storm Table: Contains information about weather events
@@ -76,9 +84,9 @@ CREATE TABLE County (
 CREATE TABLE WeatherData (
     stormCode BIGINT NOT NULL,
     county VARCHAR(64) NOT NULL,
-    sumAFWA_TOTPRECIP REAL NOT NULL,
-    peakWSPD10 REAL NOT NULL,
-    peakGUST10 REAL,
+    sumAFWA_TOTPRECIP DOUBLE PRECISION NOT NULL,
+    peakWSPD10 DOUBLE PRECISION NOT NULL,
+    peakGUST10 DOUBLE PRECISION,
     wgt5 INTEGER NOT NULL,
     wgt9 INTEGER NOT NULL,
     wgt13 INTEGER NOT NULL,
@@ -119,6 +127,9 @@ CREATE TABLE RegionCountyMapping (
 --
 -- New mock-data metrics such as humidity can be registered here without
 -- hardcoding every presentation label into each query path.
+--
+-- higherIsMoreSevere stays an INTEGER 0/1 rather than a PostgreSQL BOOLEAN so
+-- the Python metric registry keeps handling one type across the codebase.
 -- ============================================================================
 CREATE TABLE StormMetricDefinition (
     metricKey TEXT PRIMARY KEY,
@@ -142,7 +153,7 @@ CREATE TABLE HourlyWeatherObservation (
     county VARCHAR(64) NOT NULL,
     hourOffset INTEGER NOT NULL,
     metricKey TEXT NOT NULL,
-    metricValue REAL NOT NULL,
+    metricValue DOUBLE PRECISION NOT NULL,
     observedAt TIMESTAMP,
     sourceColumn TEXT,
     PRIMARY KEY (stormCode, county, hourOffset, metricKey),
@@ -161,16 +172,16 @@ CREATE TABLE HourlyWeatherObservation (
 -- falls back to historical calendar-month comparison with a clear notice.
 -- ============================================================================
 CREATE TABLE CurrentWeatherObservation (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     sourceSystem TEXT NOT NULL,
     sourceRecordId TEXT NOT NULL,
     observedAt TIMESTAMP NOT NULL,
     county VARCHAR(64),
     state VARCHAR(2) NOT NULL DEFAULT 'CT',
-    peakWSPD10 REAL,
-    peakGUST10 REAL,
-    sumAFWA_TOTPRECIP REAL,
-    humidity REAL,
+    peakWSPD10 DOUBLE PRECISION,
+    peakGUST10 DOUBLE PRECISION,
+    sumAFWA_TOTPRECIP DOUBLE PRECISION,
+    humidity DOUBLE PRECISION,
     outage INTEGER,
     rawPayload TEXT NOT NULL,
     UNIQUE (sourceSystem, sourceRecordId, observedAt, county),
@@ -192,7 +203,7 @@ CREATE TABLE CurrentWeatherObservation (
 -- rather than one normalized historical (stormCode, county) observation.
 -- ============================================================================
 CREATE TABLE ExternalOutageObservation (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     sourceSystem TEXT NOT NULL,
     sourceRecordId TEXT NOT NULL,
     observedAt TIMESTAMP NOT NULL,

@@ -2,23 +2,22 @@
 
 This module owns every storm-scoped SQL query in WISER. Handlers and the
 report layer call these functions and never write SQL themselves, so a move
-to PostgreSQL has exactly one file to port — and inside that file, exactly one
+to PostgreSQL had exactly one file to port — and inside that file, exactly one
 function (``_fetch``) that binds parameters.
 
 Portability rules this module holds to (see the plan, section 2):
 
-* No SQLite-only functions. No ``strftime``: dates derive from ``stormCode``,
+* No engine-specific date functions: dates derive from ``stormCode``,
   which is an integer ``YYYYMMDDHH``, using integer arithmetic only.
 * No ``ROUND(<float>, n)`` — PostgreSQL has no such overload for double
   precision. Rounding is the presentation layer's job.
-* Ranking uses ``RANK() OVER`` / ``COUNT(*) OVER``, supported by SQLite 3.25+
-  and PostgreSQL 8.4+.
+* Ranking uses ``RANK() OVER`` / ``COUNT(*) OVER``.
 * Rows are mapped to dataclasses **positionally**. Unquoted ``stormCode``
   folds to ``stormcode`` in PostgreSQL, so key-based access would break
-  silently on migration.
+  silently. This is what kept the migration mechanical.
 * ``state`` is always a bound parameter, never a literal.
-* Connections are typed against a ``DbConnection`` Protocol rather than
-  ``sqlite3.Connection``.
+* Connections are typed against a ``DbConnection`` Protocol rather than a
+  concrete driver connection class.
 
 ``tests/test_storm_analysis.py`` enforces the first two mechanically.
 """
@@ -66,9 +65,11 @@ COMPARISON_THRESHOLD_LABEL = (
 
 
 class DbConnection(Protocol):
-    """Minimal read surface. Deliberately not ``sqlite3.Connection``."""
+    """Minimal read surface. Deliberately not a concrete driver class."""
 
-    def execute(self, sql: str, parameters: Sequence[Any] = ..., /) -> Any: ...
+    def execute(
+        self, sql: str, parameters: Sequence[Any] | None = ..., /
+    ) -> Any: ...
 
 
 # ---------------------------------------------------------------------------
@@ -83,11 +84,17 @@ def _fetch(
 ) -> list[tuple]:
     """Execute a read query and return raw positional rows.
 
-    Every query in this module goes through here. The ``?`` placeholder style
-    is SQLite's; a psycopg port rewrites markers in this one function rather
-    than at every call site.
+    Every query in this module goes through here. Placeholders are psycopg's
+    ``%s`` style and are written out at each call site rather than rewritten
+    here: a regex pass over the SQL would also corrupt any literal ``?`` or
+    ``%`` inside a string literal.
+
+    Empty params are passed as ``None``, not ``()``. psycopg only enters
+    parameter-interpolation mode when parameters are supplied, and in that
+    mode a literal ``%`` in the SQL is an error unless doubled. Passing
+    ``None`` keeps parameterless queries on the simple protocol.
     """
-    cursor = conn.execute(sql, tuple(params))
+    cursor = conn.execute(sql, tuple(params) if params else None)
     return [tuple(row) for row in cursor.fetchall()]
 
 
@@ -648,7 +655,7 @@ def resolve_storm(conn: DbConnection, token: str) -> StormResolution:
             """
             SELECT stormCode, eventDateTime, eventLength
             FROM Storm
-            WHERE stormCode = ?
+            WHERE stormCode = %s
             """,
             (int(text),),
         )
@@ -660,7 +667,7 @@ def resolve_storm(conn: DbConnection, token: str) -> StormResolution:
         """
         SELECT stormCode, eventDateTime, eventLength
         FROM Storm
-        WHERE stormCode >= ? AND stormCode < ?
+        WHERE stormCode >= %s AND stormCode < %s
         ORDER BY stormCode ASC
         """,
         (lower, upper),
@@ -686,7 +693,7 @@ def same_date_siblings(conn: DbConnection, storm_code: int) -> tuple[StormRef, .
         """
         SELECT stormCode, eventDateTime, eventLength
         FROM Storm
-        WHERE stormCode >= ? AND stormCode < ? AND stormCode <> ?
+        WHERE stormCode >= %s AND stormCode < %s AND stormCode <> %s
         ORDER BY stormCode ASC
         """,
         (lower, upper, int(storm_code)),
@@ -702,7 +709,7 @@ def storm_count(conn: DbConnection, *, state: str = DEFAULT_STATE) -> int:
         SELECT COUNT(DISTINCT w.stormCode)
         FROM WeatherData w
         JOIN County c ON LOWER(c.county) = LOWER(w.county)
-        WHERE LOWER(c.state) = LOWER(?)
+        WHERE LOWER(c.state) = LOWER(%s)
         """,
         (state,),
     )
@@ -733,7 +740,7 @@ def storm_summary(
         """
         SELECT stormCode, eventDateTime, eventLength
         FROM Storm
-        WHERE stormCode = ?
+        WHERE stormCode = %s
         """,
         (int(storm_code),),
     )
@@ -756,12 +763,12 @@ def storm_summary(
             c.ohLine
         FROM WeatherData w
         JOIN County c ON LOWER(c.county) = LOWER(w.county)
-        WHERE w.stormCode = ?
-          AND LOWER(c.state) = LOWER(?)
+        WHERE w.stormCode = %s
+          AND LOWER(c.state) = LOWER(%s)
     """
     params: list[Any] = [int(storm_code), state]
     if county:
-        sql += " AND LOWER(w.county) = LOWER(?)"
+        sql += " AND LOWER(w.county) = LOWER(%s)"
         params.append(county)
     sql += " ORDER BY w.outage DESC, w.county ASC"
 
@@ -835,7 +842,7 @@ _STATE_SCOPE_SQL = """
             MAX(w.sumAFWA_TOTPRECIP) AS max_precip
         FROM WeatherData w
         JOIN County c ON LOWER(c.county) = LOWER(w.county)
-        WHERE LOWER(c.state) = LOWER(?)
+        WHERE LOWER(c.state) = LOWER(%s)
         GROUP BY w.stormCode
 """
 
@@ -847,8 +854,8 @@ _COUNTY_SCOPE_SQL = """
             w.sumAFWA_TOTPRECIP AS max_precip
         FROM WeatherData w
         JOIN County c ON LOWER(c.county) = LOWER(w.county)
-        WHERE LOWER(c.state) = LOWER(?)
-          AND LOWER(w.county) = LOWER(?)
+        WHERE LOWER(c.state) = LOWER(%s)
+          AND LOWER(w.county) = LOWER(%s)
 """
 
 _RANKING_SQL_TEMPLATE = """
@@ -874,7 +881,7 @@ _RANKING_SQL_TEMPLATE = """
         max_precip, rank_max_precip, tie_max_precip,
         total_storms
     FROM ranked
-    WHERE storm_code = ?
+    WHERE storm_code = %s
 """
 
 
@@ -904,7 +911,7 @@ def storm_ranking(
 
     header = _fetch(
         conn,
-        "SELECT stormCode, eventDateTime, eventLength FROM Storm WHERE stormCode = ?",
+        "SELECT stormCode, eventDateTime, eventLength FROM Storm WHERE stormCode = %s",
         (int(storm_code),),
     )
     if not header:
@@ -1035,8 +1042,8 @@ _POSITIONABLE = {
 _FORECAST_POSITION_SQL_TEMPLATE = """
     WITH storm_scope AS ({scope})
     SELECT
-        SUM(CASE WHEN max_wind > ? THEN 1 ELSE 0 END),
-        SUM(CASE WHEN max_precip > ? THEN 1 ELSE 0 END),
+        SUM(CASE WHEN max_wind > %s THEN 1 ELSE 0 END),
+        SUM(CASE WHEN max_precip > %s THEN 1 ELSE 0 END),
         COUNT(*)
     FROM storm_scope
 """
@@ -1046,7 +1053,7 @@ def state_counties(conn: DbConnection, *, state: str = DEFAULT_STATE) -> tuple[s
     """County names in a state, ordered."""
     rows = _fetch(
         conn,
-        "SELECT county FROM County WHERE LOWER(state) = LOWER(?) ORDER BY county ASC",
+        "SELECT county FROM County WHERE LOWER(state) = LOWER(%s) ORDER BY county ASC",
         (state,),
     )
     return tuple(str(row[0]) for row in rows)
@@ -1144,7 +1151,7 @@ def _counties_by_outage(
         SELECT w.county, SUM(w.outage) AS total_outage
         FROM WeatherData w
         JOIN County c ON LOWER(c.county) = LOWER(w.county)
-        WHERE LOWER(c.state) = LOWER(?)
+        WHERE LOWER(c.state) = LOWER(%s)
         GROUP BY w.county
         ORDER BY total_outage DESC, w.county ASC
         """,
@@ -1214,8 +1221,8 @@ def _scope_storm_total(
         SELECT COUNT(DISTINCT w.stormCode)
         FROM WeatherData w
         JOIN County c ON LOWER(c.county) = LOWER(w.county)
-        WHERE LOWER(c.state) = LOWER(?)
-          AND LOWER(w.county) = LOWER(?)
+        WHERE LOWER(c.state) = LOWER(%s)
+          AND LOWER(w.county) = LOWER(%s)
         """,
         (state, county),
     )
@@ -1434,8 +1441,8 @@ def current_weather_available(
             """
             SELECT COUNT(*)
             FROM CurrentWeatherObservation
-            WHERE observedAt >= ? AND observedAt < ?
-              AND LOWER(state) = LOWER(?)
+            WHERE observedAt >= %s AND observedAt < %s
+              AND LOWER(state) = LOWER(%s)
             """,
             (start, end, state),
         )
@@ -1597,7 +1604,7 @@ def _group_observations(
         FROM WeatherData w
         JOIN Storm s ON s.stormCode = w.stormCode
         JOIN County c ON LOWER(c.county) = LOWER(w.county)
-        WHERE LOWER(c.state) = LOWER(?)
+        WHERE LOWER(c.state) = LOWER(%s)
         ORDER BY w.stormCode ASC, w.county ASC
         """,
         (state,),
@@ -1659,8 +1666,8 @@ def _current_weather_observations(
             sumAFWA_TOTPRECIP,
             humidity
         FROM CurrentWeatherObservation
-        WHERE observedAt >= ? AND observedAt < ?
-          AND LOWER(state) = LOWER(?)
+        WHERE observedAt >= %s AND observedAt < %s
+          AND LOWER(state) = LOWER(%s)
         ORDER BY observedAt ASC, county ASC, sourceRecordId ASC
         """,
         (start, end, state),
@@ -1860,7 +1867,7 @@ def _region_mapping(
             """
             SELECT region, county
             FROM RegionCountyMapping
-            WHERE LOWER(state) = LOWER(?)
+            WHERE LOWER(state) = LOWER(%s)
             ORDER BY region ASC, county ASC
             """,
             (state,),

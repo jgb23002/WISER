@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import psycopg
 
 from wiser.data_pipeline import (
     load_raw_csv,
@@ -47,9 +48,13 @@ class DataRetrievalProcessingAgent:
             output_path / "weather_data.csv",
         )
 
-    def build_database(self, db_path: str | Path) -> sqlite3.Connection:
+    def build_database(self, dsn: str | None = None) -> psycopg.Connection:
+        """Build the WISER schema and load it from the normalized CSVs.
+
+        ``dsn`` defaults to ``DATABASE_URL`` (see ``database.resolve_dsn``).
+        """
         storm_rows, county_rows, weather_data_rows = self.normalize()
-        conn = connect(db_path)
+        conn = connect(dsn)
         initialize_schema(conn)
         load_normalized_rows(conn, storm_rows, county_rows, weather_data_rows)
         return conn

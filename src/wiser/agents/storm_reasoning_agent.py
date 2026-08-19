@@ -17,7 +17,7 @@ MAX_REASONING_ROWS = 12
 _SYSTEM_PROMPT = """\
 You are the WISER storm reasoning analyst.
 
-Your job is not to write SQL. A separate, validated SQLite step already did
+Your job is not to write SQL. A separate, validated PostgreSQL step already did
 that. Use only the user's question, the SQL query, and the SQL result rows.
 
 Reasoning rules:

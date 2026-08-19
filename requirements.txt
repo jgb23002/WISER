@@ -1,4 +1,6 @@
-# Core WISER workflows do not require third-party packages.
+# Required: PostgreSQL driver. psycopg 3, not psycopg2 -- v3 puts .execute()
+# on the connection object, which is the shape this codebase already uses.
+psycopg[binary]
 #
 # Optional external-context accelerators:
 # faiss-cpu

@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: wiser-postgres
+    environment:
+      POSTGRES_USER: wiser
+      POSTGRES_PASSWORD: wiser123
+      POSTGRES_DB: wiser
+    ports:
+      # Host port 5433: a native PostgreSQL service already owns 5432 on this
+      # machine. The container still listens on 5432 internally.
+      - "5433:5432"
+    volumes:
+      - wiser-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wiser -d wiser"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  wiser-pgdata:

@@ -8,7 +8,7 @@ SimilarityQueryAgent          – Multi-dimensional Z-score storm similarity
 RAGKnowledgeAgent             – Local RAG index (docs/code/schema) + optional
                                 external NOAA/NHC/NCEI web and PDF context with
                                 OpenAI or local extractive summarization
-SqlAiAgent                    – LLM-powered natural language to SQLite query agent
+SqlAiAgent                    – LLM-powered natural language to PostgreSQL query agent
 TaskRoutingAgent              – Priority-ordered keyword/parameter routing
 """
 

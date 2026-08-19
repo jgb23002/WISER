@@ -189,7 +189,15 @@ class TestOpenAISummarizer(unittest.TestCase):
             )
 
     def test_summarize_storm_impact_requires_api_key(self):
-        with patch.dict("os.environ", {}, clear=True):
+        # summarize_storm_impact_with_openai() calls load_dotenv() itself, so
+        # clearing os.environ is not enough: a developer .env holding a real
+        # OPENAI_API_KEY would be read straight back in, and the call would
+        # attempt a live API request instead of raising. Stub the loader so
+        # this asserts what it means to -- "no key configured" -- regardless
+        # of what is on disk.
+        with patch.dict("os.environ", {}, clear=True), patch(
+            "wiser.openai_summarizer.load_dotenv", return_value=0
+        ):
             with self.assertRaises(OpenAISummarizationError):
                 summarize_storm_impact_with_openai(
                     "impact",
