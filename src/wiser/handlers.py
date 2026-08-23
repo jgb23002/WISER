@@ -12,12 +12,13 @@ No interface-specific concerns (argparse, Streamlit widgets) belong here.
 from __future__ import annotations
 
 import re
-import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Sequence, Union
+
+import psycopg
 
 from wiser.agents.data_retrieval_processing_agent import DataRetrievalProcessingAgent
 from wiser.agents.rag_knowledge_agent import RAGKnowledgeAgent
@@ -91,7 +92,9 @@ from wiser.visualization import county_metric_rows
 # Shared defaults; the CLI argparse flags and the Streamlit sidebar both
 # reference these so interface defaults cannot drift apart.
 DEFAULT_INPUT_CSV = "data/testdata.csv"
-DEFAULT_DB_PATH = "data/wiser.db"
+# The database is now a server, not a file. None means "resolve from
+# $DATABASE_URL, else the local Docker Compose instance".
+DEFAULT_DSN: str | None = None
 DEFAULT_LIMIT = 10
 DEFAULT_MAX_LINKED_PDFS = 50
 
@@ -201,8 +204,8 @@ class HandlerContext:
     """
 
     query: str
-    conn: sqlite3.Connection
-    db_path: str
+    conn: psycopg.Connection
+    dsn: str | None
     limit: int
     county: str | None
     data_agent: DataRetrievalProcessingAgent
@@ -324,20 +327,20 @@ HandlerResult = Union[
 
 def ensure_database(
     data_agent: DataRetrievalProcessingAgent,
-    db_path: str | Path,
-) -> sqlite3.Connection:
-    conn = connect(db_path)
+    dsn: str | None = None,
+) -> psycopg.Connection:
+    conn = connect(dsn)
     if has_required_tables(conn):
         return conn
     conn.close()
-    return data_agent.build_database(db_path)
+    return data_agent.build_database(dsn)
 
 
 def build_context(
     query: str,
     *,
     input_csv: str = DEFAULT_INPUT_CSV,
-    db_path: str = DEFAULT_DB_PATH,
+    dsn: str | None = DEFAULT_DSN,
     limit: int = DEFAULT_LIMIT,
     county: str | None = None,
     rag_sources: Sequence[str] | None = None,
@@ -362,11 +365,11 @@ def build_context(
     rag_agent = RAGKnowledgeAgent(
         tuple(rag_sources) if rag_sources else DEFAULT_RAG_SOURCES
     )
-    conn = ensure_database(data_agent, db_path)
+    conn = ensure_database(data_agent, dsn)
     return HandlerContext(
         query=query,
         conn=conn,
-        db_path=db_path,
+        dsn=dsn,
         limit=limit,
         county=county,
         data_agent=data_agent,
@@ -398,7 +401,7 @@ def handle_data_retrieval(ctx: HandlerContext) -> DataRetrievalResult:
     # Rebuild from CSV even when the database already exists — schema.sql
     # drops and recreates the tables, so this is a true refresh.
     ctx.conn.close()
-    ctx.conn = ctx.data_agent.build_database(ctx.db_path)
+    ctx.conn = ctx.data_agent.build_database(ctx.dsn)
     return DataRetrievalResult(table_counts=get_table_counts(ctx.conn))
 
 
@@ -1271,7 +1274,7 @@ def _reasoning_comparison_rows(ctx: HandlerContext) -> list[dict[str, object]] |
 
     storm_match = re.search(r"\b(\d{10})\b", ctx.query)
     if storm_match:
-        placeholders = ", ".join("?" for _ in counties)
+        placeholders = ", ".join("%s" for _ in counties)
         params: list[object] = [
             int(storm_match.group(1)),
             *[county.lower() for county in counties],
@@ -1282,18 +1285,18 @@ def _reasoning_comparison_rows(ctx: HandlerContext) -> list[dict[str, object]] |
                 w.county,
                 w.stormCode,
                 w.outage,
-                ROUND(w.peakWSPD10, 2) AS peakWSPD10,
-                ROUND(w.sumAFWA_TOTPRECIP, 2) AS sumAFWA_TOTPRECIP,
+                ROUND(w.peakWSPD10::numeric, 2) AS peakWSPD10,
+                ROUND(w.sumAFWA_TOTPRECIP::numeric, 2) AS sumAFWA_TOTPRECIP,
                 w.wgt5,
                 w.wgt9,
                 w.wgt13,
                 w.wgt18,
                 c.ohLine,
-                ROUND(w.outage * 1000000.0 / c.ohLine, 2)
+                ROUND((w.outage * 1000000.0 / c.ohLine)::numeric, 2)
                     AS outage_per_million_ohline
             FROM WeatherData w
             JOIN County c ON LOWER(c.county) = LOWER(w.county)
-            WHERE w.stormCode = ?
+            WHERE w.stormCode = %s
               AND LOWER(w.county) IN ({placeholders})
             ORDER BY w.outage DESC
             """,
@@ -1301,18 +1304,18 @@ def _reasoning_comparison_rows(ctx: HandlerContext) -> list[dict[str, object]] |
         ).fetchall()
         return [_comparison_row(row) for row in rows]
 
-    placeholders = ", ".join("?" for _ in counties)
+    placeholders = ", ".join("%s" for _ in counties)
     rows = ctx.conn.execute(
         f"""
         SELECT
             w.county,
             SUM(w.outage) AS total_outage,
-            ROUND(AVG(w.outage), 2) AS avg_outage,
+            ROUND(AVG(w.outage)::numeric, 2) AS avg_outage,
             MAX(w.outage) AS peak_outage,
-            ROUND(AVG(w.peakWSPD10), 2) AS avg_peak_wind,
-            ROUND(MAX(w.peakWSPD10), 2) AS max_peak_wind,
+            ROUND(AVG(w.peakWSPD10)::numeric, 2) AS avg_peak_wind,
+            ROUND(MAX(w.peakWSPD10)::numeric, 2) AS max_peak_wind,
             c.ohLine,
-            ROUND(SUM(w.outage) * 1000000.0 / c.ohLine, 2)
+            ROUND((SUM(w.outage) * 1000000.0 / c.ohLine)::numeric, 2)
                 AS outage_per_million_ohline
         FROM WeatherData w
         JOIN County c ON LOWER(c.county) = LOWER(w.county)

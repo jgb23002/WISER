@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -27,10 +28,10 @@ if str(SRC_DIR) not in sys.path:
 
 from wiser.agents.task_routing_agent import Route, TaskRoutingAgent
 from wiser.conversation import resolve_route
-from wiser.database import connect
+from wiser.database import connect, has_required_tables, resolve_dsn
 from wiser.evaluation import evaluate_routing_cases, evaluate_sql_ground_truth
 from wiser.handlers import (
-    DEFAULT_DB_PATH,
+    DEFAULT_DSN,
     DEFAULT_INPUT_CSV,
     DEFAULT_LIMIT,
     EXAMPLE_QUERIES,
@@ -551,8 +552,35 @@ def _evaluation_metrics() -> tuple[dict[str, object], dict[str, object]]:
     )
 
 
-def _render_demo_status(db_path: str) -> None:
-    routing, sql = _evaluation_metrics()
+def _redacted_dsn(dsn: str) -> str:
+    """Hide the password before a DSN reaches the browser or the transcript.
+
+    The sidebar value and the load-confirmation message both end up in
+    screenshots and shared session history.
+    """
+    parsed = urlsplit(dsn)
+    if not parsed.password:
+        return dsn
+    userinfo = f"{parsed.username}:***@" if parsed.username else "***@"
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    return urlunsplit(
+        (parsed.scheme, f"{userinfo}{host}", parsed.path, parsed.query, parsed.fragment)
+    )
+
+
+def _render_demo_status(dsn: str | None) -> None:
+    # _evaluation_metrics() runs the SQL ground truth, which now needs a
+    # reachable server and CREATE SCHEMA rights. Under SQLite it ran against a
+    # temp file and could not fail this way. Every sibling panel in this file
+    # already degrades to a warning; this one must too.
+    try:
+        routing, sql = _evaluation_metrics()
+    except Exception as exc:  # noqa: BLE001 - keep presentation panel resilient
+        st.warning(f"Evaluation metrics unavailable: {type(exc).__name__}: {exc}")
+        _render_external_preview(dsn, limit=8)
+        return
     col1, col2, col3 = st.columns(3)
     col1.metric(
         "Routing ground truth",
@@ -576,17 +604,17 @@ def _render_demo_status(db_path: str) -> None:
     )
     st.markdown(f"Documentation: `{COMBINED_DOC_PATH.relative_to(REPO_ROOT)}`")
 
-    with st.expander("Current SQLite staging preview", expanded=False):
-        _render_external_preview(db_path, limit=8)
+    with st.expander("Current PostgreSQL staging preview", expanded=False):
+        _render_external_preview(dsn, limit=8)
 
 
-def _render_external_feed_loader(db_path: str) -> None:
+def _render_external_feed_loader(dsn: str | None) -> None:
     feed_names = tuple(EXTERNAL_SAMPLE_FEEDS)
     selected_feed = st.selectbox("Sample external feed", options=("All", *feed_names))
     if st.button("Load sample feed", width="stretch"):
         feeds_to_load = feed_names if selected_feed == "All" else (selected_feed,)
         summaries = []
-        conn = connect(db_path)
+        conn = connect(dsn)
         try:
             for feed_name in feeds_to_load:
                 sample_path, parser = EXTERNAL_SAMPLE_FEEDS[feed_name]
@@ -596,17 +624,20 @@ def _render_external_feed_loader(db_path: str) -> None:
             conn.close()
 
         loaded = sum(summary.rows_loaded for summary in summaries)
-        st.success(f"Loaded {loaded} external outage observations into `{db_path}`.")
+        st.success(
+            "Loaded "
+            f"{loaded} external outage observations into "
+            f"`{_redacted_dsn(resolve_dsn(dsn))}`."
+        )
 
-    _render_external_preview(db_path, limit=10)
+    _render_external_preview(dsn, limit=10)
 
 
-def _render_external_preview(db_path: str, *, limit: int) -> None:
-    if not Path(db_path).is_file():
-        st.info("No external outage observations staged yet.")
-        return
+def _render_external_preview(dsn: str | None, *, limit: int) -> None:
+    # There is no database file to stat now; an unreachable server or an
+    # unbuilt schema surfaces through the except branch below instead.
     try:
-        conn = connect(db_path, create=False)
+        conn = connect(dsn)
         try:
             rows = recent_external_observations(conn, limit=limit)
         finally:
@@ -632,15 +663,23 @@ def _county_geojson() -> dict[str, object]:
     return load_county_geojson()
 
 
-def _render_county_heatmaps(db_path: str) -> None:
+def _render_county_heatmaps(dsn: str | None) -> None:
     st.subheader("County heat maps")
-    db_file = Path(db_path)
-    if not db_file.is_file():
-        st.info("Build or select a SQLite database before rendering county heat maps.")
+    try:
+        probe = connect(dsn)
+        try:
+            ready = has_required_tables(probe)
+        finally:
+            probe.close()
+    except Exception as exc:  # noqa: BLE001 - keep presentation panel resilient
+        st.warning(f"County heat map unavailable: {type(exc).__name__}: {exc}")
+        return
+    if not ready:
+        st.info("Run scripts/bootstrap_wiser.py before rendering county heat maps.")
         return
 
     try:
-        conn = connect(db_path, create=False)
+        conn = connect(dsn)
         try:
             storm_options = available_storm_options(conn, limit=100)
         finally:
@@ -667,7 +706,7 @@ def _render_county_heatmaps(db_path: str) -> None:
     )
 
     try:
-        conn = connect(db_path, create=False)
+        conn = connect(dsn)
         try:
             rows = county_metric_rows(conn, metric_key, storm_code=storm_scope)
         finally:
@@ -782,7 +821,21 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Settings")
-        db_path = st.text_input("SQLite database", value=DEFAULT_DB_PATH)
+        # The widget shows a password-redacted DSN because its value lands in
+        # screenshots and shared session history. The redacted string is not a
+        # usable connection URL, so an untouched field maps back to the real
+        # one; anything the user actually types is passed through as-is.
+        _resolved_dsn = resolve_dsn(DEFAULT_DSN)
+        _dsn_input = st.text_input(
+            "PostgreSQL connection URL",
+            value=_redacted_dsn(_resolved_dsn),
+            help="Defaults to $DATABASE_URL, else the local Docker Compose instance.",
+        )
+        dsn = (
+            _resolved_dsn
+            if _dsn_input == _redacted_dsn(_resolved_dsn)
+            else _dsn_input
+        )
         input_csv = st.text_input("Source CSV", value=DEFAULT_INPUT_CSV)
         limit = st.slider("Result limit", min_value=1, max_value=50, value=DEFAULT_LIMIT)
         county = st.text_input(
@@ -838,11 +891,11 @@ def main() -> None:
         ("Demo status", "County heat maps", "External outage staging")
     )
     with status_tab:
-        _render_demo_status(db_path)
+        _render_demo_status(dsn)
     with map_tab:
-        _render_county_heatmaps(db_path)
+        _render_county_heatmaps(dsn)
     with external_tab:
-        _render_external_feed_loader(db_path)
+        _render_external_feed_loader(dsn)
 
     st.markdown("**Example queries**")
     st.caption(
@@ -902,7 +955,7 @@ def main() -> None:
                 ctx = build_context(
                     query,
                     input_csv=input_csv,
-                    db_path=db_path,
+                    dsn=dsn,
                     limit=limit,
                     county=county.strip() or None,
                     rebuild_rag=rebuild_rag,

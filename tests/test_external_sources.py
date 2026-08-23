@@ -1,12 +1,16 @@
-import sqlite3
 import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 SRC_DIR = Path(__file__).parent.parent / "src"
+TESTS_DIR = Path(__file__).parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from pg_harness import executemany, make_conn, new_connection  # noqa: E402,F401
 
 from wiser.external_sources import (  # noqa: E402
     DEFAULT_STORM_CONTEXT_URLS,
@@ -133,7 +137,7 @@ class TestExternalSourceParsing(unittest.TestCase):
 
 class TestExternalSourceIndexAndSummary(unittest.TestCase):
     def setUp(self):
-        self.conn = sqlite3.connect(":memory:")
+        self.conn = make_conn()
 
     def tearDown(self):
         self.conn.close()

@@ -7,9 +7,12 @@ import html
 from pathlib import Path
 import re
 import shutil
-import sqlite3
 import subprocess
 import tempfile
+import psycopg
+
+from wiser.database import executemany
+
 from typing import Callable, Sequence
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -197,7 +200,7 @@ def crawl_source_documents(
 
 
 def index_external_sources(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     urls: Sequence[str] = DEFAULT_STORM_CONTEXT_URLS,
     *,
     rebuild: bool = False,
@@ -228,7 +231,7 @@ def index_external_sources(
 
 
 def index_external_documents(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     documents: Sequence[SourceDocument],
     *,
     rebuild: bool = False,
@@ -253,7 +256,7 @@ def index_external_documents(
                 SELECT COUNT(*) FROM RagChunk WHERE documentId = RagDocument.id
             ) AS chunk_count
             FROM RagDocument
-            WHERE path = ?
+            WHERE path = %s
             """,
             (document.url,),
         ).fetchone()
@@ -262,12 +265,14 @@ def index_external_documents(
 
         if existing:
             document_id = int(existing[0])
-            conn.execute("DELETE FROM RagChunk WHERE documentId = ?", (document_id,))
+            conn.execute("DELETE FROM RagChunk WHERE documentId = %s", (document_id,))
             conn.execute(
                 """
                 UPDATE RagDocument
-                SET title = ?, checksum = ?, indexedAt = datetime('now')
-                WHERE id = ?
+                SET title = %s,
+                    checksum = %s,
+                    indexedAt = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+                WHERE id = %s
                 """,
                 (document.title, checksum, document_id),
             )
@@ -275,11 +280,16 @@ def index_external_documents(
             cursor = conn.execute(
                 """
                 INSERT INTO RagDocument(path, title, checksum, indexedAt)
-                VALUES(?, ?, ?, datetime('now'))
+                VALUES(
+                    %s, %s, %s,
+                    to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+                )
+                RETURNING id
                 """,
                 (document.url, document.title, checksum),
             )
-            document_id = int(cursor.lastrowid)
+            # PostgreSQL has no lastrowid; RETURNING is the portable form.
+            document_id = int(cursor.fetchone()[0])
 
         chunks = chunk_text(
             content,
@@ -289,10 +299,11 @@ def index_external_documents(
         chunks = [chunk for chunk in chunks if is_readable_text(chunk)]
         if not chunks:
             continue
-        conn.executemany(
+        executemany(
+            conn,
             """
             INSERT INTO RagChunk(documentId, chunkIndex, content, tokenCount)
-            VALUES(?, ?, ?, ?)
+            VALUES(%s, %s, %s, %s)
             """,
             [
                 (document_id, chunk_index, chunk, len(tokenize(chunk)))
@@ -456,7 +467,7 @@ def normalize_text(text: str) -> str:
 
 
 def search_external_context(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     query: str,
     *,
     limit: int = 5,
@@ -476,6 +487,8 @@ def search_external_context(
             c.content
         FROM RagChunk c
         JOIN RagDocument d ON d.id = c.documentId
+        -- Literal % is safe here only because this query takes no
+        -- parameters. If one is ever added, double them to %%.
         WHERE d.path LIKE 'http://%' OR d.path LIKE 'https://%'
         """
     ).fetchall()
@@ -512,7 +525,7 @@ def search_external_context(
     return results
 
 
-def has_external_context(conn: sqlite3.Connection) -> bool:
+def has_external_context(conn: psycopg.Connection) -> bool:
     """True when at least one crawled web chunk is already indexed."""
     initialize_rag_schema(conn)
     row = conn.execute(
@@ -520,6 +533,8 @@ def has_external_context(conn: sqlite3.Connection) -> bool:
         SELECT COUNT(*)
         FROM RagChunk c
         JOIN RagDocument d ON d.id = c.documentId
+        -- Literal % is safe here only because this query takes no
+        -- parameters. If one is ever added, double them to %%.
         WHERE d.path LIKE 'http://%' OR d.path LIKE 'https://%'
         """
     ).fetchone()
@@ -527,7 +542,7 @@ def has_external_context(conn: sqlite3.Connection) -> bool:
 
 
 def answer_storm_impact(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     query: str,
     *,
     limit: int = 5,
@@ -838,19 +853,21 @@ def _source_hosts(urls: Sequence[str]) -> set[str]:
     return hosts
 
 
-def _clear_external_documents(conn: sqlite3.Connection) -> None:
+def _clear_external_documents(conn: psycopg.Connection) -> None:
     document_ids = [
         int(row[0])
         for row in conn.execute(
             """
             SELECT id FROM RagDocument
+            -- Literal % is safe here only because this query takes no
+            -- parameters. If one is ever added, double them to %%.
             WHERE path LIKE 'http://%' OR path LIKE 'https://%'
             """
         ).fetchall()
     ]
     for document_id in document_ids:
-        conn.execute("DELETE FROM RagChunk WHERE documentId = ?", (document_id,))
-        conn.execute("DELETE FROM RagDocument WHERE id = ?", (document_id,))
+        conn.execute("DELETE FROM RagChunk WHERE documentId = %s", (document_id,))
+        conn.execute("DELETE FROM RagDocument WHERE id = %s", (document_id,))
     conn.commit()
 
 

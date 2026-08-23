@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import contextlib
 import io
-import sqlite3
 import sys
+
+import psycopg
 import tempfile
 import unittest
 from datetime import date
@@ -21,8 +22,13 @@ REPO_ROOT = Path(__file__).parent.parent
 SRC_DIR = REPO_ROOT / "src"
 SCHEMA_PATH = REPO_ROOT / "sql" / "schema.sql"
 
+TESTS_DIR = Path(__file__).parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from pg_harness import executemany, make_conn, new_connection  # noqa: E402,F401
 
 from wiser.agents.rag_knowledge_agent import RAGKnowledgeAgent  # noqa: E402
 from wiser.agents.similarity_query_agent import SimilarityQueryAgent  # noqa: E402
@@ -59,30 +65,29 @@ _WEATHER_ROWS = [
 ]
 
 
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(_SCHEMA_SQL)
+def _make_conn() -> psycopg.Connection:
+    conn = make_conn()
     for storm in _STORM_ROWS:
         conn.execute(
-            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
             storm,
         )
-    conn.execute("INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Fairfield", 4887830))
+    conn.execute("INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Fairfield", 4887830))
     for row in _WEATHER_ROWS:
         conn.execute(
             "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,"
-            " wgt5, wgt9, wgt13, wgt18, outage) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " wgt5, wgt9, wgt13, wgt18, outage) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             row,
         )
     conn.commit()
     return conn
 
 
-def _make_ctx(query: str, conn: sqlite3.Connection, **overrides) -> SimpleNamespace:
+def _make_ctx(query: str, conn: psycopg.Connection, **overrides) -> SimpleNamespace:
     defaults = dict(
         query=query,
         conn=conn,
-        db_path=":memory:",
+        dsn=None,
         limit=5,
         county=None,
         data_agent=None,
@@ -122,10 +127,14 @@ def _assert_no_stdout(test: unittest.TestCase):
 class TestHandleDataRetrieval(unittest.TestCase):
     def test_rebuilds_and_returns_table_counts(self):
         old_conn = _make_conn()
-        new_conn = _make_conn()
+        # A second *distinct* connection into the same seeded schema.
+        # _make_conn() rebuilds the schema and hands back the shared
+        # connection, so calling it twice would return the same object
+        # and wipe the seed data.
+        new_conn = new_connection()
 
         class FakeDataAgent:
-            def build_database(self, db_path):
+            def build_database(self, dsn=None):
                 return new_conn
 
         ctx = _make_ctx("build database from csv", old_conn, data_agent=FakeDataAgent())
@@ -139,7 +148,8 @@ class TestHandleDataRetrieval(unittest.TestCase):
         )
         # The old connection was closed and replaced on the context.
         self.assertIs(ctx.conn, new_conn)
-        with self.assertRaises(sqlite3.ProgrammingError):
+        # psycopg reports use of a closed connection as OperationalError.
+        with self.assertRaises(psycopg.OperationalError):
             old_conn.execute("SELECT 1")
         new_conn.close()
 
@@ -166,12 +176,12 @@ class TestHandleWeatherAnalytics(unittest.TestCase):
         storm_code: int = 2012102806,
     ) -> None:
         self.conn.execute(
-            "INSERT INTO County(county, ohLine) VALUES(?, ?)",
+            "INSERT INTO County(county, ohLine) VALUES(%s, %s)",
             (county, oh_line),
         )
         self.conn.execute(
             "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,"
-            " wgt5, wgt9, wgt13, wgt18, outage) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " wgt5, wgt9, wgt13, wgt18, outage) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (storm_code, county, 45.0, wind, 4, 1, 0, 0, outage),
         )
         self.conn.commit()
@@ -189,12 +199,12 @@ class TestHandleWeatherAnalytics(unittest.TestCase):
         wgt13: int = 0,
     ) -> None:
         self.conn.execute(
-            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
             (storm_code, event_datetime, 48),
         )
         self.conn.execute(
             "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,"
-            " wgt5, wgt9, wgt13, wgt18, outage) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " wgt5, wgt9, wgt13, wgt18, outage) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (storm_code, county, precip, wind, wgt9, wgt9, wgt13, 0, outage),
         )
         self.conn.commit()
@@ -423,7 +433,7 @@ class TestHandleWeatherAnalytics(unittest.TestCase):
                 humidity,
                 outage,
                 rawPayload
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 "mock_feed",
@@ -468,7 +478,7 @@ class TestHandleWeatherAnalytics(unittest.TestCase):
                 humidity,
                 outage,
                 rawPayload
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 "mock_feed",
@@ -568,7 +578,7 @@ class TestHandleSimilaritySearch(unittest.TestCase):
 
 class TestHandleRagKnowledge(unittest.TestCase):
     def setUp(self):
-        self.conn = sqlite3.connect(":memory:")
+        self.conn = make_conn()
         self.tmpdir = tempfile.TemporaryDirectory()
         docs_dir = Path(self.tmpdir.name) / "docs"
         docs_dir.mkdir()
@@ -612,14 +622,17 @@ class TestHandleRagKnowledge(unittest.TestCase):
         initialize_rag_schema(self.conn)
         cursor = self.conn.execute(
             "INSERT INTO RagDocument(path, title, checksum, indexedAt)"
-            " VALUES(?, ?, ?, datetime('now'))",
+            " VALUES(%s, %s, %s,"
+            "        to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))"
+            " RETURNING id",
             ("https://example.gov/report", "Storm Report", "abc123"),
         )
+        document_id = cursor.fetchone()[0]
         self.conn.execute(
             "INSERT INTO RagChunk(documentId, chunkIndex, content, tokenCount)"
-            " VALUES(?, ?, ?, ?)",
+            " VALUES(%s, %s, %s, %s)",
             (
-                cursor.lastrowid,
+                document_id,
                 0,
                 "Tropical Storm Isaias caused widespread power outages and "
                 "wind damage across Connecticut counties in August 2020.",

@@ -3,7 +3,7 @@
 Handlers never print: every assertion is on the returned dataclass. No network
 — reasoning runs in local-fallback mode via use_openai_summary=False.
 
-No storm count or outage magnitude from data/wiser.db is hardcoded here; each
+No storm count or outage magnitude from the production dataset is hardcoded here; each
 test seeds its own database and asserts on relationships.
 """
 
@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import contextlib
 import io
-import sqlite3
 import sys
+
+import psycopg
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,8 +22,13 @@ REPO_ROOT = Path(__file__).parent.parent
 SRC_DIR = REPO_ROOT / "src"
 SCHEMA_PATH = REPO_ROOT / "sql" / "schema.sql"
 
+TESTS_DIR = Path(__file__).parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from pg_harness import executemany, make_conn, new_connection  # noqa: E402,F401
 
 from wiser.agents.similarity_query_agent import SimilarityQueryAgent  # noqa: E402
 from wiser.agents.storm_weather_analytics_agent import (  # noqa: E402
@@ -71,30 +77,29 @@ _WEATHER = [
 ]
 
 
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(_SCHEMA_SQL)
-    conn.executemany(
-        "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+def _make_conn() -> psycopg.Connection:
+    conn = make_conn()
+    executemany(conn, 
+        "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
         _STORMS,
     )
-    conn.executemany(
-        "INSERT INTO County(county, state, ohLine) VALUES(?, ?, ?)", _COUNTIES
+    executemany(conn, 
+        "INSERT INTO County(county, state, ohLine) VALUES(%s, %s, %s)", _COUNTIES
     )
-    conn.executemany(
+    executemany(conn, 
         "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,"
-        " wgt5, wgt9, wgt13, wgt18, outage) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " wgt5, wgt9, wgt13, wgt18, outage) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
         _WEATHER,
     )
     conn.commit()
     return conn
 
 
-def _make_ctx(query: str, conn: sqlite3.Connection, **overrides) -> SimpleNamespace:
+def _make_ctx(query: str, conn: psycopg.Connection, **overrides) -> SimpleNamespace:
     defaults = dict(
         query=query,
         conn=conn,
-        db_path=":memory:",
+        dsn=None,
         limit=5,
         county=None,
         data_agent=None,

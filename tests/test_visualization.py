@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 import sys
 import re
 import unittest
@@ -10,8 +9,13 @@ REPO_ROOT = Path(__file__).parent.parent
 SRC_DIR = REPO_ROOT / "src"
 SCHEMA_PATH = REPO_ROOT / "sql" / "schema.sql"
 
+TESTS_DIR = Path(__file__).parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from pg_harness import executemany, make_conn, new_connection  # noqa: E402,F401
 
 from wiser.visualization import (  # noqa: E402
     COUNTY_HEATMAP_METRICS,
@@ -45,25 +49,24 @@ def _contrast(first: str, second: str) -> float:
 
 class TestCountyVisualization(unittest.TestCase):
     def setUp(self):
-        self.conn = sqlite3.connect(":memory:")
-        self.conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
-        self.conn.executemany(
-            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+        self.conn = make_conn()
+        executemany(self.conn, 
+            "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
             [
                 (2020080406, "2020-08-04 06:00:00", 36),
                 (2012102806, "2012-10-28 06:00:00", 72),
             ],
         )
-        self.conn.executemany(
-            "INSERT INTO County(county, ohLine) VALUES(?, ?)",
+        executemany(self.conn, 
+            "INSERT INTO County(county, ohLine) VALUES(%s, %s)",
             [
                 ("Fairfield", 1000),
                 ("Hartford", 2000),
             ],
         )
-        self.conn.executemany(
+        executemany(self.conn, 
             "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,"
-            " wgt5, wgt9, wgt13, wgt18, outage) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " wgt5, wgt9, wgt13, wgt18, outage) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             [
                 (2020080406, "Fairfield", 30.0, 10.0, 4, 1, 0, 0, 300),
                 (2020080406, "Hartford", 25.0, 9.0, 3, 0, 0, 0, 500),

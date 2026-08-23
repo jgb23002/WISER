@@ -2,7 +2,7 @@
 
 ![WISER Image](docs/WISER%20Image.png)
 
-**W**eather **I**ntegrated **S**torm **E**vent **R**esponse — a Connecticut storm outage analytics system built on a multi-agent architecture. It ingests raw storm CSV data, normalizes it into a relational SQLite database, answers natural-language analytics queries, writes storm-scoped reports (summary, historical ranking, and storm-vs-storm or forecast-vs-history comparison), and retrieves grounded RAG context from project docs/code. Query it from the CLI or the Streamlit web interface — both are thin renderers over the same shared handler layer (`src/wiser/handlers.py`), so there is exactly one implementation of routing, dispatch, and query logic.
+**W**eather **I**ntegrated **S**torm **E**vent **R**esponse — a Connecticut storm outage analytics system built on a multi-agent architecture. It ingests raw storm CSV data, normalizes it into a relational PostgreSQL database, answers natural-language analytics queries, writes storm-scoped reports (summary, historical ranking, and storm-vs-storm or forecast-vs-history comparison), and retrieves grounded RAG context from project docs/code. Query it from the CLI or the Streamlit web interface — both are thin renderers over the same shared handler layer (`src/wiser/handlers.py`), so there is exactly one implementation of routing, dispatch, and query logic.
 
 > Reference for future integration: [wisermaci.engr.uconn.edu](http://wisermaci.engr.uconn.edu/) — the UConn WISER site (not connected to this repo).
 
@@ -17,7 +17,7 @@ Documentation:
 ## Prerequisites
 
 - Python **3.9+**
-- Core workflows use only the Python standard library (`sqlite3`, `csv`, `datetime`, `argparse`, `unittest`). Optional dependencies: `faiss-cpu` and `numpy` for fast text similarity, `pypdf` for PDF extraction, `sqlglot` for full syntax validation of AI-generated SQL, and an `OPENAI_API_KEY` (in `.env` or the environment) for AI-generated SQL analytics queries and impact summaries. All fall back gracefully when absent.
+- Requires PostgreSQL 17 (run `docker compose up -d` for a local instance) and `psycopg[binary]`. Everything else uses the standard library (`csv`, `datetime`, `argparse`, `unittest`). Optional dependencies: `faiss-cpu` and `numpy` for fast text similarity, `pypdf` for PDF extraction, `sqlglot` for full syntax validation of AI-generated SQL, and an `OPENAI_API_KEY` (in `.env` or the environment) for AI-generated SQL analytics queries and impact summaries. All fall back gracefully when absent.
 
 ---
 
@@ -52,9 +52,10 @@ pip install -r requirements.txt
 
 ### Step 1 — Bootstrap the database
 
-Parses `data/testdata.csv`, normalizes it into three tables, writes normalized CSVs, and builds `data/wiser.db`:
+Start PostgreSQL, then parse `data/testdata.csv`, normalize it into three tables, write normalized CSVs, and load the database:
 
 ```bash
+docker compose up -d          # PostgreSQL 17 on localhost:5433
 python scripts/bootstrap_wiser.py
 ```
 
@@ -69,19 +70,23 @@ Top 5 counties by total outages:
   - Fairfield: total=..., avg=..., peak=..., storms=...
   ...
 
-SQLite database built: data/wiser.db
+PostgreSQL database built: postgresql://wiser:wiser123@localhost:5433/wiser
 Table counts:
   - Storm: 294
   - County: 8
   - WeatherData: 2352
 ```
 
+Bootstrapping runs `sql/schema.sql`, which **drops and recreates every
+table**. It refuses to run against a database that already holds data
+unless you pass `--force`.
+
 Override defaults with flags:
 ```bash
 python scripts/bootstrap_wiser.py \
   --input data/testdata.csv \
   --output-dir data/normalized \
-  --db data/wiser.db
+  --dsn postgresql://wiser:wiser123@localhost:5433/wiser
 ```
 
 ---
@@ -117,7 +122,7 @@ python scripts/wiser_cli.py "top storms by outage" --limit 5
 python scripts/wiser_cli.py "history for county Hartford" --limit 10
 
 # Rebuild the database from CSV
-python scripts/wiser_cli.py "build sqlite database from csv"
+python scripts/wiser_cli.py "build postgres database from csv"
 
 # Ask a RAG question and receive a grounded answer with sources
 python scripts/wiser_cli.py "explain the storm similarity algorithm" --limit 3
@@ -141,7 +146,7 @@ The `--limit` flag controls how many rows are returned for top-N queries (defaul
 For RAG queries, `--limit` controls retrieved context chunks. Use `--rebuild-rag` to refresh the local index, `--show-rag-context` to print the full augmented prompt, and repeat `--rag-source <path>` to index a custom file or directory.
 For similarity searches, `--county` overrides county auto-detection from query text.
 
-Weather-analytics queries are answered in two stages. First, the **SqlAiAgent** generates a SQLite `SELECT`, which is validated (syntax + SELECT-only, via `sqlglot` when installed) and executed against a read-only connection. Then the **StormReasoningAgent** receives only the user question, validated SQL, and returned rows, and explains the pattern with concrete row values and caveats. On validation or API failure, the CLI falls back to fixed analytical query wrappers for top counties, top storms, county history, affected-most summaries, exposure normalization, and county comparisons. Related flags: `--sql-model <id>` picks the OpenAI model for SQL generation (default: `WISER_OPENAI_MODEL` or `gpt-4o-mini`), `--show-sql` prints the generated SQL alongside results, `--show-reasoning-prompt` prints the reasoning prompt built from result rows, and `--dry-run-sql` prints the exact SQL-generation prompt without making an API call.
+Weather-analytics queries are answered in two stages. First, the **SqlAiAgent** generates a PostgreSQL `SELECT`, which is validated (syntax + SELECT-only, via `sqlglot` when installed) and executed inside a read-only transaction that the server enforces. Then the **StormReasoningAgent** receives only the user question, validated SQL, and returned rows, and explains the pattern with concrete row values and caveats. On validation or API failure, the CLI falls back to fixed analytical query wrappers for top counties, top storms, county history, affected-most summaries, exposure normalization, and county comparisons. Related flags: `--sql-model <id>` picks the OpenAI model for SQL generation (default: `WISER_OPENAI_MODEL` or `gpt-4o-mini`), `--show-sql` prints the generated SQL alongside results, `--show-reasoning-prompt` prints the reasoning prompt built from result rows, and `--dry-run-sql` prints the exact SQL-generation prompt without making an API call.
 
 Population is not currently part of the WISER schema. If a user asks for per-capita normalization, WISER says that explicitly and shows the available infrastructure exposure normalization (`outage_per_million_ohline`) instead of inventing population values.
 
@@ -173,15 +178,13 @@ Fixture-backed EagleEye and National Grid CSV loading is available through a neu
 python3 scripts/wiser_cli.py \
   --load-external \
   --external-source eagleeye \
-  --external-file tests/fixtures/eagleeye_sample.csv \
-  --db data/wiser.db
+  --external-file tests/fixtures/eagleeye_sample.csv
 
 # Load a National Grid-style CSV into the same staging table
 python3 scripts/wiser_cli.py \
   --load-external \
   --external-source national-grid \
-  --external-file tests/fixtures/national_grid_sample.csv \
-  --db data/wiser.db
+  --external-file tests/fixtures/national_grid_sample.csv
 ```
 
 The parser preserves source provenance (`sourceSystem`, `sourceRecordId`, `rawPayload`) and normalizes timestamps to UTC. Live EagleEye/National Grid API pulls still require source credentials and endpoint/field documentation.
@@ -263,7 +266,7 @@ python scripts/find_similar_storms.py --county Hartford --wind-speed 6.5
 python scripts/find_similar_storms.py --county "New Haven" --wind-speed 10.5 --wgt5 12 --wgt9 4 --limit 5
 
 # Use a different database file
-python scripts/find_similar_storms.py --county Windham --wind-speed 7.25 --db data/wiser.db
+python scripts/find_similar_storms.py --county Windham --wind-speed 7.25
 ```
 
 | Flag | Required | Description |
@@ -273,7 +276,7 @@ python scripts/find_similar_storms.py --county Windham --wind-speed 7.25 --db da
 | `--precip` | No | Total precipitation during storm, in **mm** |
 | `--wgt5 / --wgt9 / --wgt13 / --wgt18` | No | Hours where wind exceeded 5/9/13/18 m/s |
 | `--limit` | No | Number of similar storms to show (default: `5`) |
-| `--db` | No | SQLite path (default: `data/wiser.db`) |
+| `--dsn` | No | PostgreSQL URL (default: `$DATABASE_URL`, else the local Docker Compose instance) |
 
 Example output (values depend on your inputs):
 
@@ -339,11 +342,11 @@ The test files cover the following functionality:
 | `tests/test_external_integrations.py` | Validates fixture-backed EagleEye/National Grid CSV parsers, external outage staging schema, timestamp normalization, and loading/upserts. |
 | `tests/test_openai_summarizer.py` | Verifies OpenAI Responses API request construction, response parsing, and dotenv loading. |
 | `tests/test_sql_ai_agent.py` | Verifies SQL AI agent schema loading, fence stripping, SELECT-only validation, dry-run mode, mocked LLM pipeline, and handler fallback rendering. All LLM calls are mocked. |
-| `tests/test_sql_ai_ground_truth.py` | Runs the SQL AI ground-truth fixture against a deterministic SQLite seed DB and mocked `SqlAiAgent` responses. |
+| `tests/test_sql_ai_ground_truth.py` | Runs the SQL AI ground-truth fixture against a deterministic PostgreSQL seed schema and mocked `SqlAiAgent` responses. |
 | `tests/test_storm_reasoning_agent.py` | Verifies row-grounded reasoning prompts, local fallback analysis, population caveats, and wind/outage comparison behavior. |
 | `tests/test_reasoning_characterization.py` | Pins the exact output of every branch of the local reasoning fallback, so a refactor that changes wording has to say so. |
 | `tests/test_units.py` | Metric/imperial conversion and forecast measurement parsing — pure functions, no DB or network. |
-| `tests/test_storm_analysis.py` | Storm summary/ranking/comparison analysis, including Mode B forecast analogues. Each test seeds its own database and asserts on relationships, never on a magnitude from `data/wiser.db`. |
+| `tests/test_storm_analysis.py` | Storm summary/ranking/comparison analysis, including Mode B forecast analogues. Each test seeds its own schema and asserts on relationships, never on a magnitude from the production dataset. |
 | `tests/test_storm_reports.py` | Report structure and field order for all four report kinds, with the Mode B labelling rules that keep an analogue's outage from reading as a forecast. |
 | `tests/test_storm_handlers.py` | Storm-scoped handlers return structured dataclasses and never print. |
 | `tests/test_code_review_regressions.py` | One test class per production fix shipped in `7fd6fe4`, so a reintroduced defect fails here rather than in a demo. |
@@ -369,7 +372,6 @@ WISER/
 │   │   ├── README.md             # Source notes for the legacy CT county boundary asset
 │   │   └── ct_counties_legacy.geojson
 │   ├── normalized/               # Generated by bootstrap — storm.csv, county.csv, weather_data.csv
-│   ├── wiser.db                  # Generated by bootstrap — the SQLite database
 │   └── testdata.csv              # Raw input — 2,352 storm-county rows
 ├── docs/
 │   ├── WISER_DOCUMENTATION.md    # Combined architecture, agents, schema, similarity, RAG, integrations
@@ -462,13 +464,13 @@ User query
 TaskRoutingAgent
     |
     |-- DATA_RETRIEVAL
-    |   "build sqlite database from csv"
-    |   DataRetrievalProcessingAgent rebuilds data/wiser.db from data/testdata.csv.
+    |   "build postgres database from csv"
+    |   DataRetrievalProcessingAgent rebuilds the PostgreSQL tables from data/testdata.csv.
     |
     |-- WEATHER_ANALYTICS
     |   "top counties by outage"
     |   "how many storms happened between 2010 and 2015?"
-    |   SqlAiAgent asks an LLM for a SQLite SELECT, validates it
+    |   SqlAiAgent asks an LLM for a PostgreSQL SELECT, validates it
     |   (syntax + SELECT-only, sqlglot when installed), and executes it
     |   on a read-only connection. On validation or API failure it falls
     |   back to StormWeatherAnalyticsAgent's fixed query wrappers in

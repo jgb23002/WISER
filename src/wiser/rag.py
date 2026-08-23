@@ -6,9 +6,12 @@ from datetime import datetime, timezone
 import hashlib
 import math
 import re
-import sqlite3
 from pathlib import Path
 from typing import Sequence
+
+import psycopg
+
+from wiser.database import executemany
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RAG_SOURCES = ("README.md", "docs", "scripts", "sql", "src/wiser")
@@ -184,12 +187,13 @@ def chunk_text(
     return chunks
 
 
-def initialize_rag_schema(conn: sqlite3.Connection) -> None:
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.executescript(
+def initialize_rag_schema(conn: psycopg.Connection) -> None:
+    # PostgreSQL enforces foreign keys unconditionally, and a parameterless
+    # execute() accepts the whole multi-statement block in one round trip.
+    conn.execute(
         """
         CREATE TABLE IF NOT EXISTS RagDocument (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             path TEXT NOT NULL UNIQUE,
             title TEXT NOT NULL,
             checksum TEXT NOT NULL,
@@ -197,7 +201,7 @@ def initialize_rag_schema(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS RagChunk (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             documentId INTEGER NOT NULL,
             chunkIndex INTEGER NOT NULL,
             content TEXT NOT NULL,
@@ -213,7 +217,7 @@ def initialize_rag_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def clear_rag_index(conn: sqlite3.Connection) -> None:
+def clear_rag_index(conn: psycopg.Connection) -> None:
     initialize_rag_schema(conn)
     conn.execute("DELETE FROM RagChunk")
     conn.execute("DELETE FROM RagDocument")
@@ -253,7 +257,7 @@ def resolve_source_paths(
 
 
 def index_sources(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     sources: Sequence[str | Path] = DEFAULT_RAG_SOURCES,
     *,
     root: str | Path = REPO_ROOT,
@@ -281,7 +285,7 @@ def index_sources(
                 SELECT COUNT(*) FROM RagChunk WHERE documentId = RagDocument.id
             ) AS chunk_count
             FROM RagDocument
-            WHERE path = ?
+            WHERE path = %s
             """,
             (source_path,),
         ).fetchone()
@@ -292,12 +296,12 @@ def index_sources(
         indexed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         if existing:
             document_id = int(existing[0])
-            conn.execute("DELETE FROM RagChunk WHERE documentId = ?", (document_id,))
+            conn.execute("DELETE FROM RagChunk WHERE documentId = %s", (document_id,))
             conn.execute(
                 """
                 UPDATE RagDocument
-                SET title = ?, checksum = ?, indexedAt = ?
-                WHERE id = ?
+                SET title = %s, checksum = %s, indexedAt = %s
+                WHERE id = %s
                 """,
                 (title, checksum, indexed_at, document_id),
             )
@@ -305,21 +309,24 @@ def index_sources(
             cursor = conn.execute(
                 """
                 INSERT INTO RagDocument(path, title, checksum, indexedAt)
-                VALUES(?, ?, ?, ?)
+                VALUES(%s, %s, %s, %s)
+                RETURNING id
                 """,
                 (source_path, title, checksum, indexed_at),
             )
-            document_id = int(cursor.lastrowid)
+            # PostgreSQL has no lastrowid; RETURNING is the portable form.
+            document_id = int(cursor.fetchone()[0])
 
         chunks = chunk_text(
             content,
             max_tokens=max_tokens,
             overlap_tokens=overlap_tokens,
         )
-        conn.executemany(
+        executemany(
+            conn,
             """
             INSERT INTO RagChunk(documentId, chunkIndex, content, tokenCount)
-            VALUES(?, ?, ?, ?)
+            VALUES(%s, %s, %s, %s)
             """,
             [
                 (document_id, chunk_index, chunk, len(tokenize(chunk)))
@@ -342,7 +349,7 @@ def index_sources(
 
 
 def search_rag(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     query: str,
     *,
     limit: int = 5,
@@ -469,7 +476,7 @@ def build_augmented_context(
 
 
 def answer_rag(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     query: str,
     *,
     limit: int = 5,

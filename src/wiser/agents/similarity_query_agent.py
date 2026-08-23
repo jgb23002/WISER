@@ -12,11 +12,11 @@ the interface layer (wiser.handlers / cli_helpers / find_similar_storms.py).
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass, field
 from typing import ClassVar
 
 from wiser.similarity_engine import rank_by_similarity
+from wiser.storm_analysis import DbConnection
 
 
 @dataclass
@@ -61,7 +61,7 @@ class SimilarityQueryAgent:
 
     def find_similar(
         self,
-        conn: sqlite3.Connection,
+        conn: DbConnection,
         county: str,
         query_params: dict[str, float],
         limit: int = 5,
@@ -105,7 +105,7 @@ class SimilarityQueryAgent:
 
     def _fetch_historical(
         self,
-        conn: sqlite3.Connection,
+        conn: DbConnection,
         county: str,
     ) -> list[dict[str, object]]:
         """Fetch all WeatherData rows for a county joined with Storm metadata."""
@@ -124,9 +124,9 @@ class SimilarityQueryAgent:
                 s.eventLength
             FROM WeatherData w
             JOIN Storm s ON s.stormCode = w.stormCode
-            WHERE LOWER(w.county) = LOWER(?)
+            WHERE LOWER(w.county) = LOWER(%s)
             ORDER BY s.eventDateTime DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (county, self.fetch_limit),
         )

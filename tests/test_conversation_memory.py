@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import io
 import os
-import sqlite3
 import sys
-import tempfile
+
+import psycopg
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -26,9 +26,13 @@ SRC_DIR = REPO_ROOT / "src"
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 SCHEMA_PATH = REPO_ROOT / "sql" / "schema.sql"
 
-for _p in (str(SRC_DIR), str(SCRIPTS_DIR)):
+TESTS_DIR = Path(__file__).parent
+
+for _p in (str(SRC_DIR), str(SCRIPTS_DIR), str(TESTS_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+from pg_harness import make_conn  # noqa: E402
 
 from wiser.agents.sql_ai_agent import (  # noqa: E402
     _SYSTEM_PROMPT,
@@ -71,34 +75,36 @@ _TURN_2 = ConversationTurn(
 )
 
 
-def _make_file_conn() -> tuple[sqlite3.Connection, Path]:
-    """Temp-file DB — required for tests that call _execute_ro (needs a real path)."""
-    fd, tmp = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    tmp_path = Path(tmp)
-    conn = sqlite3.connect(str(tmp_path))
-    conn.executescript(_SCHEMA_SQL)
+def _make_file_conn() -> psycopg.Connection:
+    """Seeded database for tests that exercise _execute_ro.
+
+    Under SQLite this had to be a temp *file*, because _execute_ro reopened
+    the path with a ``file:...?mode=ro`` URI. PostgreSQL enforces read-only
+    inside a transaction on the same connection, so the shared test schema
+    works and the returned path is vestigial.
+    """
+    conn = make_conn()
     conn.execute(
-        "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+        "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
         (2012102806, "2012-10-28 06:00:00", 72),
     )
-    conn.execute("INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Fairfield", 4887830))
-    conn.execute("INSERT INTO County(county, ohLine) VALUES(?, ?)", ("Hartford", 5869550))
+    conn.execute("INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Fairfield", 4887830))
+    conn.execute("INSERT INTO County(county, ohLine) VALUES(%s, %s)", ("Hartford", 5869550))
     conn.execute(
         "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,"
-        " wgt5, wgt9, wgt13, wgt18, outage) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " wgt5, wgt9, wgt13, wgt18, outage) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (2012102806, "Fairfield", 150.5, 12.3, 20, 8, 2, 0, 350),
     )
     conn.commit()
-    return conn, tmp_path
+    return conn
 
 
-def _make_ctx(query: str, conn: sqlite3.Connection, **overrides) -> SimpleNamespace:
+def _make_ctx(query: str, conn: psycopg.Connection, **overrides) -> SimpleNamespace:
     """Minimal HandlerContext-compatible namespace for handler tests."""
     defaults = dict(
         query=query,
         conn=conn,
-        db_path=":memory:",
+        dsn=None,
         limit=5,
         county=None,
         data_agent=None,
@@ -199,10 +205,9 @@ class TestBuildMessages(unittest.TestCase):
 
 class TestRunWithHistory(unittest.TestCase):
     def setUp(self):
-        self.conn, self.tmp_path = _make_file_conn()
-        # LIFO: close the connection first, then unlink (Windows locks open files).
-        self.addCleanup(lambda: self.tmp_path.unlink(missing_ok=True))
-        self.addCleanup(self.conn.close)
+        self.conn = _make_file_conn()
+        # No file to unlink any more: the fixture is a PostgreSQL schema that
+        # the harness rebuilds on the next make_conn() call.
         env_patcher = patch.dict("os.environ", {"OPENAI_API_KEY": "test-key-not-real"})
         env_patcher.start()
         self.addCleanup(env_patcher.stop)

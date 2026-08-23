@@ -3,10 +3,11 @@ from __future__ import annotations
 import html
 import json
 import math
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
+
+from wiser.storm_analysis import DbConnection
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CT_COUNTY_GEOJSON = (
@@ -157,7 +158,7 @@ def load_county_geojson(
 
 
 def available_storm_options(
-    conn: sqlite3.Connection,
+    conn: DbConnection,
     *,
     limit: int = 50,
 ) -> list[dict[str, object]]:
@@ -172,7 +173,7 @@ def available_storm_options(
         JOIN WeatherData w ON w.stormCode = s.stormCode
         GROUP BY s.stormCode, s.eventDateTime
         ORDER BY s.eventDateTime DESC
-        LIMIT ?
+        LIMIT %s
         """,
         (limit,),
     ).fetchall()
@@ -187,7 +188,7 @@ def available_storm_options(
 
 
 def county_metric_rows(
-    conn: sqlite3.Connection,
+    conn: DbConnection,
     metric_key: str,
     *,
     storm_code: int | str | None = None,
@@ -200,8 +201,22 @@ def county_metric_rows(
     where_sql = ""
     params: list[object] = []
     if storm_code is not None:
-        where_sql = "WHERE w.stormCode = ?"
+        where_sql = "WHERE w.stormCode = %s"
         params.append(int(storm_code))
+
+    # "outage" is the only metric key with no matching output alias below, so
+    # ORDER BY resolved it to the bare column w.outage. SQLite tolerated that
+    # in a grouped query and sorted by an arbitrary row's value; PostgreSQL
+    # rejects it outright. Order by the aggregate instead -- when the query is
+    # scoped to one storm each county has a single row, so SUM(outage) is that
+    # storm's outage and the ordering is the one the metric intends.
+    #
+    # NOTE: this fixes the SQL only. The same alias gap has a second half that
+    # predates the PostgreSQL migration: _coerce_metric_row() emits no "outage"
+    # key either, so render_county_heatmap_svg()'s row[metric_key] lookup finds
+    # nothing and the "Outages" map draws every county as no-data. Fixing that
+    # changes the public row shape, so it is left as its own change.
+    order_column = "total_outage" if metric_key == "outage" else metric_key
 
     rows = conn.execute(
         f"""
@@ -209,20 +224,20 @@ def county_metric_rows(
             w.county,
             COUNT(*) AS storms_observed,
             SUM(w.outage) AS total_outage,
-            ROUND(AVG(w.outage), 2) AS avg_outage,
+            ROUND(AVG(w.outage)::numeric, 2) AS avg_outage,
             MAX(w.outage) AS peak_outage,
-            ROUND(AVG(w.peakWSPD10), 2) AS avg_peak_wind,
-            ROUND(MAX(w.peakWSPD10), 2) AS max_peak_wind,
+            ROUND(AVG(w.peakWSPD10)::numeric, 2) AS avg_peak_wind,
+            ROUND(MAX(w.peakWSPD10)::numeric, 2) AS max_peak_wind,
             c.ohLine,
-            ROUND(SUM(w.outage) * 1000000.0 / c.ohLine, 2)
+            ROUND((SUM(w.outage) * 1000000.0 / c.ohLine)::numeric, 2)
                 AS outage_per_million_ohline
         FROM WeatherData w
         JOIN County c ON LOWER(c.county) = LOWER(w.county)
         {where_sql}
         GROUP BY w.county, c.ohLine
-        ORDER BY {metric_key} DESC, w.county ASC
+        ORDER BY {order_column} DESC, w.county ASC
         """,
-        params,
+        params or None,
     ).fetchall()
     return [_coerce_metric_row(row) for row in rows]
 
@@ -383,7 +398,7 @@ def _validate_geojson(data: dict[str, Any]) -> None:
         raise ValueError("GeoJSON FeatureCollection has no features list.")
 
 
-def _coerce_metric_row(row: sqlite3.Row | Sequence[Any]) -> dict[str, object]:
+def _coerce_metric_row(row: Sequence[Any]) -> dict[str, object]:
     return {
         "county": row[0],
         "storms_observed": int(row[1]),

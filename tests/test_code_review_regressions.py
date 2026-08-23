@@ -20,8 +20,9 @@ installed in this environment.
 from __future__ import annotations
 
 import ast
-import sqlite3
 import sys
+
+import psycopg
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,8 +33,13 @@ SRC_DIR = REPO_ROOT / "src"
 SCHEMA_PATH = REPO_ROOT / "sql" / "schema.sql"
 STREAMLIT_APP_PATH = REPO_ROOT / "streamlit_app.py"
 
+TESTS_DIR = Path(__file__).parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from pg_harness import executemany, make_conn, new_connection  # noqa: E402,F401
 
 from wiser.agents.sql_ai_agent import SqlValidationError  # noqa: E402
 from wiser.agents.storm_reasoning_agent import (  # noqa: E402
@@ -73,28 +79,27 @@ _WEATHER_ROWS = [
 _COUNTY_ROWS = [("Fairfield", 4887830), ("Hartford", 5869550)]
 
 
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(_SCHEMA_SQL)
-    conn.executemany(
-        "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(?, ?, ?)",
+def _make_conn() -> psycopg.Connection:
+    conn = make_conn()
+    executemany(conn, 
+        "INSERT INTO Storm(stormCode, eventDateTime, eventLength) VALUES(%s, %s, %s)",
         _STORM_ROWS,
     )
-    conn.executemany("INSERT INTO County(county, ohLine) VALUES(?, ?)", _COUNTY_ROWS)
-    conn.executemany(
+    executemany(conn, "INSERT INTO County(county, ohLine) VALUES(%s, %s)", _COUNTY_ROWS)
+    executemany(conn, 
         "INSERT INTO WeatherData(stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,"
-        " wgt5, wgt9, wgt13, wgt18, outage) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " wgt5, wgt9, wgt13, wgt18, outage) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
         _WEATHER_ROWS,
     )
     conn.commit()
     return conn
 
 
-def _make_ctx(query: str, conn: sqlite3.Connection, **overrides) -> SimpleNamespace:
+def _make_ctx(query: str, conn: psycopg.Connection, **overrides) -> SimpleNamespace:
     defaults = dict(
         query=query,
         conn=conn,
-        db_path=":memory:",
+        dsn=None,
         limit=5,
         county=None,
         data_agent=None,
@@ -428,7 +433,7 @@ class TestRoutingHardening(unittest.TestCase):
 
 class TestExternalOutageCounting(unittest.TestCase):
     def setUp(self):
-        self.conn = sqlite3.connect(":memory:")
+        self.conn = make_conn()
         self.addCleanup(self.conn.close)
 
     def test_first_load_counts_every_row_as_inserted(self):

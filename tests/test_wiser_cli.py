@@ -16,8 +16,13 @@ SRC_DIR = Path(__file__).parent.parent / "src"
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
+TESTS_DIR = Path(__file__).parent
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+
+from pg_harness import make_conn  # noqa: E402
 
 from wiser.agents.sql_ai_agent import SqlValidationError  # noqa: E402
 from wiser.agents.task_routing_agent import Route  # noqa: E402
@@ -157,24 +162,23 @@ class TestCliEvaluationFlags(unittest.TestCase):
 
 class TestCliExternalLoad(unittest.TestCase):
     def test_load_external_eagleeye_prints_summary(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            db_path = Path(temp_dir) / "external.db"
-            output = io.StringIO()
-            with patch.object(
-                sys,
-                "argv",
-                [
-                    "wiser_cli.py",
-                    "--load-external",
-                    "--external-source",
-                    "eagleeye",
-                    "--external-file",
-                    str(FIXTURE_DIR / "eagleeye_sample.csv"),
-                    "--db",
-                    str(db_path),
-                ],
-            ), redirect_stdout(output):
-                main()
+        # There is no temp database file to point at any more; the CLI writes
+        # into the test schema that pg_harness pins via DATABASE_URL.
+        make_conn()
+        output = io.StringIO()
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "wiser_cli.py",
+                "--load-external",
+                "--external-source",
+                "eagleeye",
+                "--external-file",
+                str(FIXTURE_DIR / "eagleeye_sample.csv"),
+            ],
+        ), redirect_stdout(output):
+            main()
 
         text = output.getvalue()
         self.assertIn("External outage observations loaded", text)

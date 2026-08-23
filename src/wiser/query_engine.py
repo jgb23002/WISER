@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-import sqlite3
+from wiser.storm_analysis import DbConnection
 
 
-def county_historical_count(conn: sqlite3.Connection, county: str) -> int:
+def county_historical_count(conn: DbConnection, county: str) -> int:
     """Return the number of WeatherData rows for a county."""
     return conn.execute(
-        "SELECT COUNT(*) FROM WeatherData WHERE LOWER(county) = LOWER(?)",
+        "SELECT COUNT(*) FROM WeatherData WHERE LOWER(county) = LOWER(%s)",
         (county,),
     ).fetchone()[0]
 
 
 def top_counties_by_outage(
-    conn: sqlite3.Connection, limit: int = 10
+    conn: DbConnection, limit: int = 10
 ) -> list[dict[str, object]]:
     rows = conn.execute(
         """
@@ -20,12 +20,12 @@ def top_counties_by_outage(
             county,
             COUNT(*) AS storms_observed,
             SUM(outage) AS total_outage,
-            ROUND(AVG(outage), 2) AS avg_outage,
+            ROUND(AVG(outage)::numeric, 2) AS avg_outage,
             MAX(outage) AS peak_outage
         FROM WeatherData
         GROUP BY county
         ORDER BY total_outage DESC
-        LIMIT ?
+        LIMIT %s
         """,
         (limit,),
     ).fetchall()
@@ -42,7 +42,7 @@ def top_counties_by_outage(
 
 
 def top_storms_by_outage(
-    conn: sqlite3.Connection, limit: int = 10
+    conn: DbConnection, limit: int = 10
 ) -> list[dict[str, object]]:
     rows = conn.execute(
         """
@@ -55,7 +55,7 @@ def top_storms_by_outage(
         JOIN WeatherData w ON w.stormCode = s.stormCode
         GROUP BY s.stormCode, s.eventDateTime, s.eventLength
         ORDER BY total_outage DESC
-        LIMIT ?
+        LIMIT %s
         """,
         (limit,),
     ).fetchall()
@@ -71,7 +71,7 @@ def top_storms_by_outage(
 
 
 def county_storm_history(
-    conn: sqlite3.Connection,
+    conn: DbConnection,
     county: str,
     limit: int = 10,
 ) -> list[dict[str, object]]:
@@ -85,9 +85,9 @@ def county_storm_history(
             w.outage
         FROM WeatherData w
         JOIN Storm s ON s.stormCode = w.stormCode
-        WHERE lower(w.county) = lower(?)
+        WHERE lower(w.county) = lower(%s)
         ORDER BY w.outage DESC, s.eventDateTime DESC
-        LIMIT ?
+        LIMIT %s
         """,
         (county, limit),
     ).fetchall()
