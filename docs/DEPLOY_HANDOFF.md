@@ -105,6 +105,13 @@ bills this key, and the cap is the only backstop if a link is forwarded.
   that cost.
 - **Dependencies**: pinned to a locally verified set and confirmed to install
   into a clean virtualenv.
+- **A clean first impression**: the app was driven against the live database
+  until it produced zero spurious warnings. Two were found and fixed -- the
+  evaluation panel needed CREATE on the database, and the external-outage
+  staging table needed app ownership because CREATE INDEX IF NOT EXISTS checks
+  ownership. Sponsors now see warnings only when something is genuinely wrong.
+- **The evaluation panel works and is worth showing**: 27/27 SQL ground-truth
+  cases and 73/73 routing cases pass against the deployed database.
 
 ## After it is up
 

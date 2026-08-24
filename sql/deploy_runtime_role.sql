@@ -92,6 +92,31 @@ TO wiser_app;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ExternalOutageObservation TO wiser_app;
 
+-- DML is not sufficient. ensure_external_outage_schema() also issues
+-- CREATE INDEX IF NOT EXISTS against this table, and creating an index
+-- requires OWNERSHIP -- IF NOT EXISTS does not bypass that check, exactly as
+-- it does not for CREATE TABLE. Without this the app raises
+-- "must be owner of table externaloutageobservation" and shows a warning
+-- beside every answer.
+--
+-- Handing over one staging table is the narrow fix. It holds external feed
+-- observations, is rebuilt by schema.sql, and carries no storm data, so app
+-- ownership costs nothing that matters. The core tables stay with the owner,
+-- which is what refuses the R1 DROP.
+--
+-- The GRANT first is required, not decorative: PostgreSQL refuses
+-- "ALTER TABLE ... OWNER TO wiser_app" with "must be able to SET ROLE
+-- wiser_app" unless the current role is a member. Neon's neondb_owner is not
+-- implicitly a member of roles it creates.
+
+DO $$
+BEGIN
+    EXECUTE format('GRANT wiser_app TO %I', current_user);
+END
+$$;
+
+ALTER TABLE ExternalOutageObservation OWNER TO wiser_app;
+
 -- ---------------------------------------------------------------------------
 -- 4b. RAG tables: read-write, and they may not exist yet
 -- ---------------------------------------------------------------------------
@@ -133,15 +158,20 @@ $$;
 -- create and drop schemas of its own. It still could not touch the owner's
 -- tables -- ownership remains the gate.
 --
--- Uncomment ONLY if sponsors should see the ground-truth metrics panel.
--- Leaving it commented makes that panel raise, so pair it with hiding the
--- panel in the UI.
+-- ENABLED. Without it the panel does not merely hide -- it raises, and the
+-- app surfaces "Evaluation metrics unavailable: InsufficientPrivilege" as a
+-- warning next to EVERY answer, which reads to a sponsor as something being
+-- broken. Granting it lets sponsors see the ground-truth pass rate instead.
+--
+-- The cost is real but bounded: wiser_app can now create and drop schemas of
+-- its own. It still cannot touch the owner's tables, so R1 stays closed --
+-- ownership, not this privilege, is what refuses the DROP.
 
--- DO $$
--- BEGIN
---     EXECUTE format('GRANT CREATE ON DATABASE %I TO wiser_app', current_database());
--- END
--- $$;
+DO $$
+BEGIN
+    EXECUTE format('GRANT CREATE ON DATABASE %I TO wiser_app', current_database());
+END
+$$;
 
 -- ---------------------------------------------------------------------------
 -- 6. Verify

@@ -111,8 +111,14 @@ DEFAULT_DSN: str | None = None
 DEFAULT_LIMIT = 10
 DEFAULT_MAX_LINKED_PDFS = 50
 
+# Suggestions offered in the UI and after an unmatched query. Deliberately
+# excludes "build database from csv": it routes to handle_data_retrieval,
+# which runs sql/schema.sql -- and that file opens with DROP TABLE. Offering a
+# destructive action to whoever is looking at the app is a poor default, and
+# in the deployment the restricted role refuses it, so the suggestion could
+# only ever produce a permission error. The route itself is unchanged and
+# still reachable by typing the request.
 EXAMPLE_QUERIES: tuple[str, ...] = (
-    "build database from csv",
     "which county was affected the most overall?",
     "for storm 2020080406, why did Hartford have more outages than New Haven despite lower wind?",
     "top counties by outage",
