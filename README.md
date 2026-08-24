@@ -16,8 +16,26 @@ Documentation:
 
 ## Prerequisites
 
-- Python **3.9+**
-- Requires PostgreSQL 17 (run `docker compose up -d` for a local instance) and `psycopg[binary]`. Everything else uses the standard library (`csv`, `datetime`, `argparse`, `unittest`). Optional dependencies: `faiss-cpu` and `numpy` for fast text similarity, `pypdf` for PDF extraction, `sqlglot` for full syntax validation of AI-generated SQL, and an `OPENAI_API_KEY` (in `.env` or the environment) for AI-generated SQL analytics queries and impact summaries. All fall back gracefully when absent.
+- Python **3.9+** (the deployed app and the pinned dependency set are verified on **3.13**)
+- **PostgreSQL 17** — `docker compose up -d` starts one locally on port 5433
+
+`requirements.txt` now pins a real, installed set rather than documenting
+suggestions. It carries `psycopg[binary,pool]`, `streamlit`, `sqlglot`, and
+`pypdf`.
+
+Two of those used to be optional and are not any more. `sqlglot` gives full
+syntax and SELECT-only validation of AI-generated SQL; without it the agent
+falls back to regex keyword matching, which is materially weaker when the
+prompts come from someone else. `pypdf` extracts text from the PDFs the NOAA
+sources link, which are otherwise skipped silently.
+
+Still genuinely optional:
+
+- `faiss-cpu` + `numpy` for fast text similarity. The `auto` backend falls back
+  to exact ranking, which is correct and fast at this dataset's size.
+- `OPENAI_API_KEY` (in `.env` or the environment) for AI-generated SQL and
+  impact summaries. Without it those routes degrade to fixed analytical
+  queries rather than failing.
 
 ---
 
@@ -44,7 +62,11 @@ python -m venv .venv
 ```bash
 pip install -r requirements.txt
 ```
-> No packages are installed at this stage — the file documents optional packages for external-context acceleration (`faiss-cpu`, `numpy`, `pypdf`). Uncomment and install only what you need.
+> This installs a pinned set verified together against PostgreSQL 17. Versions
+> are pinned rather than floated because Streamlit Community Cloud resolves
+> them fresh at deploy time, and the pool's checkout/return semantics are
+> load-bearing in production. `faiss-cpu` is deliberately excluded — see
+> Prerequisites.
 
 ---
 
@@ -371,6 +393,39 @@ The test files cover the following functionality:
 | `tests/test_wiser_cli.py` | Verifies similarity query parsing, county auto-detection, dispatch registry, and CLI rendering of handler results. |
 | `tests/test_visualization.py` | Validates county metric aggregation, legacy county GeoJSON loading, and SVG heat-map rendering. |
 | `tests/test_data_pipeline.py` | Validates parsing of CSV columns and correct extraction of state codes from event codes. |
+
+---
+
+## Deployment
+
+WISER is deployed as a private Streamlit Community Cloud app backed by a Neon
+PostgreSQL 17 database, both on free tiers.
+
+| Document | What it is for |
+|---|---|
+| [docs/DEPLOY_HANDOFF.md](docs/DEPLOY_HANDOFF.md) | The click-by-click steps, for whoever holds GitHub access to the repo. Start here. |
+| [docs/DEPLOYMENT_PLAN.md](docs/DEPLOYMENT_PLAN.md) | The full plan: topology, the decisions and why, the risk register, and what each rehearsal found. |
+| [docs/SPONSOR_GUIDE.md](docs/SPONSOR_GUIDE.md) | Hand this to sponsors. Queries that work, and what to expect. |
+| [sql/deploy_runtime_role.sql](sql/deploy_runtime_role.sql) | Creates the restricted role the deployed app connects as. |
+
+The deployed app does **not** connect as the database owner. It uses a
+restricted `wiser_app` role that can read the storm tables and write only the
+RAG and staging tables. This is not decoration: `TaskRoutingAgent` matches the
+word "rebuild", which routes to `handle_data_retrieval`, which runs
+`sql/schema.sql` — and that file opens with `DROP TABLE`. Under the restricted
+role that `DROP` is refused rather than obeyed.
+
+Two details that cost real debugging time, recorded so they are not
+rediscovered:
+
+- **`CREATE INDEX IF NOT EXISTS` requires table ownership**, and `IF NOT
+  EXISTS` does not bypass the check — exactly as it does not for `CREATE
+  TABLE`. Granting DML on the RAG and staging tables is therefore not enough;
+  the script transfers ownership.
+- **Streamlit exposes only root-level secrets as environment variables.** This
+  app reads `os.environ` throughout, so a `DATABASE_URL` nested under a
+  `[section]` header does not raise — it silently falls back to the local
+  Docker DSN and looks like a network fault.
 
 ---
 

@@ -2,7 +2,25 @@
 
 **Goal:** a stable public URL we send to sponsors, who open it and run their own queries.
 **Budget:** $0 infrastructure. OpenAI usage is the only variable cost, and only during the demo.
-**Status:** **Phases 0–2 complete.** The Neon project is live on PostgreSQL 17.11 (`neondb`, AWS us-east-1), seeded, and serving the app through the restricted `wiser_app` role. Phase 3 (Streamlit Cloud) is next and needs a person to authorize GitHub access.
+**Status:** **Phases 0–2 complete, Phase 4 largely pre-verified.** The Neon project is live on PostgreSQL 17.11 (`neondb`, AWS us-east-1), seeded, and serving the app through the restricted `wiser_app` role.
+
+**Phase 3 is the only thing blocking a URL**, and it needs a person with GitHub access to the repo — see [DEPLOY_HANDOFF.md](DEPLOY_HANDOFF.md).
+
+| Phase | | |
+|---|---|---|
+| 0 | Repo prep | **Complete** |
+| 1 | Neon | **Complete** |
+| 2 | Seed + restricted role | **Complete** |
+| 3 | Deploy to Streamlit Cloud | **Not started** — owner only |
+| 4 | Harden + verify | 4 of 6 done ahead of deploy; two need the live URL |
+| 5 | Hand off | Sponsor guide written; the rest needs a URL |
+
+The two Phase 4 items that cannot be done in advance are confirming `sqlglot`
+actually loaded in the cloud environment (its failure mode is silent — SQL
+validation drops to regex and nothing says so) and walking the sponsor routes
+through the deployed app. The one item that needs no URL and is still
+outstanding is the **OpenAI budget cap**, which is the only control in this
+plan with no technical backstop behind it.
 
 Measured on the live database:
 
@@ -77,14 +95,14 @@ Sources: [Streamlit status and limitations](https://docs.streamlit.io/deploy/str
 
 ## 2. What the codebase already gives us
 
-Verified against the current `main` (`67d6aca`):
+Verified against the codebase as it stands (re-checked after the deployment work; earlier revisions of this section cited line numbers that have since moved, so it now names symbols instead):
 
 - `data/testdata.csv` **is committed**, so the seed data reaches the cloud with the repo.
 - `data/normalized/` is gitignored, but `scripts/bootstrap_wiser.py` regenerates it from `testdata.csv`. Nothing is lost.
 - `.env` is gitignored. No secrets are in git history.
 - `resolve_dsn()` precedence is: explicit arg → `$DATABASE_URL` → local Docker default. Setting `DATABASE_URL` in Streamlit secrets is sufficient to repoint the whole app.
 - `sql_ai_agent.py` runs generated SQL under `SET LOCAL transaction_read_only = on`, so there is already one layer of write protection on the AI path.
-- Optional deps degrade gracefully when absent (per README) — `sqlglot`, `faiss`, `pypdf`, `openai` are all absent from the local `.venv` and the suite still passes.
+- Optional deps degrade gracefully when absent. This is no longer the deployed posture: `sqlglot` and `pypdf` are now **pinned in `requirements.txt`** and installed, because regex-only SQL validation is not what we want when strangers author the prompts. `faiss-cpu` stays excluded (the `auto` backend falls back to exact ranking, correct at 8 counties), and `openai` was never a dependency — every LLM call goes through `wiser/llm_client.py` on stdlib `urllib`.
 
 ---
 
@@ -94,7 +112,7 @@ These are the things that change when strangers, rather than we, drive the app.
 
 ### R1 — A sponsor can wipe the database by typing a sentence
 
-`TaskRoutingAgent` matches the keyword `"rebuild"` and routes to `Route.DATA_RETRIEVAL` → `handle_data_retrieval` (`src/wiser/handlers.py:400`) → `build_database()`, and `sql/schema.sql` opens with `DROP TABLE`.
+`TaskRoutingAgent` matches the keyword `"rebuild"` and routes to `Route.DATA_RETRIEVAL` → `handle_data_retrieval` (in `src/wiser/handlers.py`) → `build_database()`, and `sql/schema.sql` opens with `DROP TABLE`.
 
 A sponsor typing *"rebuild the database"* into the query box therefore drops and reloads every table.
 
@@ -108,8 +126,8 @@ Severity is moderate, not fatal: it rebuilds from the committed CSV, so the data
 
 Two viable postures, decided in Decision 5:
 
-- **(a) Scoped role** — `SELECT` only on `Storm`, `County`, `WeatherData`; read/write on `RagDocument`, `RagChunk`, `ExternalOutageObservation`; no DDL on the core tables. Keeps every feature, blocks R1.
-- **(b) Fully read-only** — pre-build the RAG index during seeding, then serve read-only and hide the "Rebuild RAG index" checkbox (`streamlit_app.py:858`). Simplest and safest, but external context goes stale and cannot refresh.
+- **(a) Scoped role** — `SELECT` only on the core tables; the app **owns** `RagDocument`, `RagChunk`, and `ExternalOutageObservation`. Keeps every feature, blocks R1. Ownership rather than grants is deliberate and was learned the hard way: `CREATE INDEX IF NOT EXISTS` requires ownership, so DML grants alone break `initialize_rag_schema()` and `ensure_external_outage_schema()`. See §5 Phase 2 and `sql/deploy_runtime_role.sql`.
+- **(b) Fully read-only** — pre-build the RAG index during seeding, then serve read-only and hide the "Rebuild RAG index" checkbox (`rebuild_rag` in `streamlit_app.py`). Simplest and safest, but external context goes stale and cannot refresh.
 
 ### R3 — Our OpenAI key funds every sponsor query *(Milestone A only)*
 
@@ -144,7 +162,7 @@ Once a user types their key into the app, that key is in our process memory. Fou
 3. **Logs and error text.** An exception that interpolates the key into its message will surface it in the Streamlit UI and the cloud logs.
 4. **Streamlit secrets.** Secrets are for *our* credentials. A user key is per-session input and belongs only in `st.session_state`, entered through a `type="password"` field.
 
-**Precedent to follow:** `streamlit_app.py:556` already redacts the DSN password before it reaches the browser or the transcript. That is exactly the right instinct and exactly the pattern BYOK needs — the work is applying it to a second secret, not inventing an approach.
+**Precedent to follow:** `_redacted_dsn()` in `streamlit_app.py` already redacts the DSN password before it reaches the browser or the transcript. That is exactly the right instinct and exactly the pattern BYOK needs — the work is applying it to a second secret, not inventing an approach.
 
 **Also note:** Streamlit Community Cloud's 1 GB app process is shared across concurrent sessions. `st.session_state` is per-session and does not cross users, but anything promoted to module scope or a cached resource **would**. No `@st.cache_resource` may ever hold a user key.
 
@@ -231,22 +249,26 @@ Once against the seeded local database, and once against a **fresh, empty databa
 
 **Exit criterion:** the public URL loads and answers a query end to end.
 
-### Phase 4 — Harden and verify *(no blockers once Phase 3 lands)*
+### Phase 4 — Harden and verify  [4 of 6 DONE]
 
-1. Set the OpenAI hard monthly budget cap (R3). Do this **before** sending any sponsor the link, not after. Since this is our key for the whole demo window, the cap is the only thing standing between an enthusiastic sponsor and a real bill.
-2. Attempt the R1 attack deliberately: type "rebuild the database" as a sponsor would, and confirm it fails safely rather than wiping the DB.
-3. Confirm `sqlglot` is actually imported in production, not silently falling back (R4).
-4. Exercise every route sponsors will touch: SQL AI, analytics, similarity, RAG, visualization.
-5. Decide the fate of the runtime NOAA fetches per Decision 7.
-6. Check for anything leaking into the UI. `streamlit_app.py:556` already redacts the DSN password; confirm nothing else does.
+Most of this was pulled forward by driving the real app against the live Neon
+database with `streamlit.testing.v1.AppTest`, so only the two items that
+genuinely need a deployed URL remain. Status is marked per step below.
 
-**Exit criterion:** the R1 attack fails, and every sponsor-facing route returns a correct result.
+1. **[OUTSTANDING — yours]** Set the OpenAI hard monthly budget cap (R3). Do this **before** sending any sponsor the link, not after. Since this is our key for the whole demo window, the cap is the only thing standing between an enthusiastic sponsor and a real bill.
+2. **[DONE]** Attempt the R1 attack deliberately: type "rebuild the database" as a sponsor would, and confirm it fails safely rather than wiping the DB.
+3. **[NEEDS THE LIVE URL]** Confirm `sqlglot` is actually imported in production, not silently falling back (R4). Installed and pinned, and the local suite exercises the sqlglot path — but the cloud environment is the thing being checked, and the failure is silent.
+4. **[DONE — all 13 example queries returned results against Neon]** Exercise every route sponsors will touch: SQL AI, analytics, similarity, RAG, visualization.
+5. **[DONE — kept, and pre-warmed]** Decide the fate of the runtime NOAA fetches per Decision 7. The first such query cost 95 s crawling NOAA; that has been run once and the index (54 documents, 2350 chunks) is stored in Neon, so it survives restarts. The query now takes 4 s and no sponsor pays the first-run cost.
+6. **[DONE]** Check for anything leaking into the UI. `_redacted_dsn()` in `streamlit_app.py` already redacts the DSN password; confirm nothing else does.
 
-### Phase 5 — Hand off
+**Exit criterion:** the R1 attack fails, and every sponsor-facing route returns a correct result. **Met against Neon ahead of deployment** — "rebuild the database" fails with `must be owner of table weatherdata` without crashing the app, and the app renders zero spurious warnings on a normal query. Re-confirm through the deployed URL.
 
-1. Write a short sponsor-facing note: what WISER does, 3–5 example queries worth trying, and who to contact.
-2. Warn sponsors about the cold start, or warm the app before sending the link.
-3. Agree who watches the OpenAI spend and the Neon usage in the first week.
+### Phase 5 — Hand off  [1 of 3 DONE]
+
+1. **[DONE]** Write a short sponsor-facing note — [SPONSOR_GUIDE.md](SPONSOR_GUIDE.md). It lists only queries actually executed against Neon, including the ones that legitimately return nothing, and records that similarity search needs `key=value` pairs rather than prose.
+2. **[BLOCKED on a URL]** Warn sponsors about the cold start, or warm the app before sending the link. Sleep needs 12 quiet hours, so this is a once-a-morning action, not a per-call one.
+3. **[OUTSTANDING]** Agree who watches the OpenAI spend and the Neon usage in the first week. A conversation, not a task — but note that whoever's API key ships is also who must set the cap in Phase 4.
 
 ---
 
@@ -283,7 +305,7 @@ The key already threads as a parameter through two of the three call sites. This
 | `storm_reasoning_agent` (`:169`, `:190`) | `api_key` param, env fallback | None |
 | `sql_ai_agent` (`:206`) | Reads `os.environ` directly, **no param** | Add an `api_key` parameter, keep env as the fallback |
 | `openai_config()` (`:61`) | Reads `os.environ` directly for `api_key_present` | Accept an optional key so the "is a key present?" check reflects the session, not the process |
-| `HandlerContext` | Has `openai_model`, `sql_model`, `use_openai_summary` — **no key field** | Add `openai_api_key: str \| None`, thread through `build_context` and `handlers.py:2020` |
+| `HandlerContext` | Has `openai_model`, `sql_model`, `use_openai_summary` — **no key field** | Add `openai_api_key: str \| None`, thread through `build_context` and the `openai_config` call in `handlers.py` |
 | `streamlit_app.py` | No key input exists | Add a `type="password"` field, hold it in `st.session_state` only |
 
 The env fallback must stay in every case. It is what lets the CLI, the test suite, and our own demo deploy keep working unchanged — Milestone B should be additive, not a migration.
@@ -291,7 +313,7 @@ The env fallback must stay in every case. It is what lets the CLI, the test suit
 ### Design constraints
 
 - **Session-scoped, never global.** Per R6, no module-level variable and no `@st.cache_resource` may hold a user key.
-- **Redact on every egress path.** Follow the DSN precedent at `streamlit_app.py:556`.
+- **Redact on every egress path.** Follow the DSN precedent at `_redacted_dsn()` in `streamlit_app.py`.
 - **Never persisted.** Not to the database, not to the conversation history, not to logs.
 - **Graceful when absent.** The app already degrades rather than crashes without a key. A user who has not pasted one should get a clear prompt to do so, not a stack trace.
 
