@@ -601,39 +601,6 @@ Important test areas:
   is still re-executed against live data
 - regression pins for previously shipped code-review fixes
 
-## Deployment
-
-The production deployment is a private Streamlit Community Cloud app over a
-Neon PostgreSQL 17 database. Operational detail lives in
-[DEPLOY_HANDOFF.md](DEPLOY_HANDOFF.md) and [DEPLOYMENT_PLAN.md](DEPLOYMENT_PLAN.md);
-what matters for reading the code is the privilege split.
-
-The app never connects as the database owner. `sql/deploy_runtime_role.sql`
-creates a `wiser_app` role that holds:
-
-| | |
-|---|---|
-| `SELECT` only | `Storm`, `County`, `WeatherData`, `RegionCountyMapping`, `StormMetricDefinition`, `HourlyWeatherObservation`, `CurrentWeatherObservation` |
-| Ownership | `RagDocument`, `RagChunk`, `ExternalOutageObservation` |
-
-This is why `handle_data_retrieval` fails in production rather than rebuilding:
-it runs `sql/schema.sql`, which opens with `DROP TABLE`, and the role does not
-own those tables. `TaskRoutingAgent` matches the word "rebuild", so that path
-is reachable by anyone typing into the app.
-
-Ownership, not grants, is what the RAG and staging tables need.
-`initialize_rag_schema()` and `ensure_external_outage_schema()` both issue
-`CREATE INDEX IF NOT EXISTS`, and creating an index requires ownership —
-`IF NOT EXISTS` does not bypass that check, exactly as it does not for
-`CREATE TABLE`. Full DML on those tables is not sufficient and fails with
-`must be owner of table ...` even when the index already exists.
-
-`resolve_dsn()` reads `DATABASE_URL`, which Streamlit supplies from its secrets
-store. Only **root-level** secrets become environment variables; a key nested
-under a `[section]` header is visible to `st.secrets` alone, and this codebase
-reads `os.environ` throughout — so nesting it silently falls back to the local
-Docker DSN instead of raising.
-
 ## Source Map
 
 Core code:

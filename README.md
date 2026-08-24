@@ -396,30 +396,6 @@ The test files cover the following functionality:
 
 ---
 
-## Deployment
-
-WISER is deployed as a private Streamlit Community Cloud app backed by a Neon
-PostgreSQL 17 database, both on free tiers.
-
-| Document | What it is for |
-|---|---|
-| [docs/DEPLOY_HANDOFF.md](docs/DEPLOY_HANDOFF.md) | The click-by-click steps, for whoever holds GitHub access to the repo. Start here. |
-| [docs/DEPLOYMENT_PLAN.md](docs/DEPLOYMENT_PLAN.md) | The full plan: topology, the decisions and why, the risk register, and what each rehearsal found. |
-| [docs/SPONSOR_GUIDE.md](docs/SPONSOR_GUIDE.md) | Hand this to sponsors. Queries that work, and what to expect. |
-| [sql/deploy_runtime_role.sql](sql/deploy_runtime_role.sql) | Creates the restricted role the deployed app connects as. |
-
-The deployed app does **not** connect as the database owner. It runs as a
-restricted `wiser_app` role that reads the storm tables and writes only the RAG
-and staging tables, so the `DROP TABLE` in `sql/schema.sql` — reachable by
-typing "rebuild" into the app — is refused rather than obeyed.
-
-The privilege split and the two traps that go with it (index creation requiring
-ownership, and Streamlit exposing only root-level secrets as environment
-variables) are documented under **Deployment** in
-[docs/WISER_DOCUMENTATION.md](docs/WISER_DOCUMENTATION.md).
-
----
-
 ## Project Structure
 
 ```text

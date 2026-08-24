@@ -4,9 +4,9 @@ __pycache__/
 venv/
 .env
 
-# Streamlit local secrets. config.toml is deliberately NOT ignored -- it is
-# theming and belongs in git; secrets.toml holds the Neon password and the
-# OpenAI key and must never be committed.
+# Streamlit local secrets -- holds the database password and the OpenAI key
+# if either is set via .streamlit/secrets.toml rather than .env. Must never
+# be committed.
 .streamlit/secrets.toml
 .pytest_cache/
 
