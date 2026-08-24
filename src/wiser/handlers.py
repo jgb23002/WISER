@@ -371,13 +371,27 @@ def ensure_database(
     pooled: bool = False,
 ) -> psycopg.Connection:
     conn = connect_pooled(dsn) if pooled else connect(dsn)
-    with _schema_probe_lock:
-        already_verified = resolve_dsn(dsn) in _verified_schema_dsns
-    if already_verified:
-        return conn
-    if has_required_tables(conn):
-        _mark_schema_verified(dsn)
-        return conn
+    # Everything between the checkout and the successful return has to release
+    # the connection on failure. A pooled checkout that escapes is never given
+    # back -- PooledConnection has no __del__, so garbage collection closes the
+    # underlying socket without ever calling putconn(), and the pool goes on
+    # counting that slot as in use. has_required_tables() runs two
+    # information_schema queries immediately after checkout, and a serverless
+    # backend can drop the connection in that window; eight such failures
+    # exhaust POOL_MAX_SIZE permanently, turning a transient blip into every
+    # later request blocking for the full timeout. Streamlit swallows the
+    # error and the user simply retries, so nothing surfaces the cause.
+    try:
+        with _schema_probe_lock:
+            already_verified = resolve_dsn(dsn) in _verified_schema_dsns
+        if already_verified:
+            return conn
+        if has_required_tables(conn):
+            _mark_schema_verified(dsn)
+            return conn
+    except BaseException:
+        conn.close()
+        raise
     conn.close()
     conn = data_agent.build_database(dsn)
     _mark_schema_verified(dsn)

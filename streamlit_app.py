@@ -75,7 +75,9 @@ ROUTE_COLORS = {
 }
 
 # Routing is deterministic over constants, so the agent and the example-button
-# colours are computed once at import instead of 15 route() calls per rerun.
+# colours are computed once at import instead of one route() call per example on
+# every rerun. Stated without a count on purpose: EXAMPLE_QUERIES changes, and a
+# number here goes stale silently.
 _ROUTING_AGENT = TaskRoutingAgent()
 _EXAMPLE_ROUTE_COLORS: dict[str, str] = {
     example: ROUTE_COLORS.get(_ROUTING_AGENT.route(example).route, "gray")

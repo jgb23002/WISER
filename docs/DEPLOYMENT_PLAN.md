@@ -206,7 +206,7 @@ All decisions are settled, so every phase below is unblocked. They run in order 
 
 **Exit criterion:** the runtime role can answer a normal query and cannot drop a table. Verified locally — the full handler stack answers "top 3 counties by outage" over the pool as `wiser_app`, while `DROP TABLE`, `DROP TABLE IF EXISTS`, `TRUNCATE`, `ALTER TABLE`, and `INSERT` into core tables are all refused.
 
-#### Four things the rehearsal found that the design assumed wrong
+#### Five things the rehearsal found that the design assumed wrong
 
 These are the reason the script exists rather than a handful of GRANT lines in this document:
 

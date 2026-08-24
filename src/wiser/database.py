@@ -380,9 +380,14 @@ def connect_pooled(
     """Check a connection out of a process-wide pool.
 
     Falls back to a plain :func:`connect` when psycopg_pool is not installed.
-    Pools are keyed by the fully resolved conninfo, created lazily, and
-    checked on checkout so a server-side disconnect (common on serverless
-    Postgres) is repaired instead of surfacing as an error mid-query.
+    Pools are keyed by the resolved DSN, created lazily, and checked on
+    checkout so a server-side disconnect (common on serverless Postgres) is
+    repaired instead of surfacing as an error mid-query.
+
+    ``timeout`` bounds the wait for a free connection; it does NOT reach the
+    connection's lock_timeout, which always takes the default on the pooled
+    path. See the comment below for why the key excludes it. A caller needing
+    a different lock_timeout wants :func:`connect`, not a pool.
     """
     if _ConnectionPool is None:
         return connect(dsn, timeout=timeout)

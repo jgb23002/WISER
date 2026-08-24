@@ -14,8 +14,18 @@
 -- DROP, DROP IF EXISTS, or TRUNCATE a table it does not own. That matters,
 -- because CREATE is not optional here -- see the RAG note below.
 --
---   psql "<owner-dsn>" -v app_password="'choose-a-strong-one'" \
+--   psql "<owner-dsn>" -v app_password=choose-a-strong-one \
 --        -f sql/deploy_runtime_role.sql
+--
+-- Pass the password BARE, with no inner quotes. It is interpolated below as
+-- :'app_password', which quotes it for you; wrapping it yourself would embed
+-- literal quote characters in the password.
+--
+-- The quoted form matters. With a raw :app_password, the natural invocation
+-- above expands to ALTER ROLE ... PASSWORD choose-a-strong-one and dies on a
+-- syntax error -- and psql autocommits each statement, so ON_ERROR_STOP would
+-- stop AFTER the role was created but BEFORE any grant, leaving a passwordless
+-- role with no privileges and a confusing error naming the password itself.
 
 \set ON_ERROR_STOP on
 
@@ -37,7 +47,7 @@ BEGIN
 END
 $$;
 
-ALTER ROLE wiser_app WITH PASSWORD :app_password;
+ALTER ROLE wiser_app WITH PASSWORD :'app_password';
 
 -- ---------------------------------------------------------------------------
 -- 2. Schema access
@@ -131,6 +141,25 @@ ALTER TABLE ExternalOutageObservation OWNER TO wiser_app;
 -- A plain GRANT would abort the script in the second case, so this is
 -- conditional.
 --
+-- DML alone is not enough in the owner-owned branch, for the same reason as
+-- section 4: initialize_rag_schema() issues
+--
+--     CREATE INDEX IF NOT EXISTS idx_rag_document_path ON RagDocument(path);
+--     CREATE INDEX IF NOT EXISTS idx_rag_chunk_document ON RagChunk(documentId);
+--
+-- and creating an index requires OWNERSHIP. Verified: with the table
+-- owner-held and full DML granted, INSERT succeeds and the CREATE INDEX still
+-- fails with "must be owner of table ragdocument" even though the index
+-- already exists. Ownership is therefore transferred, not just granted.
+--
+-- This branch is dormant on a first deployment -- the app creates and owns
+-- these tables itself -- and fires on the re-seed path, where bootstrap runs
+-- as the owner. That is precisely the path the note above tells the operator
+-- to follow with a re-run of this script, so it must be correct there.
+--
+-- Both tables are a derived index, rebuildable from source at any time, so
+-- app ownership costs nothing. The core tables stay with the owner.
+--
 -- Deliberately NOT used here: ALTER DEFAULT PRIVILEGES ... ON TABLES. It
 -- cannot be scoped to table names, so it would hand wiser_app INSERT/UPDATE/
 -- DELETE on every future owner-created table -- including WeatherData after a
@@ -141,15 +170,17 @@ DO $$
 BEGIN
     IF to_regclass('public.RagDocument') IS NOT NULL THEN
         GRANT SELECT, INSERT, UPDATE, DELETE ON RagDocument TO wiser_app;
+        ALTER TABLE RagDocument OWNER TO wiser_app;
     END IF;
     IF to_regclass('public.RagChunk') IS NOT NULL THEN
         GRANT SELECT, INSERT, UPDATE, DELETE ON RagChunk TO wiser_app;
+        ALTER TABLE RagChunk OWNER TO wiser_app;
     END IF;
 END
 $$;
 
 -- ---------------------------------------------------------------------------
--- 5. OPTIONAL: the evaluation panel
+-- 5. The evaluation panel  (ENABLED -- this section is not optional)
 -- ---------------------------------------------------------------------------
 -- streamlit_app.py's _evaluation_metrics() calls evaluate_sql_ground_truth(),
 -- which opens its own connection, does CREATE SCHEMA wiser_eval_<random>,
