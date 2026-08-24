@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import os
 import threading
 from pathlib import Path
@@ -241,11 +242,32 @@ POOL_MAX_SIZE = 8
 
 _pools: dict[str, object] = {}
 _pools_lock = threading.Lock()
+_atexit_registered = False
 
 
 def pooling_available() -> bool:
     """True when psycopg_pool is importable."""
     return _ConnectionPool is not None
+
+
+def _register_pool_shutdown() -> None:
+    """Close pools at interpreter exit, once a pool actually exists.
+
+    Not because interpreter shutdown blocks on the workers -- psycopg_pool
+    creates them as daemon threads, which threading._shutdown never joins.
+    The stall comes later: an unclosed pool is finalized by its own __del__,
+    which calls the same gather(timeout=5.0) that close() does, and that is
+    what prints "couldn't stop thread 'pool-N-worker-M' within 5.0 seconds"
+    per worker during finalization. Closing deterministically at exit, while
+    the interpreter is still healthy, avoids the whole shutdown-ordering
+    question. Registration is lazy so a process that never pools carries no
+    exit hook.
+    """
+    global _atexit_registered
+    if _atexit_registered:
+        return
+    atexit.register(close_pools)
+    _atexit_registered = True
 
 
 class PooledConnection:
@@ -255,6 +277,12 @@ class PooledConnection:
     when done; here ``close()`` returns the connection to the pool instead of
     tearing it down, so the calling convention stays identical whether or not
     pooling is active.
+
+    ``__enter__``/``__exit__`` are defined explicitly rather than left to
+    ``__getattr__``: Python looks up special methods on the type, not the
+    instance, so a forwarding ``__getattr__`` alone leaves ``with conn:`` --
+    the idiomatic psycopg 3 transaction block -- raising TypeError, and only
+    on the pooled path.
     """
 
     __slots__ = ("_pool", "_conn")
@@ -281,12 +309,67 @@ class PooledConnection:
             pass
         self._pool.putconn(conn)
 
-    def __getattr__(self, name: str):
-        if self._conn is None:
+    def __enter__(self) -> "PooledConnection":
+        conn = self._require_open()
+        if conn.closed:
+            # A server-side disconnect can close the connection while it is
+            # checked out. Entering anyway would give a block that commits
+            # nothing and raises nothing.
+            raise psycopg.OperationalError("connection is already closed")
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        # Delegate the transaction semantics to psycopg rather than
+        # reimplementing them: its Connection.__exit__ commits on a clean
+        # exit and lets a failed COMMIT propagate (a deferred-constraint or
+        # serialization failure must not be reported as success), rolls back
+        # on an exception without clobbering the one bubbling up, and is
+        # already pool-aware -- it skips its own close() when _pool is set,
+        # which psycopg_pool does on every checkout. The connection is
+        # returned in a finally so a failing commit cannot leak it.
+        conn = self._conn
+        try:
+            if conn is not None and not conn.closed:
+                conn.__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+    def _require_open(self) -> psycopg.Connection:
+        # object.__getattribute__, not self._conn: on an instance whose slots
+        # were never assigned (object.__new__, unpickling) a plain read misses
+        # the slot, routes back into __getattr__, and recurses until
+        # RecursionError instead of reporting a missing attribute.
+        conn = object.__getattribute__(self, "_conn")
+        if conn is None:
             raise psycopg.OperationalError(
                 "connection has been returned to the pool"
             )
-        return getattr(self._conn, name)
+        return conn
+
+    def __getattr__(self, name: str):
+        # Reached only for names not found on the type or in __slots__.
+        conn = object.__getattribute__(self, "_conn")
+        if conn is None:
+            # Distinguish "you are using a connection you gave back" from
+            # "this attribute does not exist": raising OperationalError for
+            # the latter breaks hasattr() and getattr(obj, name, default),
+            # whose contract is that a missing name raises AttributeError.
+            if hasattr(psycopg.Connection, name):
+                raise psycopg.OperationalError(
+                    "connection has been returned to the pool"
+                )
+            raise AttributeError(name)
+        return getattr(conn, name)
+
+    def __setattr__(self, name: str, value) -> None:
+        # Writes have to forward too, or settable connection attributes
+        # (autocommit, row_factory, isolation_level, read_only,
+        # prepare_threshold) raise AttributeError -- and only on the pooled
+        # path, which is the only path production takes.
+        if name in PooledConnection.__slots__:
+            object.__setattr__(self, name, value)
+            return
+        setattr(self._require_open(), name, value)
 
 
 def connect_pooled(
@@ -303,18 +386,31 @@ def connect_pooled(
     """
     if _ConnectionPool is None:
         return connect(dsn, timeout=timeout)
-    info = _startup_conninfo(dsn, timeout)
+    # Keyed on the resolved DSN, NOT on the full conninfo: the conninfo bakes
+    # in `timeout` (as lock_timeout and connect_timeout), so keying on it
+    # would give one database two independent pools of up to POOL_MAX_SIZE
+    # each as soon as any caller passed a non-default timeout. Neon caps
+    # connections per project, so that doubling is exactly the wrong thing to
+    # spend them on. Pooled connections therefore all carry the default
+    # lock_timeout; `timeout` here bounds the wait for a free connection. A
+    # caller that needs a different lock_timeout wants connect(), not a pool.
+    key = resolve_dsn(dsn)
     with _pools_lock:
-        pool = _pools.get(info)
+        pool = _pools.get(key)
         if pool is None:
             pool = _ConnectionPool(
-                info,
+                _startup_conninfo(dsn, DEFAULT_CONNECT_TIMEOUT_SECONDS),
                 min_size=1,
                 max_size=POOL_MAX_SIZE,
                 open=True,
+                # Verify the connection on checkout. Serverless Postgres
+                # (Neon) drops idle connections on autosuspend; without this
+                # the first query after a quiet spell fails instead of the
+                # pool quietly replacing the dead connection.
                 check=_ConnectionPool.check_connection,
             )
-            _pools[info] = pool
+            _pools[key] = pool
+            _register_pool_shutdown()
     return PooledConnection(pool, pool.getconn(timeout=timeout))
 
 

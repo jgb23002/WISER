@@ -1,24 +1,61 @@
-# Required: PostgreSQL driver. psycopg 3, not psycopg2 -- v3 puts .execute()
-# on the connection object, which is the shape this codebase already uses.
-psycopg[binary]
+# WISER runtime dependencies.
 #
-# Optional connection pooling (recommended for long-lived surfaces —
-# Streamlit, the CLI REPL — and for remote/serverless Postgres, where each
-# new connection costs a TLS handshake). Code falls back to per-request
-# connections without it:
-# psycopg[pool]
+# Versions are pinned to the set verified locally against PostgreSQL 17:
+# 695 tests, 348 subtests, all passing. Streamlit Community Cloud installs
+# from this file, so anything commented out is simply absent in production
+# -- every optional import below degrades gracefully rather than crashing,
+# which makes an accidental omission quiet. Prefer explicit over implicit.
+
+# --- Required -------------------------------------------------------------
+
+# PostgreSQL driver. psycopg 3, not psycopg2 -- v3 puts .execute() on the
+# connection object, which is the shape this codebase already uses.
 #
-# Dev-only: parallel test runs (pytest -n auto):
-# pytest-xdist
+# [binary] ships the prebuilt libpq so no compiler is needed at install time.
+# [pool] is what makes connect_pooled() real: without it both production
+# surfaces silently fall back to a new connection per request -- a TLS
+# handshake each time against Neon, and no repair when Neon's autosuspend
+# drops an idle connection. The pool checks connections on checkout, which
+# is what makes that recoverable.
+psycopg[binary,pool]==3.3.4
+# psycopg-pool is pinned separately because the [pool] extra does NOT pin it:
+# psycopg 3.3.4 declares `psycopg-pool; extra == "pool"` with no version,
+# unlike `psycopg-binary==3.3.4`. A Streamlit Cloud build resolves it fresh at
+# deploy time, and check_connection / putconn / close semantics are now
+# load-bearing production behavior -- an unannounced upgrade would change it
+# with no local signal.
+psycopg-pool==3.3.1
+
+# Web interface (streamlit run streamlit_app.py). Pulls pandas and numpy
+# transitively, which is why numpy is not listed separately below.
+streamlit==1.61.1
+
+# Full syntax + SELECT-only validation of AI-generated SQL. Without it
+# sql_ai_agent falls back to regex keyword matching, which is materially
+# weaker when strangers author the prompts that generate the SQL. Not
+# optional for a public deployment.
+sqlglot==30.17.0
+
+# PDF text extraction for external storm context. build_context defaults
+# include_linked_pdfs=True and the NOAA sources link PDFs, so without this
+# that content is silently skipped.
+pypdf==6.16.2
+
+# --- Deliberately excluded ------------------------------------------------
+
+# faiss-cpu: the "auto" similarity backend falls back to exact ranking, which
+#   is correct and fast at this dataset's size (8 counties). faiss costs a
+#   large wheel and a resident index against Streamlit's 1 GB app cap, and
+#   buys nothing here. Revisit only if the corpus grows by orders of
+#   magnitude.
 #
-# Optional external-context accelerators:
-# faiss-cpu
-# numpy
-# pypdf
+# numpy: arrives transitively via streamlit -> pandas. Listing it separately
+#   would pin a version against streamlit's own resolution.
 #
-# Optional SQL AI agent hardening (full syntax + SELECT-only validation;
-# without it a conservative regex check is used):
-# sqlglot
+# openai: not used. Every LLM call goes through wiser/llm_client.py on the
+#   standard library's urllib, so the vendor SDK is not a dependency.
+
+# --- Development only -----------------------------------------------------
+# Not installed in production; these are for local work.
 #
-# Web interface (streamlit run streamlit_app.py):
-# streamlit
+# pytest-xdist==3.8.0   # parallel test runs: pytest -n auto

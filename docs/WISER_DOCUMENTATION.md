@@ -482,11 +482,33 @@ below degrades gracefully and none of it changes an answer.
 **Connections.** `database.connect()` folds `lock_timeout` into the libpq
 startup options, so a connection is ready in one round trip instead of three
 and no longer sits idle-in-transaction. `database.connect_pooled()` checks a
-connection out of a process-wide pool when the optional `psycopg_pool` is
-installed and falls back to a plain connect when it is not; `close()` returns
-it to the pool, so the calling convention is identical either way. The
-long-lived surfaces (Streamlit, the CLI REPL) use it; one-shot CLI commands
-do not, because a pool that outlives a single query buys nothing.
+connection out of a process-wide pool when `psycopg_pool` is installed (it is,
+via the `pool` extra in `requirements.txt`) and falls back to a plain connect
+when it is not; `close()` returns it to the pool, so the calling convention is
+identical either way. The long-lived surfaces (Streamlit, the CLI REPL) use
+it; one-shot CLI commands do not, because a pool that outlives a single query
+buys nothing. The pool verifies each connection on checkout, which is what
+lets it replace one that Neon's autosuspend dropped rather than failing the
+first query after an idle spell.
+
+Three things about `PooledConnection` are easy to get wrong:
+
+* `__enter__`/`__exit__` are defined explicitly. Python resolves special
+  methods on the type, so the forwarding `__getattr__` alone would leave
+  `with conn:` — the idiomatic psycopg 3 transaction block — raising
+  TypeError, and only on the pooled path, i.e. only in production.
+* Pools own background worker threads, and `close_pools()` is registered
+  with `atexit` the first time a pool is created. The threads are daemons, so
+  interpreter shutdown does not wait on them; the stall comes from an
+  unclosed pool being finalized by its own `__del__`, which runs the same
+  5-second `gather()` that `close()` does and prints
+  `couldn't stop thread 'pool-N-worker-M'` per worker. Closing at exit keeps
+  that out of finalization.
+* `tests/pg_harness.reset_schema()` closes pools **before** dropping the
+  schema. `psycopg_pool.close()` does not close connections that are
+  currently checked out, so a live pooled connection racing the rebuild
+  surfaces as a `UniqueViolation` on `pg_type_typname_nsp_index`. Any new
+  pooled code path in a test must return its connection.
 
 **Bulk loading.** `database.copy_rows()` uses `COPY` for the plain inserts of
 a database build. `database.executemany()` routes batches under

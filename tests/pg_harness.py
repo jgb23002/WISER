@@ -40,6 +40,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from wiser.database import DEFAULT_DSN  # noqa: E402
+from wiser.database import close_pools as _db_close_pools  # noqa: E402
 from wiser.database import executemany as _db_executemany  # noqa: E402
 
 # Under pytest-xdist every worker gets its own schema. Workers share one
@@ -72,6 +73,26 @@ def new_connection() -> psycopg.Connection:
     return psycopg.connect(TEST_DSN)
 
 
+def _close_pools() -> None:
+    """Drop any pooled connections before the schema is rebuilt.
+
+    A pool holds live connections pinned to the test schema plus background
+    workers that can reopen them. Dropping the schema out from under those
+    races the rebuild -- two sessions running ``CREATE TABLE Storm`` at once
+    surfaces as a UniqueViolation on ``pg_type_typname_nsp_index``. Closing
+    first makes the rebuild the only writer.
+
+    Note psycopg_pool's close() does NOT close connections that are currently
+    checked out, so a test holding one still races the rebuild; tests must
+    return their pooled connections.
+
+    Called directly rather than via sys.modules: this module imports
+    wiser.database at import time, so unlike _reset_module_caches() there is
+    no import to avoid and no chance of the module being absent.
+    """
+    _db_close_pools()
+
+
 def _reset_module_caches() -> None:
     """Clear process-level caches in already-imported wiser modules.
 
@@ -99,6 +120,7 @@ def _reset_module_caches() -> None:
 def reset_schema() -> None:
     """Drop and recreate the test schema, then load ``sql/schema.sql``."""
     global _shared
+    _close_pools()
     if _shared is None or _shared.closed:
         _shared = psycopg.connect(TEST_DSN)
     _shared.rollback()
@@ -128,6 +150,7 @@ def blank_conn() -> psycopg.Connection:
     apply the schema.
     """
     global _shared
+    _close_pools()
     if _shared is None or _shared.closed:
         _shared = psycopg.connect(TEST_DSN)
     _shared.rollback()
