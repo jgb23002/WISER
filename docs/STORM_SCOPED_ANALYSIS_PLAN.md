@@ -1,11 +1,21 @@
 # Storm-Scoped Analysis — Implementation Plan
 
+> **Historical.** This is the plan as it was written and revised during the
+> work, kept for the reasoning behind the decisions — not as a description of
+> today's code. Steps 0.1–7 are implemented and committed; §12 records what was
+> built differently and why. The PostgreSQL migration it treats as a future
+> constraint has since happened (§2.3 is the checklist that was used).
+>
+> File references name the module, not a line number. The figures quoted
+> throughout are as-of-writing — the dataset has changed since, and Fairfield's
+> all-storm total is 44,402 today rather than 43,475.
+
 Status: **steps 0.1–7 implemented and committed.** Phase 2 (§6) deliberately
-not started. See §12 for what was built differently from this plan and why.
+not started.
 
 Scope: three storm-scoped capabilities (summary, ranking, two-storm comparison),
 a Phase 2 metadata-enrichment design, and a portability constraint added
-mid-review (must survive a move to PostgreSQL).
+mid-review (surviving a move to PostgreSQL).
 
 **Revision 2** — incorporates the stakeholder decisions on §7 and §8, and the
 confirmed Capability 3 scope change (forecast vs historical, Mode A / Mode B).
@@ -544,12 +554,12 @@ What already exists and will be reused verbatim:
 
 | Mode B needs | Already exists | Location |
 |---|---|---|
-| Parse `wind=12, precip=30` from NL | `parse_similarity_params` + `FEATURE_ALIASES` | `handlers.py:87`, `cli_helpers.py:3` |
-| County extraction from NL | `parse_similarity_county` | `handlers.py:114` |
-| Rank history against a parameter vector | `find_similar` → `rank_by_similarity` | `similarity_query_agent.py:62` |
-| Outage of each analogue storm | `find_similar` returns `outage` per row | `similarity_query_agent.py:142` |
-| Missing-param / missing-county error notices | `handle_similarity_search` | `handlers.py:591` |
-| Wind-must-be-positive validation | `validate_wind_positive` | `cli_helpers.py:29` |
+| Parse `wind=12, precip=30` from NL | `parse_similarity_params` + `FEATURE_ALIASES` | `handlers.py`, `cli_helpers.py` |
+| County extraction from NL | `parse_similarity_county` | `handlers.py` |
+| Rank history against a parameter vector | `find_similar` → `rank_by_similarity` | `similarity_query_agent.py` |
+| Outage of each analogue storm | `find_similar` returns `outage` per row | `similarity_query_agent.py` |
+| Missing-param / missing-county error notices | `handle_similarity_search` | `handlers.py` |
+| Wind-must-be-positive validation | `validate_wind_positive` | `cli_helpers.py` |
 
 That is the whole retrieval half. **No parallel implementation will be built.**
 

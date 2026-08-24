@@ -408,24 +408,15 @@ PostgreSQL 17 database, both on free tiers.
 | [docs/SPONSOR_GUIDE.md](docs/SPONSOR_GUIDE.md) | Hand this to sponsors. Queries that work, and what to expect. |
 | [sql/deploy_runtime_role.sql](sql/deploy_runtime_role.sql) | Creates the restricted role the deployed app connects as. |
 
-The deployed app does **not** connect as the database owner. It uses a
-restricted `wiser_app` role that can read the storm tables and write only the
-RAG and staging tables. This is not decoration: `TaskRoutingAgent` matches the
-word "rebuild", which routes to `handle_data_retrieval`, which runs
-`sql/schema.sql` — and that file opens with `DROP TABLE`. Under the restricted
-role that `DROP` is refused rather than obeyed.
+The deployed app does **not** connect as the database owner. It runs as a
+restricted `wiser_app` role that reads the storm tables and writes only the RAG
+and staging tables, so the `DROP TABLE` in `sql/schema.sql` — reachable by
+typing "rebuild" into the app — is refused rather than obeyed.
 
-Two details that cost real debugging time, recorded so they are not
-rediscovered:
-
-- **`CREATE INDEX IF NOT EXISTS` requires table ownership**, and `IF NOT
-  EXISTS` does not bypass the check — exactly as it does not for `CREATE
-  TABLE`. Granting DML on the RAG and staging tables is therefore not enough;
-  the script transfers ownership.
-- **Streamlit exposes only root-level secrets as environment variables.** This
-  app reads `os.environ` throughout, so a `DATABASE_URL` nested under a
-  `[section]` header does not raise — it silently falls back to the local
-  Docker DSN and looks like a network fault.
+The privilege split and the two traps that go with it (index creation requiring
+ownership, and Streamlit exposing only root-level secrets as environment
+variables) are documented under **Deployment** in
+[docs/WISER_DOCUMENTATION.md](docs/WISER_DOCUMENTATION.md).
 
 ---
 

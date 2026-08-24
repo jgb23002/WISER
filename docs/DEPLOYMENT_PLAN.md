@@ -95,14 +95,14 @@ Sources: [Streamlit status and limitations](https://docs.streamlit.io/deploy/str
 
 ## 2. What the codebase already gives us
 
-Verified against the codebase as it stands (re-checked after the deployment work; earlier revisions of this section cited line numbers that have since moved, so it now names symbols instead):
+Verified against the codebase as it stands:
 
 - `data/testdata.csv` **is committed**, so the seed data reaches the cloud with the repo.
 - `data/normalized/` is gitignored, but `scripts/bootstrap_wiser.py` regenerates it from `testdata.csv`. Nothing is lost.
 - `.env` is gitignored. No secrets are in git history.
 - `resolve_dsn()` precedence is: explicit arg → `$DATABASE_URL` → local Docker default. Setting `DATABASE_URL` in Streamlit secrets is sufficient to repoint the whole app.
 - `sql_ai_agent.py` runs generated SQL under `SET LOCAL transaction_read_only = on`, so there is already one layer of write protection on the AI path.
-- Optional deps degrade gracefully when absent. This is no longer the deployed posture: `sqlglot` and `pypdf` are now **pinned in `requirements.txt`** and installed, because regex-only SQL validation is not what we want when strangers author the prompts. `faiss-cpu` stays excluded (the `auto` backend falls back to exact ranking, correct at 8 counties), and `openai` was never a dependency — every LLM call goes through `wiser/llm_client.py` on stdlib `urllib`.
+- Optional deps degrade gracefully when absent, but the deployment does not rely on that: `sqlglot` and `pypdf` are **pinned in `requirements.txt`**, because regex-only SQL validation is not what we want when strangers write the prompts. `faiss-cpu` stays excluded — the `auto` backend falls back to exact ranking, which is correct at 8 counties. `openai` was never a dependency; every LLM call goes through `wiser/llm_client.py` on stdlib `urllib`.
 
 ---
 
