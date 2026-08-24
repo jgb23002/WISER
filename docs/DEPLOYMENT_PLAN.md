@@ -191,10 +191,19 @@ All decisions are settled, so every phase below is unblocked. They run in order 
 1. Run `scripts/bootstrap_wiser.py --dsn "<neon-dsn>"` locally, as the **owner** role. Seeding needs DDL; only the app's runtime role is restricted.
 2. Verify row counts against the local Docker instance — they should match exactly.
 3. If Decision 5 picks option (b), also build the RAG index now, while write access still exists.
-4. Create the restricted runtime role and grant it per Decision 5 (scoped): `SELECT` on `Storm`, `County`, `WeatherData`; `SELECT`/`INSERT`/`DELETE` on `RagDocument`, `RagChunk`, `ExternalOutageObservation`; no DDL.
+4. Create the restricted runtime role: `psql "<owner-dsn>" -v app_password="'...'" -f sql/deploy_runtime_role.sql`. That script is written and **rehearsed end-to-end against the local container**, not just drafted.
 5. Re-verify: connect as the **runtime** role and confirm reads work and a `DROP TABLE` is refused.
 
-**Exit criterion:** the runtime role can answer a normal query and cannot drop a table.
+**Exit criterion:** the runtime role can answer a normal query and cannot drop a table. Verified locally — the full handler stack answers "top 3 counties by outage" over the pool as `wiser_app`, while `DROP TABLE`, `DROP TABLE IF EXISTS`, `TRUNCATE`, `ALTER TABLE`, and `INSERT` into core tables are all refused.
+
+#### Four things the rehearsal found that the design assumed wrong
+
+These are the reason the script exists rather than a handful of GRANT lines in this document:
+
+1. **`CREATE` on the schema is required, not a loosening.** `rag.py` runs `CREATE TABLE IF NOT EXISTS` on RagDocument/RagChunk, and PostgreSQL checks the schema's CREATE privilege *before* the IF-NOT-EXISTS shortcut — so a strict no-DDL role raises `InsufficientPrivilege` even when the tables already exist, breaking every RAG route.
+2. **R1 is closed by ownership, not by withholding CREATE.** A role with `USAGE, CREATE` still cannot `DROP`/`TRUNCATE`/`ALTER` a table it does not own. Granting CREATE therefore costs nothing against R1.
+3. **`StormCounty` must not appear in the grants.** `schema.sql` DROPs that name but never CREATEs it, so granting on it aborts the whole script.
+4. **`ALTER DEFAULT PRIVILEGES` is a trap here.** It cannot be scoped to table names, so it would hand the app write access to every future owner-created table — including `WeatherData` after a re-seed, silently undoing the read-only core. The script omits it; re-run the script after any re-seed instead.
 
 ### Phase 3 — Deploy the app
 

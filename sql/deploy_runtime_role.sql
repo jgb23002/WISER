@@ -1,0 +1,153 @@
+-- WISER deployment: the restricted runtime role (Decision 5).
+--
+-- Run this ONCE, as the database owner, AFTER scripts/bootstrap_wiser.py has
+-- seeded the schema. The app then connects as wiser_app, never as the owner.
+--
+-- What this closes (R1 in docs/DEPLOYMENT_PLAN.md): TaskRoutingAgent matches
+-- the word "rebuild" and routes to handle_data_retrieval, which runs
+-- sql/schema.sql -- and that file opens with DROP TABLE. A sponsor typing
+-- "rebuild the database" would otherwise drop every table. Under this role
+-- the DROP fails instead.
+--
+-- The gate is OWNERSHIP, not the absence of CREATE. Verified against
+-- PostgreSQL 17: a role holding USAGE + CREATE on the schema still cannot
+-- DROP, DROP IF EXISTS, or TRUNCATE a table it does not own. That matters,
+-- because CREATE is not optional here -- see the RAG note below.
+--
+--   psql "<owner-dsn>" -v app_password="'choose-a-strong-one'" \
+--        -f sql/deploy_runtime_role.sql
+
+\set ON_ERROR_STOP on
+
+-- ---------------------------------------------------------------------------
+-- 1. The role
+-- ---------------------------------------------------------------------------
+-- NOSUPERUSER/NOCREATEDB/NOCREATEROLE are the defaults, stated so a future
+-- reader does not have to remember that.
+--
+-- Created rather than dropped-and-recreated: once the app has run a RAG
+-- route, wiser_app owns RagDocument and RagChunk, and DROP ROLE on a role
+-- that owns objects fails outright. Re-running this script must stay safe.
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'wiser_app') THEN
+        CREATE ROLE wiser_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+    END IF;
+END
+$$;
+
+ALTER ROLE wiser_app WITH PASSWORD :app_password;
+
+-- ---------------------------------------------------------------------------
+-- 2. Schema access
+-- ---------------------------------------------------------------------------
+-- CREATE is required, not a loosening for convenience: rag.py's
+-- ensure_rag_schema() issues CREATE TABLE IF NOT EXISTS on RagDocument and
+-- RagChunk. PostgreSQL checks the schema's CREATE privilege BEFORE the
+-- IF NOT EXISTS shortcut, so without it that statement raises
+-- InsufficientPrivilege even when the tables already exist -- verified, not
+-- assumed. Denying CREATE would break every RAG route.
+--
+GRANT CONNECT ON DATABASE wiser TO wiser_app;
+GRANT USAGE, CREATE ON SCHEMA public TO wiser_app;
+
+-- ---------------------------------------------------------------------------
+-- 3. Core data: read-only
+-- ---------------------------------------------------------------------------
+-- Seeded by bootstrap_wiser.py and owned by the owner role, so wiser_app can
+-- read them and nothing else. This is what makes the R1 DROP fail.
+--
+-- StormCounty is deliberately absent: schema.sql DROPs that name but never
+-- CREATEs it, so granting on it aborts the script with "relation does not
+-- exist". Confirmed against a seeded database, not inferred from the DDL.
+
+GRANT SELECT ON
+    Storm,
+    County,
+    WeatherData,
+    RegionCountyMapping,
+    StormMetricDefinition,
+    HourlyWeatherObservation,
+    CurrentWeatherObservation
+TO wiser_app;
+
+-- ---------------------------------------------------------------------------
+-- 4. Staging table: read-write
+-- ---------------------------------------------------------------------------
+-- ExternalOutageObservation is declared in schema.sql (so the owner holds it)
+-- but written at runtime by integrations/external_outage.py, which the
+-- Streamlit "Load sample feed" button reaches. UPDATE is needed for the
+-- upsert path, not just INSERT.
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON ExternalOutageObservation TO wiser_app;
+
+-- ---------------------------------------------------------------------------
+-- 4b. RAG tables: read-write, and they may not exist yet
+-- ---------------------------------------------------------------------------
+-- RagDocument and RagChunk are not in schema.sql -- rag.py creates them on
+-- first use. Which role ends up owning them depends on who ran first:
+--
+--   * seeding or a prior owner-run session touched RAG  -> owner owns them,
+--     and wiser_app needs the grants below
+--   * a fresh database where only the app has run RAG   -> wiser_app created
+--     and owns them, and the grants are redundant but harmless
+--
+-- A plain GRANT would abort the script in the second case, so this is
+-- conditional.
+--
+-- Deliberately NOT used here: ALTER DEFAULT PRIVILEGES ... ON TABLES. It
+-- cannot be scoped to table names, so it would hand wiser_app INSERT/UPDATE/
+-- DELETE on every future owner-created table -- including WeatherData after a
+-- re-seed, silently undoing section 3. Re-run this script after any re-seed
+-- instead; that is the whole maintenance burden of not using it.
+
+DO $$
+BEGIN
+    IF to_regclass('public.RagDocument') IS NOT NULL THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON RagDocument TO wiser_app;
+    END IF;
+    IF to_regclass('public.RagChunk') IS NOT NULL THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON RagChunk TO wiser_app;
+    END IF;
+END
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 5. OPTIONAL: the evaluation panel
+-- ---------------------------------------------------------------------------
+-- streamlit_app.py's _evaluation_metrics() calls evaluate_sql_ground_truth(),
+-- which opens its own connection, does CREATE SCHEMA wiser_eval_<random>,
+-- builds all 8 tables inside it, and drops the schema afterwards. That needs
+-- CREATE on the DATABASE, which is a real privilege: wiser_app could then
+-- create and drop schemas of its own. It still could not touch the owner's
+-- tables -- ownership remains the gate.
+--
+-- Uncomment ONLY if sponsors should see the ground-truth metrics panel.
+-- Leaving it commented makes that panel raise, so pair it with hiding the
+-- panel in the UI.
+
+-- GRANT CREATE ON DATABASE wiser TO wiser_app;
+
+-- ---------------------------------------------------------------------------
+-- 6. Verify
+-- ---------------------------------------------------------------------------
+-- Reconnect as wiser_app and confirm the shape. Expected:
+--   SELECT on WeatherData ......... succeeds
+--   DROP TABLE WeatherData ........ fails, "must be owner of table weatherdata"
+--   TRUNCATE WeatherData .......... fails, "permission denied"
+--   INSERT INTO WeatherData ....... fails, "permission denied"
+--   CREATE TABLE IF NOT EXISTS .... succeeds (RAG needs this)
+--
+-- Phase 4 of the deployment plan runs the R1 attack through the real UI as
+-- well: type "rebuild the database" into the app and confirm it errors
+-- rather than wiping the data.
+
+SELECT
+    grantee,
+    table_name,
+    string_agg(privilege_type, ', ' ORDER BY privilege_type) AS privileges
+FROM information_schema.role_table_grants
+WHERE grantee = 'wiser_app'
+GROUP BY grantee, table_name
+ORDER BY table_name;
