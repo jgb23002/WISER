@@ -204,6 +204,11 @@ These are the reason the script exists rather than a handful of GRANT lines in t
 2. **R1 is closed by ownership, not by withholding CREATE.** A role with `USAGE, CREATE` still cannot `DROP`/`TRUNCATE`/`ALTER` a table it does not own. Granting CREATE therefore costs nothing against R1.
 3. **`StormCounty` must not appear in the grants.** `schema.sql` DROPs that name but never CREATEs it, so granting on it aborts the whole script.
 4. **`ALTER DEFAULT PRIVILEGES` is a trap here.** It cannot be scoped to table names, so it would hand the app write access to every future owner-created table — including `WeatherData` after a re-seed, silently undoing the read-only core. The script omits it; re-run the script after any re-seed instead.
+5. **The database name cannot be hardcoded.** Locally it is `wiser`; **Neon names its default `neondb`**, and `GRANT ... ON DATABASE wiser` fails outright with "database does not exist". `GRANT` has no way to say "the current one", so the script builds that statement dynamically from `current_database()`.
+
+#### Rehearsed twice, on purpose
+
+Once against the seeded local database, and once against a **fresh, empty database named `neondb`** — because Neon starts empty and the two cases differ in a way that matters. On a fresh database `RagDocument`/`RagChunk` do not exist yet, so the grants skip them and the app creates and *owns* them on first use; on a re-used database the owner already holds them and the grants apply. The script handles both, and the full sequence was verified end to end: `bootstrap_wiser.py` seeds → role script runs → the app self-bootstraps its RAG tables → writes succeed → `DROP`/`TRUNCATE` on core tables still refused.
 
 ### Phase 3 — Deploy the app
 

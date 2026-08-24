@@ -49,7 +49,17 @@ ALTER ROLE wiser_app WITH PASSWORD :app_password;
 -- InsufficientPrivilege even when the tables already exist -- verified, not
 -- assumed. Denying CREATE would break every RAG route.
 --
-GRANT CONNECT ON DATABASE wiser TO wiser_app;
+-- current_database() rather than a literal: locally the database is "wiser",
+-- but Neon names its default "neondb", and a hardcoded name fails outright
+-- with "database ... does not exist". GRANT has no way to say "this one", so
+-- the statement is built dynamically.
+
+DO $$
+BEGIN
+    EXECUTE format('GRANT CONNECT ON DATABASE %I TO wiser_app', current_database());
+END
+$$;
+
 GRANT USAGE, CREATE ON SCHEMA public TO wiser_app;
 
 -- ---------------------------------------------------------------------------
@@ -127,7 +137,11 @@ $$;
 -- Leaving it commented makes that panel raise, so pair it with hiding the
 -- panel in the UI.
 
--- GRANT CREATE ON DATABASE wiser TO wiser_app;
+-- DO $$
+-- BEGIN
+--     EXECUTE format('GRANT CREATE ON DATABASE %I TO wiser_app', current_database());
+-- END
+-- $$;
 
 -- ---------------------------------------------------------------------------
 -- 6. Verify
