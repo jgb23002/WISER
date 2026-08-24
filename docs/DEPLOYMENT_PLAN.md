@@ -2,7 +2,17 @@
 
 **Goal:** a stable public URL we send to sponsors, who open it and run their own queries.
 **Budget:** $0 infrastructure. OpenAI usage is the only variable cost, and only during the demo.
-**Status:** planning complete; no deployment work started. All decisions in section 4 are settled. One code change has landed ahead of deployment — the generated-SQL cache in §9, built to reduce R3. Phase 0 is ready to execute on your go-ahead.
+**Status:** **Phases 0–2 complete.** The Neon project is live on PostgreSQL 17.11 (`neondb`, AWS us-east-1), seeded, and serving the app through the restricted `wiser_app` role. Phase 3 (Streamlit Cloud) is next and needs a person to authorize GitHub access.
+
+Measured on the live database:
+
+| | |
+|---|---|
+| Neon round-trip | **15 ms** median (13.5 ms for a real query) — the database is not a bottleneck |
+| Seeded rows | Storm 294, County 8, WeatherData 2352 — exact match with local |
+| Uncached AI query | **3.24 s**, essentially all OpenAI latency |
+| Same query, cached | **0.08 s** — a 40× drop, identical rows, since only the LLM step is reused |
+| R1 attack | `DROP` / `DROP IF EXISTS` / `TRUNCATE` / `ALTER` / core `INSERT` — **all refused** |
 
 ### Two milestones
 
@@ -169,7 +179,7 @@ Decisions 3 and 4 interlock deliberately: the key is live, so the gate must revo
 
 All decisions are settled, so every phase below is unblocked. They run in order — each phase's exit criterion gates the next.
 
-### Phase 0 — Prep the repo for cloud install *(no blockers)*
+### Phase 0 — Prep the repo for cloud install  [COMPLETE]
 
 1. Edit `requirements.txt`: uncomment `streamlit`, uncomment `sqlglot` (R4), pin versions.
 2. Decide on `numpy` / `faiss-cpu` / `pypdf` — each costs install time and memory against the ~1 GB cap; all are optional with graceful fallback.
@@ -178,7 +188,7 @@ All decisions are settled, so every phase below is unblocked. They run in order 
 
 **Exit criterion:** a clean `pip install -r requirements.txt` into a fresh venv, then `streamlit run streamlit_app.py` works locally against local Docker Postgres.
 
-### Phase 1 — Stand up Neon
+### Phase 1 — Stand up Neon  [COMPLETE]
 
 1. Create the Neon project, Postgres **17** to match `sql/schema.sql`. Invite the other teammate as an org member (free, unlimited).
 2. Capture the pooled connection string. **Neon requires TLS — the DSN needs `sslmode=require`.**
@@ -186,7 +196,7 @@ All decisions are settled, so every phase below is unblocked. They run in order 
 
 **Exit criterion:** `SELECT version()` over the Neon DSN returns PostgreSQL 17.
 
-### Phase 2 — Seed the database
+### Phase 2 — Seed the database  [COMPLETE]
 
 1. Run `scripts/bootstrap_wiser.py --dsn "<neon-dsn>"` locally, as the **owner** role. Seeding needs DDL; only the app's runtime role is restricted.
 2. Verify row counts against the local Docker instance — they should match exactly.
@@ -210,7 +220,7 @@ These are the reason the script exists rather than a handful of GRANT lines in t
 
 Once against the seeded local database, and once against a **fresh, empty database named `neondb`** — because Neon starts empty and the two cases differ in a way that matters. On a fresh database `RagDocument`/`RagChunk` do not exist yet, so the grants skip them and the app creates and *owns* them on first use; on a re-used database the owner already holds them and the grants apply. The script handles both, and the full sequence was verified end to end: `bootstrap_wiser.py` seeds → role script runs → the app self-bootstraps its RAG tables → writes succeed → `DROP`/`TRUNCATE` on core tables still refused.
 
-### Phase 3 — Deploy the app
+### Phase 3 — Deploy the app  [NEXT]
 
 0. Create the `deploy` branch from `main` (Decision 6) and push it.
 1. Authorize Streamlit Cloud against the private GitHub repo (Decision 1). Confirm whether the second teammate gets admin automatically via repo write access, or must be added explicitly — this is the one unverified item from §1.
