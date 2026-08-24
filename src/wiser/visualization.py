@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import math
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -147,13 +148,42 @@ PANEL_MAP_WIDTH = 480
 PANEL_MAP_HEIGHT = 460
 
 
+# Parsed GeoJSON, keyed by (path, mtime_ns). The asset is read-only and every
+# render walks it, so re-parsing 41 KB per call is pure waste; an edited file
+# still gets picked up because the mtime is part of the key.
+_geojson_cache_lock = threading.Lock()
+_geojson_cache: dict[tuple[str, int], dict[str, Any]] = {}
+
+
+def clear_geojson_cache() -> None:
+    """Drop the parsed-GeoJSON cache (test hook)."""
+    with _geojson_cache_lock:
+        _geojson_cache.clear()
+
+
 def load_county_geojson(
     path: str | Path = DEFAULT_CT_COUNTY_GEOJSON,
 ) -> dict[str, Any]:
-    """Load the legacy Connecticut county GeoJSON asset."""
-    with Path(path).open(encoding="utf-8") as handle:
+    """Load the legacy Connecticut county GeoJSON asset.
+
+    The returned dict is shared between callers and must not be mutated.
+    """
+    source = Path(path)
+    try:
+        key = (str(source), source.stat().st_mtime_ns)
+    except OSError:
+        key = None
+    if key is not None:
+        with _geojson_cache_lock:
+            cached = _geojson_cache.get(key)
+        if cached is not None:
+            return cached
+    with source.open(encoding="utf-8") as handle:
         data = json.load(handle)
     _validate_geojson(data)
+    if key is not None:
+        with _geojson_cache_lock:
+            _geojson_cache[key] = data
     return data
 
 
@@ -210,12 +240,8 @@ def county_metric_rows(
     # rejects it outright. Order by the aggregate instead -- when the query is
     # scoped to one storm each county has a single row, so SUM(outage) is that
     # storm's outage and the ordering is the one the metric intends.
-    #
-    # NOTE: this fixes the SQL only. The same alias gap has a second half that
-    # predates the PostgreSQL migration: _coerce_metric_row() emits no "outage"
-    # key either, so render_county_heatmap_svg()'s row[metric_key] lookup finds
-    # nothing and the "Outages" map draws every county as no-data. Fixing that
-    # changes the public row shape, so it is left as its own change.
+    # _coerce_metric_row mirrors this by emitting an "outage" key from the
+    # same aggregate, so the rendered map agrees with this ordering.
     order_column = "total_outage" if metric_key == "outage" else metric_key
 
     rows = conn.execute(
@@ -302,7 +328,10 @@ def render_county_heatmap_svg(
             if _is_number(value)
             else _NO_DATA_COLOR
         )
-        path_data = _geometry_path(feature["geometry"], bbox, width=width, height=height)
+        projected_rings = _project_rings(
+            feature["geometry"], bbox, width=width, height=height
+        )
+        path_data = _path_from_rings(projected_rings)
         tooltip = _tooltip_text(county, row, metric_key) if row else f"{county}: no data"
         paths.append(
             "<path "
@@ -313,7 +342,7 @@ def render_county_heatmap_svg(
             f"<title>{html.escape(tooltip)}</title>"
             "</path>"
         )
-        label_point = _geometry_label_point(feature["geometry"], bbox, width=width, height=height)
+        label_point = _label_point_from_rings(projected_rings)
         if label_point is not None:
             label_value = _format_value(value, metric.unit) if _is_number(value) else "No data"
             # Ink is chosen against a colour, and the no-data fill is a pattern
@@ -399,10 +428,19 @@ def _validate_geojson(data: dict[str, Any]) -> None:
 
 
 def _coerce_metric_row(row: Sequence[Any]) -> dict[str, object]:
+    total_outage = int(row[2])
     return {
         "county": row[0],
         "storms_observed": int(row[1]),
-        "total_outage": int(row[2]),
+        "total_outage": total_outage,
+        # "outage" is a selectable heat-map metric, so the row has to carry
+        # that key or render_county_heatmap_svg's row[metric_key] lookup
+        # misses and every county draws as no-data. The metric means "this
+        # storm's outages", and the query is scoped to one storm in that
+        # case, which leaves exactly one row per county -- so the SUM is
+        # that storm's value. Unscoped, it is the record total, matching
+        # what the map's own legend reports.
+        "outage": total_outage,
         "avg_outage": float(row[3]),
         "peak_outage": int(row[4]),
         "avg_peak_wind": float(row[5]),
@@ -422,16 +460,25 @@ def _feature_county_name(feature: dict[str, Any]) -> str:
 
 
 def _feature_bbox(features: Sequence[dict[str, Any]]) -> tuple[float, float, float, float]:
-    points = [
-        point
-        for feature in features
-        for point in _iter_geometry_points(feature.get("geometry") or {})
-    ]
-    if not points:
+    # Streaming min/max rather than materializing every coordinate three
+    # times (once into `points`, then into `xs` and `ys`).
+    min_x = min_y = float("inf")
+    max_x = max_y = float("-inf")
+    seen = False
+    for feature in features:
+        for x, y in _iter_geometry_points(feature.get("geometry") or {}):
+            seen = True
+            if x < min_x:
+                min_x = x
+            if x > max_x:
+                max_x = x
+            if y < min_y:
+                min_y = y
+            if y > max_y:
+                max_y = y
+    if not seen:
         raise ValueError("GeoJSON features do not contain polygon coordinates.")
-    xs = [point[0] for point in points]
-    ys = [point[1] for point in points]
-    return (min(xs), min(ys), max(xs), max(ys))
+    return (min_x, min_y, max_x, max_y)
 
 
 def _iter_geometry_points(geometry: dict[str, Any]) -> Iterable[tuple[float, float]]:
@@ -451,6 +498,30 @@ def _iter_rings(geometry: dict[str, Any]) -> Iterable[Sequence[Sequence[float]]]
             yield from polygon
 
 
+def _project_rings(
+    geometry: dict[str, Any],
+    bbox: tuple[float, float, float, float],
+    *,
+    width: int,
+    height: int,
+) -> list[list[tuple[float, float]]]:
+    """Project every ring of a geometry once.
+
+    The path and the label point both need the same projected coordinates,
+    so they share one pass instead of projecting each point twice per render.
+    """
+    projected_rings: list[list[tuple[float, float]]] = []
+    for ring in _iter_rings(geometry):
+        projected = [
+            _project(float(point[0]), float(point[1]), bbox, width=width, height=height)
+            for point in ring
+            if len(point) >= 2
+        ]
+        if projected:
+            projected_rings.append(projected)
+    return projected_rings
+
+
 def _geometry_path(
     geometry: dict[str, Any],
     bbox: tuple[float, float, float, float],
@@ -458,15 +529,14 @@ def _geometry_path(
     width: int,
     height: int,
 ) -> str:
+    return _path_from_rings(
+        _project_rings(geometry, bbox, width=width, height=height)
+    )
+
+
+def _path_from_rings(projected_rings: Sequence[Sequence[tuple[float, float]]]) -> str:
     parts: list[str] = []
-    for ring in _iter_rings(geometry):
-        projected = [
-            _project(float(point[0]), float(point[1]), bbox, width=width, height=height)
-            for point in ring
-            if len(point) >= 2
-        ]
-        if not projected:
-            continue
+    for projected in projected_rings:
         first_x, first_y = projected[0]
         parts.append(f"M {first_x:.1f} {first_y:.1f}")
         parts.extend(f"L {x:.1f} {y:.1f}" for x, y in projected[1:])
@@ -481,17 +551,17 @@ def _geometry_label_point(
     width: int,
     height: int,
 ) -> tuple[float, float] | None:
-    rings = list(_iter_rings(geometry))
-    if not rings:
+    return _label_point_from_rings(
+        _project_rings(geometry, bbox, width=width, height=height)
+    )
+
+
+def _label_point_from_rings(
+    projected_rings: Sequence[Sequence[tuple[float, float]]],
+) -> tuple[float, float] | None:
+    if not projected_rings:
         return None
-    ring = max(rings, key=len)
-    points = [
-        _project(float(point[0]), float(point[1]), bbox, width=width, height=height)
-        for point in ring
-        if len(point) >= 2
-    ]
-    if not points:
-        return None
+    points = max(projected_rings, key=len)
     return (
         sum(point[0] for point in points) / len(points),
         sum(point[1] for point in points) / len(points),

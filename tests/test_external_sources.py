@@ -140,7 +140,9 @@ class TestExternalSourceIndexAndSummary(unittest.TestCase):
         self.conn = make_conn()
 
     def tearDown(self):
-        self.conn.close()
+        # rollback, not close: the harness owns this shared connection, and
+        # closing it makes the next reset_schema pay a fresh TCP+auth.
+        self.conn.rollback()
 
     def test_index_external_documents_and_answer_impact(self):
         documents = [

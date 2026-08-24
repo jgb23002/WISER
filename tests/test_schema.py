@@ -216,9 +216,18 @@ class TestSchemaStructure(unittest.TestCase):
     def test_region_and_metric_indexes_exist(self):
         index_names = _indexes(self.conn)
 
-        self.assertIn("idx_region_county_state", index_names)
-        self.assertIn("idx_hourly_weather_storm_county_hour", index_names)
+        self.assertIn("idx_region_lower_state_region", index_names)
+        self.assertIn("idx_hourly_weather_county", index_names)
         self.assertIn("idx_hourly_weather_metric", index_names)
+
+    def test_redundant_indexes_are_absent(self):
+        """Indexes duplicating a PK/UNIQUE cost writes and buy no reads."""
+        index_names = _indexes(self.conn)
+
+        # Exact prefix of PRIMARY KEY (stormCode, county, hourOffset, metricKey)
+        self.assertNotIn("idx_hourly_weather_storm_county_hour", index_names)
+        # Storm.eventDateTime is already UNIQUE, which builds its own index
+        self.assertNotIn("idx_storm_datetime", index_names)
 
     def test_storm_primary_key(self):
         """Test Storm has correct primary key."""
@@ -236,12 +245,17 @@ class TestSchemaStructure(unittest.TestCase):
         self.assertEqual(pk_columns, ["county", "stormcode"])
 
     def test_indexes_exist(self):
-        """Test that all required indexes are created."""
+        """Test that all required indexes are created.
+
+        The county/state indexes are on LOWER(...) because every comparison
+        in the codebase is case-insensitive; a raw-column index cannot serve
+        those predicates.
+        """
         index_names = _indexes(self.conn)
 
-        self.assertIn("idx_weatherdata_outage", index_names)
-        self.assertIn("idx_weatherdata_county", index_names)
-        self.assertIn("idx_storm_datetime", index_names)
+        self.assertIn("idx_weatherdata_lower_county", index_names)
+        self.assertIn("idx_county_lower_county", index_names)
+        self.assertIn("idx_county_lower_state", index_names)
         self.assertIn("idx_external_outage_source_time", index_names)
         self.assertIn("idx_external_outage_county", index_names)
 

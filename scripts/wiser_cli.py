@@ -295,11 +295,14 @@ def run_query_once(
     *,
     history: Sequence[ConversationTurn] = (),
     last_route: Route | None = None,
+    pooled: bool = False,
 ) -> tuple[ConversationTurn | None, Route | None]:
     """Route, dispatch, and render one query.
 
     Returns (turn to append to the conversation history or None, updated
-    last route for sticky follow-up routing).
+    last route for sticky follow-up routing). ``pooled`` reuses a process
+    pool for the connection — worthwhile for the REPL, pointless for a
+    one-shot invocation.
     """
     decision = resolve_route(routing_agent.route(query), last_route)
     print(f"Route: {decision.route.value} ({decision.reason})")
@@ -322,6 +325,7 @@ def run_query_once(
         sql_model=args.sql_model,
         dry_run_sql=args.dry_run_sql,
         history=tuple(history),
+        pooled=pooled,
     )
     try:
         result = dispatch_route(decision.route, ctx)
@@ -377,7 +381,12 @@ def run_repl(
 
         try:
             turn, last_route = run_query_once(
-                query, args, routing_agent, history=history, last_route=last_route
+                query,
+                args,
+                routing_agent,
+                history=history,
+                last_route=last_route,
+                pooled=True,
             )
         except Exception as exc:  # noqa: BLE001 — a failed turn must not kill the session
             print(f"Error: {type(exc).__name__}: {exc}")

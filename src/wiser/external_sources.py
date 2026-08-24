@@ -22,9 +22,11 @@ from wiser.openai_summarizer import (
     summarize_storm_impact_with_openai,
 )
 from wiser.rag import (
+    TOKEN_RE,
     RagIndexSummary,
     RagResult,
     build_augmented_context,
+    bump_rag_generation,
     chunk_text,
     format_excerpt,
     initialize_rag_schema,
@@ -176,9 +178,19 @@ def crawl_source_documents(
 
         html_text = fetched.content.decode("utf-8", errors="ignore")
         linked_pdfs = discover_pdf_links(html_text, fetched.url)
-        for link in linked_pdfs[:max_linked_pdfs]:
-            if link.url in seen_urls:
+        # Deduplicate before slicing, not after: a page that lists the same
+        # PDF several times used to spend budget on duplicates and then
+        # download fewer distinct documents than max_linked_pdfs allows.
+        unique_links = []
+        batch_urls: set[str] = set()
+        for link in linked_pdfs:
+            if link.url in seen_urls or link.url in batch_urls:
                 continue
+            batch_urls.add(link.url)
+            unique_links.append(link)
+            if len(unique_links) >= max_linked_pdfs:
+                break
+        for link in unique_links:
             seen_urls.add(link.url)
             try:
                 linked_resource = fetch(link.url)
@@ -314,6 +326,8 @@ def index_external_documents(
         chunks_indexed += len(chunks)
 
     conn.commit()
+    if documents_indexed:
+        bump_rag_generation()
     total_documents = int(conn.execute("SELECT COUNT(*) FROM RagDocument").fetchone()[0])
     total_chunks = int(conn.execute("SELECT COUNT(*) FROM RagChunk").fetchone()[0])
     return RagIndexSummary(
@@ -439,6 +453,20 @@ def strip_html(text: str) -> str:
     return normalize_text(html.unescape(text))
 
 
+def _has_min_tokens(text: str, minimum: int) -> bool:
+    """True when the text yields at least ``minimum`` tokens.
+
+    Early-exit equivalent of ``len(tokenize(text)) >= minimum``: the old form
+    tokenized an entire extracted PDF just to test a threshold of 8.
+    """
+    count = 0
+    for _ in TOKEN_RE.finditer(text):
+        count += 1
+        if count >= minimum:
+            return True
+    return False
+
+
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     for extractor in (
         _extract_pdf_with_pypdf,
@@ -446,7 +474,7 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
         _extract_pdf_literal_strings,
     ):
         text = extractor(pdf_bytes)
-        if len(tokenize(text)) >= 8:
+        if _has_min_tokens(text, 8):
             return normalize_pdf_text(text)
     return ""
 
@@ -801,7 +829,8 @@ def is_readable_text(text: str) -> bool:
     stripped = text.strip()
     if not stripped:
         return False
-    if len(tokenize(stripped)) < 4:
+    tokens = tokenize(stripped)
+    if len(tokens) < 4:
         return False
 
     control_count = sum(
@@ -823,7 +852,7 @@ def is_readable_text(text: str) -> bool:
         return False
 
     alpha_tokens = [
-        token for token in tokenize(stripped) if any(char.isalpha() for char in token)
+        token for token in tokens if any(char.isalpha() for char in token)
     ]
     long_alpha_tokens = [token for token in alpha_tokens if len(token) >= 3]
     if len(long_alpha_tokens) / max(1, len(alpha_tokens)) < 0.35:
@@ -854,21 +883,28 @@ def _source_hosts(urls: Sequence[str]) -> set[str]:
 
 
 def _clear_external_documents(conn: psycopg.Connection) -> None:
-    document_ids = [
-        int(row[0])
-        for row in conn.execute(
-            """
+    # Two set-based deletes instead of two statements per document. The
+    # explicit chunk delete is redundant with the ON DELETE CASCADE on
+    # RagChunk but kept as belt-and-braces against a hand-built schema.
+    conn.execute(
+        """
+        DELETE FROM RagChunk
+        WHERE documentId IN (
             SELECT id FROM RagDocument
             -- Literal % is safe here only because this query takes no
             -- parameters. If one is ever added, double them to %%.
             WHERE path LIKE 'http://%' OR path LIKE 'https://%'
-            """
-        ).fetchall()
-    ]
-    for document_id in document_ids:
-        conn.execute("DELETE FROM RagChunk WHERE documentId = %s", (document_id,))
-        conn.execute("DELETE FROM RagDocument WHERE id = %s", (document_id,))
+        )
+        """
+    )
+    conn.execute(
+        """
+        DELETE FROM RagDocument
+        WHERE path LIKE 'http://%' OR path LIKE 'https://%'
+        """
+    )
     conn.commit()
+    bump_rag_generation()
 
 
 def _looks_like_html(resource: FetchedResource) -> bool:

@@ -104,6 +104,7 @@ def _make_ctx(query: str, conn: psycopg.Connection, **overrides) -> SimpleNamesp
         use_openai_summary=False,
         sql_model=None,
         dry_run_sql=False,
+        use_sql_cache=False,
         history=None,
     )
     defaults.update(overrides)
@@ -164,7 +165,9 @@ class TestHandleWeatherAnalytics(unittest.TestCase):
         self.conn = _make_conn()
 
     def tearDown(self):
-        self.conn.close()
+        # rollback, not close: the harness owns this shared connection, and
+        # closing it makes the next reset_schema pay a fresh TCP+auth.
+        self.conn.rollback()
 
     def _insert_county_weather(
         self,
@@ -524,7 +527,9 @@ class TestHandleSimilaritySearch(unittest.TestCase):
         self.conn = _make_conn()
 
     def tearDown(self):
-        self.conn.close()
+        # rollback, not close: the harness owns this shared connection, and
+        # closing it makes the next reset_schema pay a fresh TCP+auth.
+        self.conn.rollback()
 
     def test_happy_path_returns_ranked_rows(self):
         ctx = _make_ctx(
@@ -591,7 +596,9 @@ class TestHandleRagKnowledge(unittest.TestCase):
         self.rag_agent = RAGKnowledgeAgent(sources=("docs",), root=self.tmpdir.name)
 
     def tearDown(self):
-        self.conn.close()
+        # rollback, not close: the harness owns this shared connection, and
+        # closing it makes the next reset_schema pay a fresh TCP+auth.
+        self.conn.rollback()
         self.tmpdir.cleanup()
 
     def test_local_answer_populates_result(self):

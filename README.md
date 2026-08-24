@@ -318,6 +318,17 @@ Ran <n> tests in <time>s
 OK
 ```
 
+The suite also runs under pytest, which is faster and supports parallel
+execution:
+
+```bash
+python -m pytest tests -q            # whole suite
+python -m pytest tests -q -n auto    # in parallel (needs pytest-xdist)
+```
+
+Each xdist worker gets its own PostgreSQL schema (`wiser_test_gw0`, …), so
+workers cannot drop each other's tables — see `tests/pg_harness.py`.
+
 Ground-truth evaluation shortcuts:
 
 ```bash

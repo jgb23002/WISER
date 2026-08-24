@@ -1,17 +1,72 @@
 from __future__ import annotations
 
-from collections import Counter
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import math
 import re
+import threading
+from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
 import psycopg
 
 from wiser.database import executemany
+
+# ---------------------------------------------------------------------------
+# Process-level caches
+# ---------------------------------------------------------------------------
+#
+# Three layers, all keyed by the connection's DSN so two databases in one
+# process never share state, and all reset by the test harness:
+#
+# 1. _schema_ensured — the CREATE TABLE IF NOT EXISTS block runs once per
+#    DSN, not once per query.
+# 2. _index_manifest — (mtime_ns, size) of every file confirmed indexed. A
+#    matching stat lets ensure_index skip the read + SHA-256 entirely; any
+#    mismatch falls through to the checksum compare, which stays the source
+#    of truth for whether a document is rewritten.
+#
+#    The tradeoff is the usual one for stat-based staleness (make, mypy, and
+#    pytest's cache all take it): an edit that leaves both mtime and size
+#    identical is not noticed. It is process-local, so a restart or
+#    rebuild=True re-reads everything, and the corpus here is the repo's own
+#    docs and source.
+# 3. _search_cache — tokenized chunk records plus term document-frequencies,
+#    valid for one "generation". Any write to the RAG tables (indexing here,
+#    the external-sources indexer, a clear) bumps the generation.
+
+_rag_cache_lock = threading.Lock()
+_schema_ensured: set[str] = set()
+_index_manifest: dict[tuple[str, str], tuple[int, int]] = {}
+_search_cache: dict[str, tuple[int, list["_ChunkRecord"], Counter]] = {}
+_rag_generation = 0
+
+
+def _conn_scope(conn: psycopg.Connection) -> str:
+    try:
+        return str(conn.info.dsn)
+    except Exception:  # noqa: BLE001 - fakes in tests may lack .info
+        return ""
+
+
+def bump_rag_generation() -> None:
+    """Invalidate cached search records after any RAG-table write."""
+    global _rag_generation
+    with _rag_cache_lock:
+        _rag_generation += 1
+        _search_cache.clear()
+
+
+def reset_rag_caches() -> None:
+    """Drop every process-level RAG cache (test hook)."""
+    global _rag_generation
+    with _rag_cache_lock:
+        _schema_ensured.clear()
+        _index_manifest.clear()
+        _search_cache.clear()
+        _rag_generation += 1
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RAG_SOURCES = ("README.md", "docs", "scripts", "sql", "src/wiser")
@@ -188,6 +243,11 @@ def chunk_text(
 
 
 def initialize_rag_schema(conn: psycopg.Connection) -> None:
+    scope = _conn_scope(conn)
+    if scope:
+        with _rag_cache_lock:
+            if scope in _schema_ensured:
+                return
     # PostgreSQL enforces foreign keys unconditionally, and a parameterless
     # execute() accepts the whole multi-statement block in one round trip.
     conn.execute(
@@ -215,6 +275,9 @@ def initialize_rag_schema(conn: psycopg.Connection) -> None:
         """
     )
     conn.commit()
+    if scope:
+        with _rag_cache_lock:
+            _schema_ensured.add(scope)
 
 
 def clear_rag_index(conn: psycopg.Connection) -> None:
@@ -222,6 +285,9 @@ def clear_rag_index(conn: psycopg.Connection) -> None:
     conn.execute("DELETE FROM RagChunk")
     conn.execute("DELETE FROM RagDocument")
     conn.commit()
+    with _rag_cache_lock:
+        _index_manifest.clear()
+    bump_rag_generation()
 
 
 def resolve_source_paths(
@@ -269,28 +335,50 @@ def index_sources(
     if rebuild:
         clear_rag_index(conn)
 
+    scope = _conn_scope(conn)
     root_path = Path(root).resolve()
     paths = resolve_source_paths(sources, root=root_path)
     documents_indexed = 0
     chunks_indexed = 0
 
+    # One catalog query instead of one SELECT per file.
+    existing_by_path: dict[str, tuple[int, str, int]] = {
+        str(row[0]): (int(row[1]), str(row[2]), int(row[3]))
+        for row in conn.execute(
+            """
+            SELECT d.path, d.id, d.checksum, COUNT(c.id)
+            FROM RagDocument d
+            LEFT JOIN RagChunk c ON c.documentId = d.id
+            GROUP BY d.path, d.id, d.checksum
+            """
+        ).fetchall()
+    }
+
+    manifest_updates: dict[tuple[str, str], tuple[int, int]] = {}
+    wrote_documents = False
     for path in paths:
+        try:
+            stat = path.stat()
+            stat_key: tuple[int, int] | None = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            stat_key = None
+        if stat_key is not None:
+            with _rag_cache_lock:
+                fresh = _index_manifest.get((scope, str(path))) == stat_key
+            if fresh:
+                # Confirmed indexed with these exact bytes on a previous pass
+                # in this process; skip the read + SHA-256 entirely.
+                continue
+
         content = path.read_text(encoding="utf-8", errors="ignore")
         checksum = hashlib.sha256(content.encode("utf-8")).hexdigest()
         source_path = _source_path(path, root_path)
         title = _extract_title(content, path)
-        existing = conn.execute(
-            """
-            SELECT id, checksum, (
-                SELECT COUNT(*) FROM RagChunk WHERE documentId = RagDocument.id
-            ) AS chunk_count
-            FROM RagDocument
-            WHERE path = %s
-            """,
-            (source_path,),
-        ).fetchone()
+        existing = existing_by_path.get(source_path)
 
-        if existing and existing[1] == checksum and int(existing[2]) > 0:
+        if existing and existing[1] == checksum and existing[2] > 0:
+            if stat_key is not None:
+                manifest_updates[(scope, str(path))] = stat_key
             continue
 
         indexed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -335,8 +423,18 @@ def index_sources(
         )
         documents_indexed += 1
         chunks_indexed += len(chunks)
+        wrote_documents = True
+        if stat_key is not None:
+            manifest_updates[(scope, str(path))] = stat_key
 
     conn.commit()
+    # Manifest entries only land after the commit: an aborted pass must not
+    # leave the process believing files are indexed.
+    if manifest_updates:
+        with _rag_cache_lock:
+            _index_manifest.update(manifest_updates)
+    if wrote_documents:
+        bump_rag_generation()
     total_documents = int(conn.execute("SELECT COUNT(*) FROM RagDocument").fetchone()[0])
     total_chunks = int(conn.execute("SELECT COUNT(*) FROM RagChunk").fetchone()[0])
     return RagIndexSummary(
@@ -346,6 +444,92 @@ def index_sources(
         total_documents=total_documents,
         total_chunks=total_chunks,
     )
+
+
+@dataclass(frozen=True)
+class _ChunkRecord:
+    """One chunk, tokenized exactly once per index generation."""
+
+    source_path: str
+    title: str
+    chunk_index: int
+    content: str
+    token_count: int
+    content_counter: Counter
+    title_counter: Counter
+    path_counter: Counter
+    normalized_content: str
+    normalized_title: str
+    numeric_ratio: float
+
+
+def _chunk_records(
+    conn: psycopg.Connection,
+) -> tuple[list[_ChunkRecord], Counter]:
+    """All chunks with their token structures and term document-frequencies.
+
+    Cached per DSN and per index generation: retrieval used to re-tokenize
+    every chunk three times per query and rebuild the frequency table each
+    time, for a corpus that only changes when something is indexed.
+    """
+    scope = _conn_scope(conn)
+    with _rag_cache_lock:
+        generation = _rag_generation
+        entry = _search_cache.get(scope)
+        if entry is not None and entry[0] == generation:
+            return entry[1], entry[2]
+
+    rows = conn.execute(
+        """
+        SELECT
+            d.path,
+            d.title,
+            c.chunkIndex,
+            c.content,
+            c.tokenCount
+        FROM RagChunk c
+        JOIN RagDocument d ON d.id = c.documentId
+        """
+    ).fetchall()
+
+    records: list[_ChunkRecord] = []
+    document_frequency: Counter[str] = Counter()
+    for row in rows:
+        content = str(row[3])
+        title = str(row[1])
+        source_path = str(row[0])
+        content_tokens = tokenize(content)
+        title_tokens = tokenize(title)
+        path_tokens = tokenize(source_path)
+        document_frequency.update(
+            set(content_tokens) | set(title_tokens) | set(path_tokens)
+        )
+        numeric_ratio = (
+            sum(1 for token in content_tokens if token[0].isdigit())
+            / len(content_tokens)
+            if content_tokens
+            else -1.0
+        )
+        records.append(
+            _ChunkRecord(
+                source_path=source_path,
+                title=title,
+                chunk_index=int(row[2]),
+                content=content,
+                token_count=max(1, int(row[4])),
+                content_counter=Counter(content_tokens),
+                title_counter=Counter(title_tokens),
+                path_counter=Counter(path_tokens),
+                normalized_content=" ".join(content_tokens),
+                normalized_title=" ".join(title_tokens),
+                numeric_ratio=numeric_ratio,
+            )
+        )
+
+    with _rag_cache_lock:
+        if scope:
+            _search_cache[scope] = (generation, records, document_frequency)
+    return records, document_frequency
 
 
 def search_rag(
@@ -363,64 +547,18 @@ def search_rag(
         return []
 
     query_counter = Counter(query_terms)
-    rows = conn.execute(
-        """
-        SELECT
-            d.path,
-            d.title,
-            c.chunkIndex,
-            c.content,
-            c.tokenCount
-        FROM RagChunk c
-        JOIN RagDocument d ON d.id = c.documentId
-        """
-    ).fetchall()
-
-    records = []
-    document_frequency: Counter[str] = Counter()
-    for row in rows:
-        content = str(row[3])
-        title = str(row[1])
-        source_path = str(row[0])
-        content_tokens = tokenize(content)
-        title_tokens = tokenize(title)
-        path_tokens = tokenize(source_path)
-        term_set = set(content_tokens) | set(title_tokens) | set(path_tokens)
-        for term in query_counter:
-            if term in term_set:
-                document_frequency[term] += 1
-        records.append(
-            (
-                source_path,
-                title,
-                int(row[2]),
-                content,
-                max(1, int(row[4])),
-                Counter(content_tokens),
-                Counter(title_tokens),
-                Counter(path_tokens),
-            )
-        )
+    records, document_frequency = _chunk_records(conn)
 
     total_chunks = max(1, len(records))
     results: list[RagResult] = []
     normalized_query = " ".join(query_terms)
-    for (
-        source_path,
-        title,
-        chunk_index,
-        content,
-        token_count,
-        content_counter,
-        title_counter,
-        path_counter,
-    ) in records:
+    for record in records:
         score = 0.0
         for term, query_count in query_counter.items():
             weighted_occurrences = (
-                content_counter[term]
-                + (3.0 * title_counter[term])
-                + (2.0 * path_counter[term])
+                record.content_counter[term]
+                + (3.0 * record.title_counter[term])
+                + (2.0 * record.path_counter[term])
             )
             if weighted_occurrences <= 0:
                 continue
@@ -430,25 +568,28 @@ def search_rag(
             )
             score += query_count * weighted_occurrences * inverse_document_frequency
 
-        normalized_content = " ".join(tokenize(content))
-        normalized_title = " ".join(tokenize(title))
-        if normalized_query and normalized_query in normalized_content:
+        if normalized_query and normalized_query in record.normalized_content:
             score += 4.0
-        if normalized_query and normalized_query in normalized_title:
+        if normalized_query and normalized_query in record.normalized_title:
             score += 6.0
 
         if score <= 0:
             continue
 
-        score = score / math.sqrt(token_count)
-        score *= _content_quality_multiplier(content, source_path, query_terms)
+        score = score / math.sqrt(record.token_count)
+        score *= _content_quality_multiplier(
+            record.content,
+            record.source_path,
+            query_terms,
+            numeric_ratio=record.numeric_ratio,
+        )
         results.append(
             RagResult(
-                source_path=source_path,
-                title=title,
-                chunk_index=chunk_index,
+                source_path=record.source_path,
+                title=record.title,
+                chunk_index=record.chunk_index,
                 score=score,
-                content=content.strip(),
+                content=record.content.strip(),
             )
         )
 
@@ -635,9 +776,18 @@ def _content_quality_multiplier(
     content: str,
     source_path: str,
     query_terms: Sequence[str],
+    *,
+    numeric_ratio: float | None = None,
 ) -> float:
-    tokens = tokenize(content)
-    if not tokens:
+    """Down/up-weight a chunk by shape. ``numeric_ratio`` accepts the value
+    precomputed at index time (−1.0 marks an empty token list) so retrieval
+    does not re-tokenize the chunk just for this check."""
+    if numeric_ratio is None:
+        tokens = tokenize(content)
+        if not tokens:
+            return 0.0
+        numeric_ratio = sum(1 for token in tokens if token[0].isdigit()) / len(tokens)
+    elif numeric_ratio < 0:
         return 0.0
 
     lower_content = content.lower()
@@ -653,7 +803,6 @@ def _content_quality_multiplier(
     elif lower_source_path.endswith(".py"):
         multiplier *= 0.85
 
-    numeric_ratio = sum(1 for token in tokens if token[0].isdigit()) / len(tokens)
     if numeric_ratio > 0.25:
         multiplier *= 0.55
     if "```" in content:

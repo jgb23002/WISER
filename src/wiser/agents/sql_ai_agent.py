@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import psycopg
 from psycopg.rows import dict_row
 from typing import Any, Sequence
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+# urlopen stays a module symbol: tests patch wiser.agents.sql_ai_agent.urlopen
+# to prove no network call happens, and the shared client accepts it as opener.
+from urllib.request import urlopen
 
+from wiser import llm_client
 from wiser.conversation import MAX_HISTORY_TURNS, ConversationTurn
 from wiser.openai_summarizer import load_dotenv
 
@@ -40,6 +45,85 @@ _WRITE_KEYWORD_PATTERN = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|COPY|CALL|VACUUM)\b",
     re.IGNORECASE,
 )
+
+# ---------------------------------------------------------------------------
+# Generated-SQL cache
+# ---------------------------------------------------------------------------
+#
+# Only the LLM step is cached. Execution is deliberately left out: rows go
+# stale the moment the database changes -- and handle_data_retrieval can
+# rebuild it mid-session -- so a cached SELECT is re-run against live data
+# every time. What gets reused is the expensive, non-deterministic half.
+#
+# The key is a digest of the exact messages payload plus the model, which
+# already folds in the schema DDL, the question, the row limit, and the
+# conversation history: everything _build_messages() varies on. Two calls
+# that would send OpenAI identical bytes share an entry, and nothing else
+# does. The API key is deliberately NOT part of the key -- see the note on
+# per-user keys below.
+#
+# A dict keyed on user-supplied text grows without bound, so entries are
+# capped and evicted least-recently-used. The lock is not optional:
+# Streamlit serves concurrent sessions from one process.
+
+SQL_CACHE_MAX_ENTRIES = 256
+
+_sql_cache: "OrderedDict[str, str]" = OrderedDict()
+_sql_cache_lock = threading.Lock()
+_sql_cache_hits = 0
+_sql_cache_misses = 0
+
+
+def _sql_cache_key(model: str, messages: Sequence[dict[str, str]]) -> str:
+    payload = json.dumps(
+        {"model": model, "messages": list(messages)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _sql_cache_get(key: str) -> str | None:
+    global _sql_cache_hits, _sql_cache_misses
+    with _sql_cache_lock:
+        if key in _sql_cache:
+            _sql_cache.move_to_end(key)
+            _sql_cache_hits += 1
+            return _sql_cache[key]
+        _sql_cache_misses += 1
+        return None
+
+
+def _sql_cache_put(key: str, sql: str) -> None:
+    with _sql_cache_lock:
+        _sql_cache[key] = sql
+        _sql_cache.move_to_end(key)
+        while len(_sql_cache) > SQL_CACHE_MAX_ENTRIES:
+            _sql_cache.popitem(last=False)
+
+
+def clear_sql_cache() -> None:
+    """Drop every cached SQL string and reset the hit/miss counters.
+
+    Call this when the schema changes underneath a long-lived process: the
+    cache key covers the DDL that _build_messages() embedded, so a schema
+    edit that does not reach the prompt would otherwise go unnoticed.
+    """
+    global _sql_cache_hits, _sql_cache_misses
+    with _sql_cache_lock:
+        _sql_cache.clear()
+        _sql_cache_hits = 0
+        _sql_cache_misses = 0
+
+
+def sql_cache_stats() -> dict[str, int]:
+    """Return ``entries``, ``hits``, and ``misses`` for the SQL cache."""
+    with _sql_cache_lock:
+        return {
+            "entries": len(_sql_cache),
+            "hits": _sql_cache_hits,
+            "misses": _sql_cache_misses,
+        }
 
 _SYSTEM_PROMPT = """\
 You are a PostgreSQL expert for the WISER weather analytics system.
@@ -149,17 +233,33 @@ class SqlValidationError(ValueError):
     """Raised when the LLM-generated SQL fails safety or syntax validation."""
 
 
+class SqlAgentUnavailableError(SqlValidationError):
+    """The OpenAI endpoint could not be reached at the transport level.
+
+    Subclasses SqlValidationError so existing except-clauses keep working;
+    the handler layer catches this one first to skip follow-up LLM calls in
+    the same request (a second 30 s attempt against a dead network only
+    doubles the user-visible stall).
+    """
+
+
 @dataclass
 class SqlAiAgent:
     """Translates natural-language questions into PostgreSQL SELECT queries via an LLM.
 
     Stateless: no connection is stored; pass conn to run() each call.
     The schema DDL is loaded once at __post_init__ from schema_path.
+
+    use_cache reuses previously generated SQL for an identical prompt. It is
+    off by default so that callers -- and the test suite, which patches
+    _call_chat_llm and counts invocations -- keep the un-cached behaviour
+    unless they ask for it. The cache is process-wide, not per-instance.
     """
 
     model: str | None = None
     dry_run: bool = False
     schema_path: Path = field(default_factory=lambda: DEFAULT_SCHEMA_PATH)
+    use_cache: bool = False
 
     _schema_ddl: str = field(init=False, repr=False, default="")
 
@@ -192,6 +292,9 @@ class SqlAiAgent:
                 "rows":    list  — result rows as dicts (empty in dry_run),
                 "answer":  str   — one-sentence plain-English answer,
                 "dry_run": bool  — True if the LLM call was skipped,
+                "cached":  bool  — True if the SQL was reused from the cache
+                                   instead of generated (always False unless
+                                   use_cache is on),
             }
         """
         messages = _build_messages(self._schema_ddl, query, limit=limit, history=history)
@@ -200,30 +303,66 @@ class SqlAiAgent:
             full_prompt = "\n\n".join(
                 f"[{message['role'].upper()}]\n{message['content']}" for message in messages
             )
-            return {"sql": full_prompt, "rows": [], "answer": "", "dry_run": True}
+            return {
+                "sql": full_prompt,
+                "rows": [],
+                "answer": "",
+                "dry_run": True,
+                "cached": False,
+            }
 
+        # Ahead of model resolution: the model vars may live in .env rather
+        # than the environment, and the model feeds the cache key.
+        # WISER_SQL_MODEL overrides just this agent; WISER_OPENAI_MODEL stays
+        # the shared fallback for every LLM client.
         load_dotenv()
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            raise SqlValidationError("OPENAI_API_KEY is not configured.")
-
-        resolved_model = self.model or os.environ.get("WISER_OPENAI_MODEL", DEFAULT_SQL_MODEL)
-
-        raw = _call_chat_llm(
-            messages=messages,
-            model=resolved_model,
-            api_key=api_key,
+        resolved_model = (
+            self.model
+            or os.environ.get("WISER_SQL_MODEL")
+            or os.environ.get("WISER_OPENAI_MODEL", DEFAULT_SQL_MODEL)
         )
-        if not raw or not raw.strip():
-            raise SqlValidationError("LLM returned an empty response.")
 
-        sql = _clean_sql(raw)
-        _validate_sql(sql)
+        cache_key = _sql_cache_key(resolved_model, messages) if self.use_cache else None
+        cached_sql = _sql_cache_get(cache_key) if cache_key is not None else None
+
+        if cached_sql is not None:
+            # A hit skips the network call and the billing, never the check.
+            # The cache is ordinary process memory on the path to statement
+            # execution, so it re-validates rather than trusting itself.
+            sql = cached_sql
+            _validate_sql(sql)
+            was_cached = True
+        else:
+            api_key = os.environ.get("OPENAI_API_KEY")
+            if not api_key:
+                raise SqlValidationError("OPENAI_API_KEY is not configured.")
+
+            raw = _call_chat_llm(
+                messages=messages,
+                model=resolved_model,
+                api_key=api_key,
+            )
+            if not raw or not raw.strip():
+                raise SqlValidationError("LLM returned an empty response.")
+
+            sql = _clean_sql(raw)
+            _validate_sql(sql)
+            # Stored only past validation, so nothing unvalidated is ever
+            # reachable from the cache.
+            if cache_key is not None:
+                _sql_cache_put(cache_key, sql)
+            was_cached = False
 
         rows = _execute_ro(sql, conn)
         answer = _make_answer(rows)
 
-        return {"sql": sql, "rows": rows, "answer": answer, "dry_run": False}
+        return {
+            "sql": sql,
+            "rows": rows,
+            "answer": answer,
+            "dry_run": False,
+            "cached": was_cached,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -231,15 +370,34 @@ class SqlAiAgent:
 # ---------------------------------------------------------------------------
 
 
+# A fresh SqlAiAgent is built per analytics request, so the DDL extraction
+# is cached process-wide, keyed on the file's mtime — an edited schema file
+# is picked up, an unchanged one costs a stat() instead of a read + regex.
+_schema_ddl_lock = threading.Lock()
+_schema_ddl_cache: dict[str, tuple[int, str]] = {}
+
+
 def _load_schema_ddl(schema_path: Path) -> str:
     """Extract only CREATE TABLE / CREATE INDEX blocks from the schema file."""
+    key = str(schema_path)
+    try:
+        mtime_ns = schema_path.stat().st_mtime_ns
+    except OSError:
+        mtime_ns = -1
+    with _schema_ddl_lock:
+        entry = _schema_ddl_cache.get(key)
+        if entry is not None and entry[0] == mtime_ns:
+            return entry[1]
     raw = schema_path.read_text(encoding="utf-8")
     blocks = re.findall(
         r"(CREATE\s+(?:TABLE|INDEX)\b[^;]+;)",
         raw,
         flags=re.IGNORECASE | re.DOTALL,
     )
-    return "\n\n".join(blocks)
+    ddl = "\n\n".join(blocks)
+    with _schema_ddl_lock:
+        _schema_ddl_cache[key] = (mtime_ns, ddl)
+    return ddl
 
 
 def _build_user_message(
@@ -305,55 +463,30 @@ def _call_chat_llm(
     api_key: str,
     timeout: int = 30,
 ) -> str:
-    body = {
-        "model": model,
-        "messages": messages,
-    }
-    _add_generation_options(body, model, max_tokens=512, temperature=0)
-    data = json.dumps(body).encode("utf-8")
-    req = Request(
-        OPENAI_CHAT_URL,
-        data=data,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
+    """Thin wrapper over the shared client, translating its errors.
+
+    This function is the seam the test suite patches; the transport, retry
+    policy, and response parsing live in wiser.llm_client.
+    """
     try:
-        with urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise SqlValidationError(
-            f"OpenAI request failed with HTTP {exc.code}: {detail}"
-        ) from exc
-    except (OSError, URLError, json.JSONDecodeError) as exc:
-        raise SqlValidationError(f"OpenAI request failed: {exc}") from exc
-
-    try:
-        return payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise SqlValidationError(f"Unexpected OpenAI response shape: {exc}") from exc
-
-
-def _add_generation_options(
-    body: dict[str, Any],
-    model: str,
-    *,
-    max_tokens: int,
-    temperature: float,
-) -> None:
-    if _uses_completion_token_limit(model):
-        body["max_completion_tokens"] = max_tokens
-        return
-    body["max_tokens"] = max_tokens
-    body["temperature"] = temperature
+        return llm_client.post_chat(
+            messages=messages,
+            model=model,
+            api_key=api_key,
+            max_tokens=512,
+            temperature=0,
+            timeout=timeout,
+            opener=urlopen,
+        )
+    except llm_client.LlmUnavailableError as exc:
+        raise SqlAgentUnavailableError(str(exc)) from exc
+    except llm_client.LlmRequestError as exc:
+        raise SqlValidationError(str(exc)) from exc
 
 
-def _uses_completion_token_limit(model: str) -> bool:
-    normalized = model.lower()
-    return normalized.startswith(("gpt-5", "o1", "o3", "o4"))
+# Re-exported from the shared client; tests and callers import them here.
+_add_generation_options = llm_client.add_generation_options
+_uses_completion_token_limit = llm_client.uses_completion_token_limit
 
 
 def _clean_sql(raw: str) -> str:
@@ -367,6 +500,16 @@ def _clean_sql(raw: str) -> str:
     text = re.sub(r"^SQL:\s*", "", text.strip(), flags=re.IGNORECASE)
     text = re.sub(r"\n\s*Answer:.*\Z", "", text, flags=re.IGNORECASE | re.DOTALL)
     return text.strip()
+
+
+def validate_sql(sql: str) -> None:
+    """Reject anything that is not a single read-only SELECT.
+
+    Public entry point: the evaluation harness validates candidate SQL
+    without going through the agent, and reaching into a private name for
+    that made an implementation detail part of the contract.
+    """
+    _validate_sql(sql)
 
 
 def _validate_sql(sql: str) -> None:

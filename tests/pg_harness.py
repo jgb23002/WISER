@@ -40,8 +40,13 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from wiser.database import DEFAULT_DSN  # noqa: E402
+from wiser.database import executemany as _db_executemany  # noqa: E402
 
-TEST_SCHEMA = "wiser_test"
+# Under pytest-xdist every worker gets its own schema. Workers share one
+# server and this harness DROPs its schema constantly, so a single shared
+# name would have them deleting each other's tables mid-test.
+_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
+TEST_SCHEMA = f"wiser_test_{_XDIST_WORKER}" if _XDIST_WORKER else "wiser_test"
 SCHEMA_SQL = SCHEMA_PATH.read_text(encoding="utf-8")
 
 # Deliberately NOT resolve_dsn(): that reads $DATABASE_URL, so a developer
@@ -67,6 +72,30 @@ def new_connection() -> psycopg.Connection:
     return psycopg.connect(TEST_DSN)
 
 
+def _reset_module_caches() -> None:
+    """Clear process-level caches in already-imported wiser modules.
+
+    Production code caches results that are invalidated only when the schema
+    is rebuilt through its own code paths (the required-tables probe, static
+    lookup tables). Tests rebuild the schema underneath the process, so those
+    caches must be dropped here. Modules are looked up in sys.modules rather
+    than imported: the harness must not drag the whole handler stack into
+    test files that never touch it.
+    """
+    handlers = sys.modules.get("wiser.handlers")
+    if handlers is not None:
+        handlers.reset_schema_probe()
+    external_outage = sys.modules.get("wiser.integrations.external_outage")
+    if external_outage is not None:
+        external_outage.reset_external_outage_schema_cache()
+    storm_analysis = sys.modules.get("wiser.storm_analysis")
+    if storm_analysis is not None:
+        storm_analysis.clear_lookup_caches()
+    rag = sys.modules.get("wiser.rag")
+    if rag is not None:
+        rag.reset_rag_caches()
+
+
 def reset_schema() -> None:
     """Drop and recreate the test schema, then load ``sql/schema.sql``."""
     global _shared
@@ -78,6 +107,7 @@ def reset_schema() -> None:
     _shared.commit()
     _shared.execute(SCHEMA_SQL)
     _shared.commit()
+    _reset_module_caches()
 
 
 def make_conn() -> psycopg.Connection:
@@ -104,10 +134,16 @@ def blank_conn() -> psycopg.Connection:
     _shared.execute(f"DROP SCHEMA IF EXISTS {TEST_SCHEMA} CASCADE")
     _shared.execute(f"CREATE SCHEMA {TEST_SCHEMA}")
     _shared.commit()
+    _reset_module_caches()
     return _shared
 
 
 def executemany(conn: psycopg.Connection, sql: str, rows) -> None:
-    """``executemany`` lives on the cursor in psycopg, not the connection."""
-    with conn.cursor() as cursor:
-        cursor.executemany(sql, list(rows))
+    """``executemany`` lives on the cursor in psycopg, not the connection.
+
+    Delegates to the production helper so test fixtures get its small-batch
+    fast path: psycopg's pipeline-mode executemany costs ~100 ms per call
+    regardless of size, which across a few hundred fixture loads dominated
+    this suite's runtime.
+    """
+    _db_executemany(conn, sql, rows)

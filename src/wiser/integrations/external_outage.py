@@ -101,7 +101,25 @@ CSV_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
+# DSNs whose staging table is known to exist. The DDL below is IF NOT EXISTS
+# so re-running it is safe but not free (statements + a COMMIT per call), and
+# it sits on paths executed once per Streamlit rerun. Reset the cache when the
+# schema is rebuilt underneath the process (the test harness does).
+_ensured_schema_dsns: set[str] = set()
+
+
+def reset_external_outage_schema_cache() -> None:
+    """Forget which DSNs have the staging table (test hook)."""
+    _ensured_schema_dsns.clear()
+
+
 def ensure_external_outage_schema(conn: psycopg.Connection) -> None:
+    try:
+        cache_key = conn.info.dsn
+    except Exception:  # noqa: BLE001 - fakes in tests may lack .info
+        cache_key = None
+    if cache_key is not None and cache_key in _ensured_schema_dsns:
+        return
     # psycopg runs the multi-statement DDL directly when no params are passed.
     conn.execute(
         """
@@ -128,6 +146,8 @@ def ensure_external_outage_schema(conn: psycopg.Connection) -> None:
         """
     )
     conn.commit()
+    if cache_key is not None:
+        _ensured_schema_dsns.add(cache_key)
 
 
 def parse_csv_observations(

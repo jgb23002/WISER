@@ -1,18 +1,79 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Sequence
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
+from wiser import llm_client
 from wiser.openai_summarizer import load_dotenv
 
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_REASONING_MODEL = "gpt-4o-mini"
 MAX_REASONING_ROWS = 12
+
+# ---------------------------------------------------------------------------
+# Reasoning answer cache — same shape as the generated-SQL cache
+# ---------------------------------------------------------------------------
+#
+# Keyed on a digest of (model, full prompt); the prompt embeds the question,
+# the SQL, and the result rows, so a changed database changes the key. Opt-in
+# per agent, exactly like SqlAiAgent.use_cache.
+
+REASONING_CACHE_MAX_ENTRIES = 256
+
+_reasoning_cache: "OrderedDict[str, str]" = OrderedDict()
+_reasoning_cache_lock = threading.Lock()
+_reasoning_cache_hits = 0
+_reasoning_cache_misses = 0
+
+
+def _reasoning_cache_key(model: str, prompt: str) -> str:
+    payload = json.dumps(
+        {"model": model, "prompt": prompt}, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def clear_reasoning_cache() -> None:
+    """Drop every cached reasoning answer and reset the counters."""
+    global _reasoning_cache_hits, _reasoning_cache_misses
+    with _reasoning_cache_lock:
+        _reasoning_cache.clear()
+        _reasoning_cache_hits = 0
+        _reasoning_cache_misses = 0
+
+
+def reasoning_cache_stats() -> dict[str, int]:
+    with _reasoning_cache_lock:
+        return {
+            "entries": len(_reasoning_cache),
+            "hits": _reasoning_cache_hits,
+            "misses": _reasoning_cache_misses,
+        }
+
+
+def _reasoning_cache_get(key: str) -> str | None:
+    global _reasoning_cache_hits, _reasoning_cache_misses
+    with _reasoning_cache_lock:
+        if key in _reasoning_cache:
+            _reasoning_cache.move_to_end(key)
+            _reasoning_cache_hits += 1
+            return _reasoning_cache[key]
+        _reasoning_cache_misses += 1
+        return None
+
+
+def _reasoning_cache_put(key: str, answer: str) -> None:
+    with _reasoning_cache_lock:
+        _reasoning_cache[key] = answer
+        _reasoning_cache.move_to_end(key)
+        while len(_reasoning_cache) > REASONING_CACHE_MAX_ENTRIES:
+            _reasoning_cache.popitem(last=False)
 
 _SYSTEM_PROMPT = """\
 You are the WISER storm reasoning analyst.
@@ -155,9 +216,16 @@ UrlOpener = Callable[..., Any]
 
 @dataclass
 class StormReasoningAgent:
-    """Explain validated SQL analytics rows in storm-analysis language."""
+    """Explain validated SQL analytics rows in storm-analysis language.
+
+    use_cache reuses a previously generated OpenAI answer for an identical
+    (model, prompt) pair — the prompt embeds question, SQL, and rows, so
+    changed data never serves a stale answer. Off by default, like the SQL
+    agent's cache; local fallback answers are deterministic and never cached.
+    """
 
     model: str | None = None
+    use_cache: bool = False
 
     def run(
         self,
@@ -201,6 +269,17 @@ class StormReasoningAgent:
             or os.environ.get("WISER_OPENAI_MODEL")
             or DEFAULT_REASONING_MODEL
         )
+        cache_key = (
+            _reasoning_cache_key(resolved_model, prompt) if self.use_cache else None
+        )
+        if cache_key is not None:
+            cached = _reasoning_cache_get(cache_key)
+            if cached is not None:
+                return StormReasoningResult(
+                    answer=cached,
+                    prompt=prompt,
+                    mode=f"OpenAI reasoning ({resolved_model}, cached)",
+                )
         try:
             answer = _call_chat_llm(
                 prompt=prompt,
@@ -216,6 +295,8 @@ class StormReasoningAgent:
                 openai_error=str(exc),
             )
 
+        if cache_key is not None:
+            _reasoning_cache_put(cache_key, answer)
         return StormReasoningResult(
             answer=answer,
             prompt=prompt,
@@ -368,62 +449,34 @@ def _call_chat_llm(
     timeout: int = 30,
     opener: UrlOpener | None = None,
 ) -> str:
-    body = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-    }
-    _add_generation_options(body, model, max_tokens=700, temperature=0.2)
-    data = json.dumps(body).encode("utf-8")
-    req = Request(
-        OPENAI_CHAT_URL,
-        data=data,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        open_url = opener or urlopen
-        with open_url(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise StormReasoningError(
-            f"OpenAI request failed with HTTP {exc.code}: {detail}"
-        ) from exc
-    except (OSError, URLError, json.JSONDecodeError) as exc:
-        raise StormReasoningError(f"OpenAI request failed: {exc}") from exc
+    """Thin wrapper over the shared client, translating its errors.
 
+    This function is the seam the test suite patches; the transport, retry
+    policy, and response parsing live in wiser.llm_client.
+    """
     try:
-        content = payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise StormReasoningError(f"Unexpected OpenAI response shape: {exc}") from exc
+        content = llm_client.post_chat(
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            model=model,
+            api_key=api_key,
+            max_tokens=700,
+            temperature=0.2,
+            timeout=timeout,
+            opener=opener,
+        )
+    except llm_client.LlmRequestError as exc:
+        raise StormReasoningError(str(exc)) from exc
     if not isinstance(content, str) or not content.strip():
         raise StormReasoningError("OpenAI returned an empty reasoning response.")
     return content.strip()
 
 
-def _add_generation_options(
-    body: dict[str, Any],
-    model: str,
-    *,
-    max_tokens: int,
-    temperature: float,
-) -> None:
-    if _uses_completion_token_limit(model):
-        body["max_completion_tokens"] = max_tokens
-        return
-    body["max_tokens"] = max_tokens
-    body["temperature"] = temperature
-
-
-def _uses_completion_token_limit(model: str) -> bool:
-    normalized = model.lower()
-    return normalized.startswith(("gpt-5", "o1", "o3", "o4"))
+# Re-exported from the shared client; tests and callers import them here.
+_add_generation_options = llm_client.add_generation_options
+_uses_completion_token_limit = llm_client.uses_completion_token_limit
 
 
 def _choose_primary_metric(

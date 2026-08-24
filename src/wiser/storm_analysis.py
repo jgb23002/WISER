@@ -24,8 +24,10 @@ Portability rules this module holds to (see the plan, section 2):
 
 from __future__ import annotations
 
+import threading
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Iterable, Protocol, Sequence
 
 DEFAULT_STATE = "CT"
@@ -482,6 +484,24 @@ class StormGroupAnalysis:
     distribution_rows: tuple[dict[str, Any], ...]
     region_rows: tuple[dict[str, Any], ...] = ()
 
+    @classmethod
+    def empty(
+        cls,
+        *,
+        title: str,
+        scope_label: str,
+        group_by: str,
+    ) -> "StormGroupAnalysis":
+        """A container with no rows, for callers that assemble rows themselves."""
+        return cls(
+            title=title,
+            scope_label=scope_label,
+            group_by=group_by,
+            summaries=(),
+            rows=(),
+            distribution_rows=(),
+        )
+
 
 @dataclass(frozen=True)
 class ThresholdSpec:
@@ -626,6 +646,10 @@ def other_period(base: PeriodSpec, label: str | None = None) -> PeriodSpec:
     )
 
 
+# lru_cache: PeriodSpec.includes on a baseline period re-derives the excluded
+# period per observation row; the specs are frozen and pure so one instance
+# per key serves every row.
+@lru_cache(maxsize=64)
 def period_from_key(key: str) -> PeriodSpec:
     if key == "all":
         return all_period()
@@ -638,6 +662,45 @@ def period_from_key(key: str) -> PeriodSpec:
         year = int(parts[2]) if len(parts) > 2 else None
         return season_period(parts[1], year=year)
     raise StormAnalysisError(f"unknown period key: {key!r}")
+
+
+def _period_predicate(period: PeriodSpec | None) -> tuple[str, list[Any]] | None:
+    """A SQL predicate over ``w.stormCode`` equivalent to ``period.includes``.
+
+    Integer arithmetic only — stormCode is YYYYMMDDHH — which keeps to this
+    module's no-date-functions rule while letting the database do the
+    filtering. Returns ``None`` when the period matches everything ("all") or
+    cannot be expressed, in which case the caller filters in Python exactly
+    as before.
+    """
+    if period is None:
+        return None
+    if period.exclude_key:
+        inner = _period_predicate(period_from_key(period.exclude_key))
+        if inner is None:
+            return None
+        sql, params = inner
+        return f"NOT ({sql})", params
+    clauses: list[str] = []
+    params: list[Any] = []
+    if period.year is not None:
+        clauses.append("(w.stormCode / 1000000) = %s")
+        params.append(int(period.year))
+    if period.month is not None:
+        clauses.append("((w.stormCode / 10000) %% 100) = %s")
+        params.append(int(period.month))
+    elif period.season is not None:
+        months = SEASON_MONTHS.get(period.season)
+        if not months:
+            return None
+        placeholders = ", ".join(["%s"] * len(months))
+        clauses.append(f"((w.stormCode / 10000) %% 100) IN ({placeholders})")
+        params.extend(int(month) for month in months)
+    if not clauses:
+        # "all" has no restriction; an unexpressible custom spec also lands
+        # here, and Python-side filtering remains the fallback for both.
+        return None
+    return " AND ".join(clauses), params
 
 
 # ---------------------------------------------------------------------------
@@ -721,21 +784,9 @@ def storm_count(conn: DbConnection, *, state: str = DEFAULT_STATE) -> int:
 # ---------------------------------------------------------------------------
 
 
-def storm_summary(
-    conn: DbConnection,
-    storm_code: int,
-    *,
-    county: str | None = None,
-    state: str = DEFAULT_STATE,
-    threshold_column: str = COMPARISON_THRESHOLD_COLUMN,
-) -> StormSummary:
-    """Per-county observations for one storm, plus the derived headline values.
-
-    Aggregates (statewide total, argmax county, top-N) are computed in Python
-    from the county rows. There are eight counties; a second aggregate round
-    trip would buy nothing and cost portability.
-    """
-    header = _fetch(
+def _storm_header(conn: DbConnection, storm_code: int) -> StormRef:
+    """Fetch the Storm header row, or raise if the storm is unknown."""
+    rows = _fetch(
         conn,
         """
         SELECT stormCode, eventDateTime, eventLength
@@ -744,9 +795,32 @@ def storm_summary(
         """,
         (int(storm_code),),
     )
-    if not header:
+    if not rows:
         raise StormAnalysisError(f"storm {storm_code} is not in the database")
-    storm = _storm_ref(header[0])
+    return _storm_ref(rows[0])
+
+
+def storm_summary(
+    conn: DbConnection,
+    storm_code: int,
+    *,
+    county: str | None = None,
+    state: str = DEFAULT_STATE,
+    threshold_column: str = COMPARISON_THRESHOLD_COLUMN,
+    storm: StormRef | None = None,
+) -> StormSummary:
+    """Per-county observations for one storm, plus the derived headline values.
+
+    Aggregates (statewide total, argmax county, top-N) are computed in Python
+    from the county rows. There are eight counties; a second aggregate round
+    trip would buy nothing and cost portability.
+
+    ``storm`` lets a caller that already resolved the header row (a
+    comparison resolves each storm once for two consumers) pass it in
+    instead of re-fetching it.
+    """
+    if storm is None:
+        storm = _storm_header(conn, storm_code)
 
     sql = """
         SELECT
@@ -892,6 +966,7 @@ def storm_ranking(
     metrics: Sequence[str] | None = None,
     county: str | None = None,
     state: str = DEFAULT_STATE,
+    storm: StormRef | None = None,
 ) -> StormRanking:
     """Rank one storm against the historical record.
 
@@ -900,6 +975,7 @@ def storm_ranking(
     within that county's history instead.
 
     Rank and total always travel together — a rank alone is not a claim.
+    ``storm`` accepts an already-resolved header row, as in storm_summary.
     """
     requested = tuple(metrics) if metrics else RANKABLE_METRICS
     unknown = [metric for metric in requested if metric not in RANKABLE_METRICS]
@@ -909,13 +985,8 @@ def storm_ranking(
             f"Available: {', '.join(RANKABLE_METRICS)}."
         )
 
-    header = _fetch(
-        conn,
-        "SELECT stormCode, eventDateTime, eventLength FROM Storm WHERE stormCode = %s",
-        (int(storm_code),),
-    )
-    if not header:
-        raise StormAnalysisError(f"storm {storm_code} is not in the database")
+    if storm is None:
+        storm = _storm_header(conn, storm_code)
 
     if county:
         sql = _RANKING_SQL_TEMPLATE.format(scope=_COUNTY_SCOPE_SQL)
@@ -950,7 +1021,7 @@ def storm_ranking(
     )
 
     return StormRanking(
-        storm=_storm_ref(header[0]),
+        storm=storm,
         state=state,
         county_scope=county,
         total_storms=total_storms,
@@ -974,16 +1045,21 @@ def compare_storms(
     """Compare two storms already in the database.
 
     Built entirely from ``storm_summary`` and ``storm_ranking`` so there is no
-    third SQL path to keep in step with the other two.
+    third SQL path to keep in step with the other two. Each storm's header
+    row is fetched once here and threaded into both consumers.
     """
+    storm_a = _storm_header(conn, storm_code_a)
+    storm_b = _storm_header(conn, storm_code_b)
     summary_a = storm_summary(
-        conn, storm_code_a, state=state, threshold_column=threshold_column
+        conn, storm_code_a, state=state, threshold_column=threshold_column,
+        storm=storm_a,
     )
     summary_b = storm_summary(
-        conn, storm_code_b, state=state, threshold_column=threshold_column
+        conn, storm_code_b, state=state, threshold_column=threshold_column,
+        storm=storm_b,
     )
-    ranking_a = storm_ranking(conn, storm_code_a, state=state)
-    ranking_b = storm_ranking(conn, storm_code_b, state=state)
+    ranking_a = storm_ranking(conn, storm_code_a, state=state, storm=storm_a)
+    ranking_b = storm_ranking(conn, storm_code_b, state=state, storm=storm_b)
 
     deltas = (
         MetricDelta(
@@ -1049,14 +1125,52 @@ _FORECAST_POSITION_SQL_TEMPLATE = """
 """
 
 
+# ---------------------------------------------------------------------------
+# Static reference lookups, cached per process
+# ---------------------------------------------------------------------------
+#
+# County names and the region→county mapping are reference data: they change
+# only when the database is rebuilt. Both were re-queried several times per
+# request. Cache keys carry the connection's DSN when the driver exposes one,
+# so two databases in one process (tests, a DSN switch in the sidebar) never
+# share entries. clear_lookup_caches() is invoked by the rebuild path and the
+# test harness.
+
+_lookup_cache_lock = threading.Lock()
+_state_counties_cache: dict[tuple[str, str], tuple[str, ...]] = {}
+_region_mapping_cache: dict[tuple[str, str], dict[str, tuple[str, ...]]] = {}
+
+
+def clear_lookup_caches() -> None:
+    """Drop cached county/region reference lookups."""
+    with _lookup_cache_lock:
+        _state_counties_cache.clear()
+        _region_mapping_cache.clear()
+
+
+def _conn_cache_scope(conn: DbConnection) -> str:
+    try:
+        return str(conn.info.dsn)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - Protocol conns and fakes have no .info
+        return ""
+
+
 def state_counties(conn: DbConnection, *, state: str = DEFAULT_STATE) -> tuple[str, ...]:
     """County names in a state, ordered."""
+    key = (_conn_cache_scope(conn), state.lower())
+    with _lookup_cache_lock:
+        cached = _state_counties_cache.get(key)
+    if cached is not None:
+        return cached
     rows = _fetch(
         conn,
         "SELECT county FROM County WHERE LOWER(state) = LOWER(%s) ORDER BY county ASC",
         (state,),
     )
-    return tuple(str(row[0]) for row in rows)
+    counties = tuple(str(row[0]) for row in rows)
+    with _lookup_cache_lock:
+        _state_counties_cache[key] = counties
+    return counties
 
 
 #: Analogues shown per county, and counties shown when the scope is statewide.
@@ -1074,8 +1188,14 @@ def compare_forecast(
     limit: int = DEFAULT_ANALOGUES_PER_COUNTY,
     max_counties: int | None = DEFAULT_ANALOGUE_COUNTIES,
     similarity_agent: Any | None = None,
+    precomputed_matches: dict[str, list[dict[str, Any]]] | None = None,
 ) -> ForecastComparison:
     """Position a forecast against the record and find its closest analogues.
+
+    ``precomputed_matches`` maps a county to ``find_similar`` output already
+    computed for these exact params by the caller (the similarity handler
+    runs the search before deciding to attach this report), so the same
+    ranking is never computed twice.
 
     Retrieval and scoring are delegated to ``SimilarityQueryAgent`` — this is
     the existing similarity search with a comparison report on top, not a
@@ -1118,7 +1238,12 @@ def compare_forecast(
 
     groups: list[CountyAnalogues] = []
     for scope_county in counties:
-        matches = similarity_agent.find_similar(conn, scope_county, params, limit=limit)
+        if precomputed_matches is not None and scope_county in precomputed_matches:
+            matches = precomputed_matches[scope_county][:limit]
+        else:
+            matches = similarity_agent.find_similar(
+                conn, scope_county, params, limit=limit
+            )
         if not matches:
             continue
         groups.append(
@@ -1258,13 +1383,18 @@ def storm_group_analysis(
     state: str = DEFAULT_STATE,
 ) -> StormGroupAnalysis:
     """Summarise storm groups such as July vs February or month by month."""
+    # One period pushes its filter into SQL; several share one fetch and are
+    # bucketed in Python (a per-period fetch would re-read the same rows).
+    single_period = periods[0] if len(periods) == 1 else None
     observations = _group_observations(
-        conn, state=state, region=region, county=county
+        conn, state=state, region=region, county=county, period=single_period
     )
     summaries = tuple(
         _summarize_group(
             period,
-            [
+            observations
+            if single_period is not None
+            else [
                 row for row in observations
                 if period.includes(row.storm_code)
             ],
@@ -1331,23 +1461,29 @@ def region_summary_rows(
     state: str = DEFAULT_STATE,
     period: PeriodSpec | None = None,
 ) -> list[dict[str, Any]]:
-    """Summaries for each default/custom region."""
+    """Summaries for each default/custom region.
+
+    One period-filtered fetch serves every region: regions are overlapping
+    county subsets of the same statewide rows, so fetching per region read
+    the same data once per region for no gain.
+    """
     period = period or all_period()
+    mapping = _region_mapping(conn, state=state)
+    observations = _group_observations(
+        conn, state=state, region=None, period=period
+    )
     rows: list[dict[str, Any]] = []
-    for region in _region_mapping(conn, state=state):
-        analysis = storm_group_analysis(
-            conn,
-            (period,),
-            title=f"{period.label} regional storm analysis",
-            group_by="region",
+    for region, counties in mapping.items():
+        allowed = {name.lower() for name in counties}
+        summary = _summarize_group(
+            period,
+            [row for row in observations if row.county.lower() in allowed],
             region=region,
-            state=state,
         )
-        if analysis.rows:
-            row = dict(analysis.rows[0])
-            row["group"] = region
-            row["region"] = region
-            rows.append(row)
+        row = dict(_group_summary_row(summary))
+        row["group"] = region
+        row["region"] = region
+        rows.append(row)
     rows.sort(key=lambda row: (-int(row["total_outage"]), str(row["region"])))
     return rows
 
@@ -1388,12 +1524,11 @@ def threshold_analysis(
         )
 
     period = period or all_period()
-    observations = [
-        row for row in _group_observations(
-            conn, state=state, region=region, county=county
+    observations = list(
+        _group_observations(
+            conn, state=state, region=region, county=county, period=period
         )
-        if period.includes(row.storm_code)
-    ]
+    )
     uses_gust_fallback = (
         threshold.metric_key == "peakGUST10"
         and not any(row.peak_gust_ms is not None for row in observations)
@@ -1584,10 +1719,18 @@ def _group_observations(
     state: str,
     region: str | None,
     county: str | None = None,
+    period: PeriodSpec | None = None,
 ) -> tuple[GroupObservation, ...]:
-    rows = _fetch(
-        conn,
-        """
+    """Storm-county observations for a state, filtered in SQL.
+
+    County, region, and period restrictions are pushed into the WHERE clause
+    — the region as the same county list ``_region_mapping`` supplies (so the
+    default-mapping fallback keeps working), the period as integer arithmetic
+    on stormCode per this module's no-date-functions rule. A period the
+    predicate builder cannot express is filtered in Python, as every filter
+    was before the pushdown.
+    """
+    sql = """
         SELECT
             w.stormCode,
             s.eventDateTime,
@@ -1605,29 +1748,44 @@ def _group_observations(
         JOIN Storm s ON s.stormCode = w.stormCode
         JOIN County c ON LOWER(c.county) = LOWER(w.county)
         WHERE LOWER(c.state) = LOWER(%s)
-        ORDER BY w.stormCode ASC, w.county ASC
-        """,
-        (state,),
-    )
-    allowed = None
+    """
+    params: list[Any] = [state]
+    if county is not None:
+        sql += " AND LOWER(w.county) = LOWER(%s)"
+        params.append(county)
     if region is not None:
-        allowed = {
-            county.lower()
-            for county in _region_mapping(conn, state=state).get(region, ())
-        }
+        allowed = sorted(
+            name.lower()
+            for name in _region_mapping(conn, state=state).get(region, ())
+        )
+        if allowed:
+            sql += " AND LOWER(w.county) = ANY(%s)"
+            params.append(allowed)
+        else:
+            # An unknown region matched nothing before the pushdown; an empty
+            # array parameter would be untypable, so say FALSE directly.
+            sql += " AND FALSE"
+    period_filter: PeriodSpec | None = None
+    predicate = _period_predicate(period)
+    if predicate is not None:
+        clause, clause_params = predicate
+        sql += f" AND ({clause})"
+        params.extend(clause_params)
+    elif period is not None and period.kind != "all":
+        period_filter = period
+    sql += " ORDER BY w.stormCode ASC, w.county ASC"
+
+    rows = _fetch(conn, sql, params)
     observations = []
     for row in rows:
-        row_county = str(row[2])
-        if county is not None and row_county.lower() != county.lower():
-            continue
-        if allowed is not None and row_county.lower() not in allowed:
-            continue
         storm_code = int(row[0])
+        if period_filter is not None and not period_filter.includes(storm_code):
+            continue
         observations.append(
             GroupObservation(
                 storm_code=storm_code,
                 date=storm_code_to_date(storm_code),
-                county=row_county,
+                county=str(row[2]),
                 outage=int(row[3]),
                 peak_wind_ms=float(row[4]),
                 peak_gust_ms=_as_optional_float(row[5]),
@@ -1653,9 +1811,7 @@ def _current_weather_observations(
     county: str | None,
 ) -> tuple[dict[str, Any], ...]:
     start, end = _month_bounds(year, month)
-    rows = _fetch(
-        conn,
-        """
+    sql = """
         SELECT
             sourceRecordId,
             observedAt,
@@ -1668,24 +1824,30 @@ def _current_weather_observations(
         FROM CurrentWeatherObservation
         WHERE observedAt >= %s AND observedAt < %s
           AND LOWER(state) = LOWER(%s)
-        ORDER BY observedAt ASC, county ASC, sourceRecordId ASC
-        """,
-        (start, end, state),
-    )
-    allowed = None
+    """
+    params: list[Any] = [start, end, state]
+    # Same filter pushdown as _group_observations. county can be NULL here;
+    # COALESCE preserves the old Python comparison against "" for NULL rows,
+    # which never matches a real county or region name.
+    if county is not None:
+        sql += " AND LOWER(COALESCE(county, '')) = LOWER(%s)"
+        params.append(county)
     if region is not None:
-        allowed = {
+        allowed = sorted(
             county_name.lower()
             for county_name in _region_mapping(conn, state=state).get(region, ())
-        }
+        )
+        if allowed:
+            sql += " AND LOWER(COALESCE(county, '')) = ANY(%s)"
+            params.append(allowed)
+        else:
+            sql += " AND FALSE"
+    sql += " ORDER BY observedAt ASC, county ASC, sourceRecordId ASC"
+    rows = _fetch(conn, sql, params)
 
     observations: list[dict[str, Any]] = []
     for row in rows:
         row_county = str(row[2]) if row[2] is not None else None
-        if county is not None and (row_county or "").lower() != county.lower():
-            continue
-        if allowed is not None and (row_county or "").lower() not in allowed:
-            continue
         observations.append(
             {
                 "sourceRecordId": str(row[0]),
@@ -1861,6 +2023,11 @@ def _region_mapping(
     *,
     state: str,
 ) -> dict[str, tuple[str, ...]]:
+    key = (_conn_cache_scope(conn), state.lower())
+    with _lookup_cache_lock:
+        cached = _region_mapping_cache.get(key)
+    if cached is not None:
+        return cached
     try:
         rows = _fetch(
             conn,
@@ -1877,9 +2044,14 @@ def _region_mapping(
     mapping: dict[str, list[str]] = defaultdict(list)
     for region, county in rows:
         mapping[str(region)].append(str(county))
-    if mapping:
-        return {region: tuple(counties) for region, counties in mapping.items()}
-    return DEFAULT_REGION_COUNTIES
+    result = (
+        {region: tuple(counties) for region, counties in mapping.items()}
+        if mapping
+        else DEFAULT_REGION_COUNTIES
+    )
+    with _lookup_cache_lock:
+        _region_mapping_cache[key] = result
+    return result
 
 
 def _summarize_group(

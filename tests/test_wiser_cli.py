@@ -118,6 +118,7 @@ class TestWeatherAnalyticsHandler(unittest.TestCase):
             analytics_agent=FailingAnalyticsAgent(),
             sql_model=None,
             dry_run_sql=False,
+            use_sql_cache=False,
         )
 
         # Force the SQL AI agent to fail so the fixed-query fallback runs;

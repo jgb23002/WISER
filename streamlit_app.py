@@ -27,8 +27,8 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from wiser.agents.task_routing_agent import Route, TaskRoutingAgent
-from wiser.conversation import resolve_route
-from wiser.database import connect, has_required_tables, resolve_dsn
+from wiser.conversation import MAX_HISTORY_TURNS, resolve_route
+from wiser.database import connect_pooled, has_required_tables, resolve_dsn
 from wiser.evaluation import evaluate_routing_cases, evaluate_sql_ground_truth
 from wiser.handlers import (
     DEFAULT_DSN,
@@ -73,6 +73,18 @@ ROUTE_COLORS = {
     Route.RAG_KNOWLEDGE: "violet",
     Route.UNKNOWN: "red",
 }
+
+# Routing is deterministic over constants, so the agent and the example-button
+# colours are computed once at import instead of 15 route() calls per rerun.
+_ROUTING_AGENT = TaskRoutingAgent()
+_EXAMPLE_ROUTE_COLORS: dict[str, str] = {
+    example: ROUTE_COLORS.get(_ROUTING_AGENT.route(example).route, "gray")
+    for example in EXAMPLE_QUERIES
+}
+
+# Transcript entries kept in session state; results hold rows/maps/charts, so
+# an uncapped list grows without bound and each rerun replays all of it.
+_MAX_TRANSCRIPT_MESSAGES = 40
 
 _NOTICE_RENDERERS = {"error": st.error, "warning": st.warning, "info": st.info}
 ROUTING_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "task_routing_cases.json"
@@ -254,11 +266,10 @@ def _render_map_panels(result: AnalyticsResult) -> bool:
             st.markdown(f"**{panel.title}**")
             st.caption(panel.subtitle)
             try:
-                svg = render_county_heatmap_svg(
-                    _county_geojson(),
+                svg = _cached_heatmap_svg(
                     panel.rows,
                     panel.metric,
-                    title=panel.title,
+                    panel.title,
                     value_range=panel.value_range,
                     width=PANEL_MAP_WIDTH,
                     height=PANEL_MAP_HEIGHT,
@@ -278,12 +289,7 @@ def _render_analytics_heatmap(result: AnalyticsResult) -> None:
     if metric_key is None:
         return
     try:
-        svg = render_county_heatmap_svg(
-            _county_geojson(),
-            rows,
-            metric_key,
-            title=metric_display_name(metric_key),
-        )
+        svg = _cached_heatmap_svg(rows, metric_key, metric_display_name(metric_key))
     except Exception as exc:  # noqa: BLE001 - table is still the source of truth
         st.warning(f"County heat map unavailable for this result: {type(exc).__name__}: {exc}")
         return
@@ -614,7 +620,7 @@ def _render_external_feed_loader(dsn: str | None) -> None:
     if st.button("Load sample feed", width="stretch"):
         feeds_to_load = feed_names if selected_feed == "All" else (selected_feed,)
         summaries = []
-        conn = connect(dsn)
+        conn = connect_pooled(dsn)
         try:
             for feed_name in feeds_to_load:
                 sample_path, parser = EXTERNAL_SAMPLE_FEEDS[feed_name]
@@ -637,7 +643,7 @@ def _render_external_preview(dsn: str | None, *, limit: int) -> None:
     # There is no database file to stat now; an unreachable server or an
     # unbuilt schema surfaces through the except branch below instead.
     try:
-        conn = connect(dsn)
+        conn = connect_pooled(dsn)
         try:
             rows = recent_external_observations(conn, limit=limit)
         finally:
@@ -658,15 +664,40 @@ def _render_external_preview(dsn: str | None, *, limit: int) -> None:
         )
 
 
-@st.cache_data(show_spinner=False)
+# cache_resource, not cache_data: the GeoJSON is read-only, and cache_data
+# would pickle a fresh copy back out on every call.
+@st.cache_resource(show_spinner=False)
 def _county_geojson() -> dict[str, object]:
     return load_county_geojson()
+
+
+@st.cache_data(show_spinner=False, max_entries=128)
+def _cached_heatmap_svg(
+    rows: list[dict[str, object]],
+    metric_key: str,
+    title: str,
+    value_range: tuple[float, float] | None = None,
+    width: int | None = None,
+    height: int | None = None,
+) -> str:
+    """Choropleth SVG generation, cached on its inputs.
+
+    The transcript replay re-renders every past result on every rerun; with
+    this cache a replayed map costs a lookup instead of re-projecting every
+    county polygon and re-serialising the SVG.
+    """
+    kwargs: dict[str, object] = {"title": title, "value_range": value_range}
+    if width is not None:
+        kwargs["width"] = width
+    if height is not None:
+        kwargs["height"] = height
+    return render_county_heatmap_svg(_county_geojson(), rows, metric_key, **kwargs)
 
 
 def _render_county_heatmaps(dsn: str | None) -> None:
     st.subheader("County heat maps")
     try:
-        probe = connect(dsn)
+        probe = connect_pooled(dsn)
         try:
             ready = has_required_tables(probe)
         finally:
@@ -679,7 +710,7 @@ def _render_county_heatmaps(dsn: str | None) -> None:
         return
 
     try:
-        conn = connect(dsn)
+        conn = connect_pooled(dsn)
         try:
             storm_options = available_storm_options(conn, limit=100)
         finally:
@@ -706,7 +737,7 @@ def _render_county_heatmaps(dsn: str | None) -> None:
     )
 
     try:
-        conn = connect(dsn)
+        conn = connect_pooled(dsn)
         try:
             rows = county_metric_rows(conn, metric_key, storm_code=storm_scope)
         finally:
@@ -826,14 +857,15 @@ def main() -> None:
         # usable connection URL, so an untouched field maps back to the real
         # one; anything the user actually types is passed through as-is.
         _resolved_dsn = resolve_dsn(DEFAULT_DSN)
+        _redacted_resolved_dsn = _redacted_dsn(_resolved_dsn)
         _dsn_input = st.text_input(
             "PostgreSQL connection URL",
-            value=_redacted_dsn(_resolved_dsn),
+            value=_redacted_resolved_dsn,
             help="Defaults to $DATABASE_URL, else the local Docker Compose instance.",
         )
         dsn = (
             _resolved_dsn
-            if _dsn_input == _redacted_dsn(_resolved_dsn)
+            if _dsn_input == _redacted_resolved_dsn
             else _dsn_input
         )
         input_csv = st.text_input("Source CSV", value=DEFAULT_INPUT_CSV)
@@ -852,6 +884,16 @@ def main() -> None:
         )
         show_sql = st.checkbox("Show generated SQL", value=True)
         show_reasoning_prompt = st.checkbox("Show reasoning prompt", value=False)
+        use_sql_cache = st.checkbox(
+            "Cache generated SQL",
+            value=True,
+            help=(
+                "Reuse previously generated SQL when the same question, model, "
+                "and conversation history recur, skipping the OpenAI call. The "
+                "SQL is always re-executed, so results stay live. Also reuses "
+                "the reasoning layer's answer for identical question/SQL/rows."
+            ),
+        )
 
         st.subheader("RAG / external context")
         show_rag_context = st.checkbox("Show augmented context", value=False)
@@ -885,8 +927,6 @@ def main() -> None:
             _reset_conversation_state()
             st.rerun()
 
-    routing_agent = TaskRoutingAgent()
-
     status_tab, map_tab, external_tab = st.tabs(
         ("Demo status", "County heat maps", "External outage staging")
     )
@@ -908,7 +948,7 @@ def main() -> None:
     )
     example_columns = st.columns(min(len(EXAMPLE_QUERIES), 4))
     for position, example in enumerate(EXAMPLE_QUERIES):
-        example_color = ROUTE_COLORS.get(routing_agent.route(example).route, "gray")
+        example_color = _EXAMPLE_ROUTE_COLORS.get(example, "gray")
         with example_columns[position % len(example_columns)]:
             st.button(
                 f":{example_color}[{example}]",
@@ -919,6 +959,11 @@ def main() -> None:
             )
 
     # Replay the transcript on every rerun.
+    if st.session_state.get("transcript_trimmed"):
+        st.caption(
+            f"Older messages beyond the last {_MAX_TRANSCRIPT_MESSAGES} were "
+            "dropped to keep the session responsive."
+        )
     for message in st.session_state["messages"]:
         with st.chat_message(message["role"]):
             if message["role"] == "user":
@@ -946,7 +991,7 @@ def main() -> None:
         st.markdown(query)
 
     decision = resolve_route(
-        routing_agent.route(query), st.session_state["last_route"]
+        _ROUTING_AGENT.route(query), st.session_state["last_route"]
     )
     with st.chat_message("assistant"):
         _render_route_line(decision.route, decision.reason)
@@ -963,7 +1008,9 @@ def main() -> None:
                     similarity_backend=similarity_backend,
                     use_openai_summary=use_openai_summary,
                     dry_run_sql=dry_run_sql,
+                    use_sql_cache=use_sql_cache,
                     history=tuple(st.session_state["sql_history"]),
+                    pooled=True,
                 )
                 try:
                     result = dispatch_route(decision.route, ctx)
@@ -994,9 +1041,18 @@ def main() -> None:
             "result": result,
         }
     )
+    messages = st.session_state["messages"]
+    if len(messages) > _MAX_TRANSCRIPT_MESSAGES:
+        del messages[: len(messages) - _MAX_TRANSCRIPT_MESSAGES]
+        st.session_state["transcript_trimmed"] = True
     turn = turn_from_result(query, result)
     if turn is not None:
-        st.session_state["sql_history"].append(turn)
+        sql_history = st.session_state["sql_history"]
+        sql_history.append(turn)
+        # Only the last MAX_HISTORY_TURNS ever reach the LLM prompt; keeping
+        # more would just grow session state and the per-turn tuple copy.
+        if len(sql_history) > MAX_HISTORY_TURNS:
+            del sql_history[: len(sql_history) - MAX_HISTORY_TURNS]
     if decision.route is not Route.UNKNOWN:
         st.session_state["last_route"] = decision.route
 

@@ -126,7 +126,9 @@ class TestExternalOutageDatabase(unittest.TestCase):
         self.conn.commit()
 
     def tearDown(self):
-        self.conn.close()
+        # rollback, not close: the harness owns this shared connection, and
+        # closing it makes the next reset_schema pay a fresh TCP+auth.
+        self.conn.rollback()
 
     def test_schema_table_and_indexes_exist(self):
         ensure_external_outage_schema(self.conn)

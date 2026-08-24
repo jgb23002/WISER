@@ -35,6 +35,7 @@ for _p in (str(SRC_DIR), str(SCRIPTS_DIR), str(TESTS_DIR)):
 from pg_harness import make_conn  # noqa: E402
 
 from wiser.agents.sql_ai_agent import (  # noqa: E402
+    SQL_CACHE_MAX_ENTRIES,
     SqlAiAgent,
     SqlValidationError,
     _add_generation_options,
@@ -42,7 +43,10 @@ from wiser.agents.sql_ai_agent import (  # noqa: E402
     _load_schema_ddl,
     _make_answer,
     _validate_sql,
+    clear_sql_cache,
+    sql_cache_stats,
 )
+from wiser.conversation import ConversationTurn  # noqa: E402
 from wiser.agents.storm_weather_analytics_agent import StormWeatherAnalyticsAgent  # noqa: E402
 from wiser.handlers import handle_weather_analytics  # noqa: E402
 from wiser_cli import render_result  # noqa: E402
@@ -108,6 +112,7 @@ def _make_ctx(query: str, conn: psycopg.Connection, **overrides) -> SimpleNamesp
         use_openai_summary=False,
         sql_model=None,
         dry_run_sql=False,
+        use_sql_cache=False,
         history=None,
     )
     defaults.update(overrides)
@@ -288,7 +293,9 @@ class TestDryRun(unittest.TestCase):
         self.agent = SqlAiAgent(dry_run=True)
 
     def tearDown(self):
-        self.conn.close()
+        # rollback, not close: the harness owns this shared connection, and
+        # closing it makes the next reset_schema pay a fresh TCP+auth.
+        self.conn.rollback()
 
     def test_returns_prompt_in_sql_field(self):
         result = self.agent.run("top storms by outage", self.conn)
@@ -524,7 +531,9 @@ class TestCliHandlerFallback(unittest.TestCase):
         self.conn = _make_memory_conn()
 
     def tearDown(self):
-        self.conn.close()
+        # rollback, not close: the harness owns this shared connection, and
+        # closing it makes the next reset_schema pay a fresh TCP+auth.
+        self.conn.rollback()
 
     def _capture(self, query: str, side_effect, **ctx_overrides) -> str:
         ctx = _make_ctx(query, self.conn, **ctx_overrides)
@@ -585,7 +594,9 @@ class TestCliFlags(unittest.TestCase):
         self.conn = _make_memory_conn()
 
     def tearDown(self):
-        self.conn.close()
+        # rollback, not close: the harness owns this shared connection, and
+        # closing it makes the next reset_schema pay a fresh TCP+auth.
+        self.conn.rollback()
 
     def _render(self, result, **render_kwargs) -> str:
         buf = io.StringIO()
@@ -640,6 +651,114 @@ class TestCliFlags(unittest.TestCase):
         ):
             result = handle_weather_analytics(ctx)
         self.assertIn("Found 0 results.", self._render(result))
+
+
+class TestGeneratedSqlCache(unittest.TestCase):
+    """The cache reuses the LLM call, never the rows."""
+
+    SQL = "SELECT county FROM WeatherData LIMIT 1;"
+
+    def setUp(self):
+        self.conn = _make_file_conn()
+        clear_sql_cache()
+        self.addCleanup(clear_sql_cache)
+        env_patcher = patch.dict("os.environ", {"OPENAI_API_KEY": "test-key-not-real"})
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
+
+    def tearDown(self):
+        self.conn.rollback()
+
+    def test_repeated_question_calls_the_llm_once(self):
+        agent = SqlAiAgent(use_cache=True)
+        with patch(
+            "wiser.agents.sql_ai_agent._call_chat_llm", return_value=self.SQL
+        ) as mock_llm:
+            first = agent.run("which counties?", self.conn)
+            second = agent.run("which counties?", self.conn)
+        self.assertEqual(mock_llm.call_count, 1)
+        self.assertEqual(first["sql"], second["sql"])
+        self.assertFalse(first["cached"])
+        self.assertTrue(second["cached"])
+
+    def test_cache_is_off_by_default(self):
+        agent = SqlAiAgent()
+        with patch(
+            "wiser.agents.sql_ai_agent._call_chat_llm", return_value=self.SQL
+        ) as mock_llm:
+            agent.run("which counties?", self.conn)
+            result = agent.run("which counties?", self.conn)
+        self.assertEqual(mock_llm.call_count, 2)
+        self.assertFalse(result["cached"])
+
+    def test_rows_are_re_executed_on_a_cache_hit(self):
+        """A hit must re-query the database, not replay stale rows."""
+        agent = SqlAiAgent(use_cache=True)
+        with patch("wiser.agents.sql_ai_agent._call_chat_llm", return_value=self.SQL):
+            agent.run("which counties?", self.conn)
+            with patch(
+                "wiser.agents.sql_ai_agent._execute_ro", return_value=[{"county": "live"}]
+            ) as mock_exec:
+                second = agent.run("which counties?", self.conn)
+        mock_exec.assert_called_once()
+        self.assertEqual(second["rows"], [{"county": "live"}])
+
+    def test_differing_history_is_a_different_entry(self):
+        agent = SqlAiAgent(use_cache=True)
+        turn = ConversationTurn(question="q", sql=self.SQL, answer="a")
+        with patch(
+            "wiser.agents.sql_ai_agent._call_chat_llm", return_value=self.SQL
+        ) as mock_llm:
+            agent.run("which counties?", self.conn)
+            agent.run("which counties?", self.conn, history=(turn,))
+        self.assertEqual(mock_llm.call_count, 2)
+
+    def test_differing_model_is_a_different_entry(self):
+        with patch(
+            "wiser.agents.sql_ai_agent._call_chat_llm", return_value=self.SQL
+        ) as mock_llm:
+            SqlAiAgent(model="gpt-4o-mini", use_cache=True).run("q?", self.conn)
+            SqlAiAgent(model="gpt-4o", use_cache=True).run("q?", self.conn)
+        self.assertEqual(mock_llm.call_count, 2)
+
+    def test_cache_is_shared_across_instances(self):
+        with patch(
+            "wiser.agents.sql_ai_agent._call_chat_llm", return_value=self.SQL
+        ) as mock_llm:
+            SqlAiAgent(use_cache=True).run("which counties?", self.conn)
+            SqlAiAgent(use_cache=True).run("which counties?", self.conn)
+        self.assertEqual(mock_llm.call_count, 1)
+
+    def test_invalid_sql_is_never_cached(self):
+        agent = SqlAiAgent(use_cache=True)
+        with patch(
+            "wiser.agents.sql_ai_agent._call_chat_llm", return_value="DROP TABLE Storm;"
+        ):
+            with self.assertRaises(SqlValidationError):
+                agent.run("drop it", self.conn)
+        self.assertEqual(sql_cache_stats()["entries"], 0)
+
+    def test_entries_are_capped(self):
+        agent = SqlAiAgent(use_cache=True)
+        with patch("wiser.agents.sql_ai_agent._call_chat_llm", return_value=self.SQL):
+            for index in range(SQL_CACHE_MAX_ENTRIES + 10):
+                agent.run(f"question number {index}?", self.conn)
+        self.assertEqual(sql_cache_stats()["entries"], SQL_CACHE_MAX_ENTRIES)
+
+    def test_stats_track_hits_and_misses(self):
+        agent = SqlAiAgent(use_cache=True)
+        with patch("wiser.agents.sql_ai_agent._call_chat_llm", return_value=self.SQL):
+            agent.run("which counties?", self.conn)
+            agent.run("which counties?", self.conn)
+        stats = sql_cache_stats()
+        self.assertEqual(stats["hits"], 1)
+        self.assertEqual(stats["misses"], 1)
+
+    def test_dry_run_never_caches(self):
+        agent = SqlAiAgent(dry_run=True, use_cache=True)
+        result = agent.run("which counties?", self.conn)
+        self.assertFalse(result["cached"])
+        self.assertEqual(sql_cache_stats()["entries"], 0)
 
 
 if __name__ == "__main__":

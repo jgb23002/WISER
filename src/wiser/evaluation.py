@@ -12,8 +12,8 @@ from typing import Sequence
 import psycopg
 from psycopg.rows import dict_row
 
-from wiser.agents.sql_ai_agent import _validate_sql
-from wiser.database import connect
+from wiser.agents.sql_ai_agent import validate_sql
+from wiser.database import connect, executemany
 from wiser.agents.task_routing_agent import TaskRoutingAgent
 
 
@@ -180,38 +180,38 @@ def build_sql_fixture_database(
 ) -> None:
     conn.execute(Path(schema_path).read_text(encoding="utf-8"))
 
-    for storm in fixture["database"]["storms"]:
-        conn.execute(
-            """
-            INSERT INTO Storm(stormCode, eventDateTime, eventLength)
-            VALUES(%(stormCode)s, %(eventDateTime)s, %(eventLength)s)
-            """,
-            storm,
+    # Batched rather than a statement per row: this runs on Streamlit's first
+    # page load (behind st.cache_data) as well as in the test suite.
+    executemany(
+        conn,
+        """
+        INSERT INTO Storm(stormCode, eventDateTime, eventLength)
+        VALUES(%(stormCode)s, %(eventDateTime)s, %(eventLength)s)
+        """,
+        fixture["database"]["storms"],
+    )
+    executemany(
+        conn,
+        """
+        INSERT INTO County(county, state, ohLine)
+        VALUES(%(county)s, %(state)s, %(ohLine)s)
+        """,
+        fixture["database"]["counties"],
+    )
+    executemany(
+        conn,
+        """
+        INSERT INTO WeatherData(
+            stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,
+            wgt5, wgt9, wgt13, wgt18, outage
         )
-
-    for county in fixture["database"]["counties"]:
-        conn.execute(
-            """
-            INSERT INTO County(county, state, ohLine)
-            VALUES(%(county)s, %(state)s, %(ohLine)s)
-            """,
-            county,
+        VALUES(
+            %(stormCode)s, %(county)s, %(sumAFWA_TOTPRECIP)s, %(peakWSPD10)s,
+            %(wgt5)s, %(wgt9)s, %(wgt13)s, %(wgt18)s, %(outage)s
         )
-
-    for row in fixture["database"]["weather_data"]:
-        conn.execute(
-            """
-            INSERT INTO WeatherData(
-                stormCode, county, sumAFWA_TOTPRECIP, peakWSPD10,
-                wgt5, wgt9, wgt13, wgt18, outage
-            )
-            VALUES(
-                %(stormCode)s, %(county)s, %(sumAFWA_TOTPRECIP)s, %(peakWSPD10)s,
-                %(wgt5)s, %(wgt9)s, %(wgt13)s, %(wgt18)s, %(outage)s
-            )
-            """,
-            row,
-        )
+        """,
+        fixture["database"]["weather_data"],
+    )
     conn.commit()
 
 
@@ -235,7 +235,7 @@ def _evaluate_sql_case(
 ) -> EvaluationCaseResult:
     sql = case["expected_sql"]
     try:
-        _validate_sql(sql)
+        validate_sql(sql)
         _assert_required_tokens(sql, case["required_tables"])
         _assert_required_tokens(sql, case["required_columns"])
         _assert_forbidden_tokens_absent(sql, case["forbidden_tokens"])

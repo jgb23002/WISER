@@ -1,11 +1,20 @@
 from __future__ import annotations
 
-from collections import Counter
-from dataclasses import dataclass
 import hashlib
 import math
 import re
+import threading
+from collections import Counter, OrderedDict
+from dataclasses import dataclass
 from typing import Literal, Sequence
+
+# numpy is optional, exactly like faiss. When present the exact backend does
+# its dot products as one matrix multiply instead of a Python loop per
+# candidate; when absent the pure-Python path below still runs.
+try:
+    import numpy as _np  # type: ignore[import-not-found]
+except ImportError:
+    _np = None
 
 SimilarityBackend = Literal["auto", "faiss", "exact"]
 
@@ -49,6 +58,36 @@ def tokenize_for_similarity(text: str) -> list[str]:
     return filtered or tokens
 
 
+# Hashed vectors are pure functions of (text, dimensions) and the same chunk
+# texts are re-ranked on every external-context query, so the last N are kept.
+_VECTOR_CACHE_MAX_ENTRIES = 2048
+_vector_cache: "OrderedDict[tuple[str, int], list[float]]" = OrderedDict()
+_vector_cache_lock = threading.Lock()
+
+
+def clear_vector_cache() -> None:
+    """Drop every cached text vector (test hook)."""
+    with _vector_cache_lock:
+        _vector_cache.clear()
+
+
+def vectorize_text_cached(text: str, *, dimensions: int = 384) -> list[float]:
+    """vectorize_text with memoization. The returned list must not be mutated."""
+    key = (text, dimensions)
+    with _vector_cache_lock:
+        vector = _vector_cache.get(key)
+        if vector is not None:
+            _vector_cache.move_to_end(key)
+            return vector
+    vector = vectorize_text(text, dimensions=dimensions)
+    with _vector_cache_lock:
+        _vector_cache[key] = vector
+        _vector_cache.move_to_end(key)
+        while len(_vector_cache) > _VECTOR_CACHE_MAX_ENTRIES:
+            _vector_cache.popitem(last=False)
+    return vector
+
+
 def vectorize_text(text: str, *, dimensions: int = 384) -> list[float]:
     if dimensions <= 0:
         raise ValueError("dimensions must be positive")
@@ -84,7 +123,9 @@ def rank_texts(
     if not any(query_vector):
         return []
 
-    text_vectors = [vectorize_text(text, dimensions=dimensions) for text in texts]
+    text_vectors = [
+        vectorize_text_cached(text, dimensions=dimensions) for text in texts
+    ]
     ranked: list[tuple[int, float]]
     if backend in {"auto", "faiss"}:
         ranked = _rank_with_faiss(query_vector, text_vectors, limit)
@@ -103,10 +144,18 @@ def _rank_exact(
     query_vector: Sequence[float],
     text_vectors: Sequence[Sequence[float]],
 ) -> list[tuple[int, float]]:
-    ranked = [
-        (index, _dot_product(query_vector, vector))
-        for index, vector in enumerate(text_vectors)
-    ]
+    if _np is not None and text_vectors:
+        # One float64 matrix-vector product replaces N Python dot loops. The
+        # sort stays in Python on the same (-score, index) key, so ordering
+        # and tie-breaking are unchanged.
+        matrix = _np.asarray(text_vectors, dtype=_np.float64)
+        scores = matrix @ _np.asarray(query_vector, dtype=_np.float64)
+        ranked = list(enumerate(scores.tolist()))
+    else:
+        ranked = [
+            (index, _dot_product(query_vector, vector))
+            for index, vector in enumerate(text_vectors)
+        ]
     return sorted(ranked, key=lambda item: (-item[1], item[0]))
 
 

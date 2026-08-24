@@ -17,6 +17,7 @@ from wiser.rag import (  # noqa: E402
     build_augmented_context,
     chunk_text,
     index_sources,
+    reset_rag_caches,
     resolve_source_paths,
     search_rag,
 )
@@ -65,7 +66,9 @@ class TestRagIndexAndSearch(unittest.TestCase):
         self.conn = make_conn()
 
     def tearDown(self):
-        self.conn.close()
+        # rollback, not close: the harness owns this shared connection, and
+        # closing it makes the next reset_schema pay a fresh TCP+auth.
+        self.conn.rollback()
         self.temp_dir.cleanup()
 
     def test_resolve_source_paths_filters_supported_files(self):
@@ -112,6 +115,56 @@ class TestRagIndexAndSearch(unittest.TestCase):
 
         self.assertEqual(summary.documents_indexed, 1)
         self.assertIn("Fairfield outage context", results[0].content)
+
+    def test_unchanged_files_are_not_reread_on_a_second_pass(self):
+        """The stat manifest must skip the read + checksum for untouched files."""
+        index_sources(self.conn, ["docs"], root=self.root, rebuild=True)
+
+        reads: list[str] = []
+        original_read_text = Path.read_text
+
+        def counting_read_text(path_self, *args, **kwargs):
+            reads.append(str(path_self))
+            return original_read_text(path_self, *args, **kwargs)
+
+        Path.read_text = counting_read_text
+        try:
+            summary = index_sources(self.conn, ["docs"], root=self.root)
+        finally:
+            Path.read_text = original_read_text
+
+        self.assertEqual(reads, [])
+        self.assertEqual(summary.documents_indexed, 0)
+        self.assertEqual(summary.total_documents, 2)
+
+    def test_a_changed_file_is_reindexed_after_a_cached_pass(self):
+        """A manifest hit must not mask a real edit."""
+        index_sources(self.conn, ["docs"], root=self.root, rebuild=True)
+        index_sources(self.conn, ["docs"], root=self.root)
+
+        (self.root / "docs" / "storm.md").write_text(
+            "# Storm Similarity\n\nCrews restored Windham feeders after the squall.",
+            encoding="utf-8",
+        )
+
+        summary = index_sources(self.conn, ["docs"], root=self.root)
+        results = search_rag(self.conn, "Windham feeders squall", limit=1)
+
+        self.assertEqual(summary.documents_indexed, 1)
+        self.assertIn("Windham feeders", results[0].content)
+
+    def test_search_results_survive_a_cache_reset(self):
+        """Cached chunk records must produce the same ranking as a cold read."""
+        index_sources(self.conn, ["docs"], root=self.root, rebuild=True)
+
+        warm = search_rag(self.conn, "storm similarity wind speed outage", limit=2)
+        reset_rag_caches()
+        cold = search_rag(self.conn, "storm similarity wind speed outage", limit=2)
+
+        self.assertEqual(
+            [(item.source_path, item.chunk_index, item.score) for item in warm],
+            [(item.source_path, item.chunk_index, item.score) for item in cold],
+        )
 
     def test_build_augmented_context_includes_source_labels(self):
         index_sources(self.conn, ["docs"], root=self.root, rebuild=True)

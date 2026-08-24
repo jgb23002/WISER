@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
 import json
 import os
+import threading
+from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
+from wiser import llm_client
 from wiser.rag import RagResult, format_excerpt
 
 DEFAULT_OPENAI_MODEL = "gpt-5.5"
@@ -29,14 +31,28 @@ class OpenAIConfig:
 UrlOpener = Callable[..., Any]
 
 
+# Paths already parsed this process. Every LLM call site funnels through this
+# one loader, so without the guard the .env file is re-read from disk several
+# times per request. override=True bypasses the guard (and refreshes it).
+_dotenv_loaded_paths: set[str] = set()
+
+
+def reset_dotenv_cache() -> None:
+    """Forget which .env files were loaded (test hook)."""
+    _dotenv_loaded_paths.clear()
+
+
 def load_dotenv(
     path: str | Path | None = None,
     *,
     override: bool = False,
 ) -> int:
     dotenv_path = Path(path) if path is not None else DEFAULT_DOTENV_PATH
+    if not override and str(dotenv_path) in _dotenv_loaded_paths:
+        return 0
     if not dotenv_path.is_file():
         return 0
+    _dotenv_loaded_paths.add(str(dotenv_path))
 
     loaded = 0
     for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
@@ -62,6 +78,38 @@ def openai_config(model: str | None = None) -> OpenAIConfig:
     )
 
 
+# Summary answer cache — same shape as the generated-SQL cache. Keyed on the
+# full request body (model, instructions, prompt with all retrieved excerpts),
+# so changed context changes the key. Opt-in via use_cache.
+
+SUMMARY_CACHE_MAX_ENTRIES = 128
+
+_summary_cache: "OrderedDict[str, str]" = OrderedDict()
+_summary_cache_lock = threading.Lock()
+
+
+def clear_summary_cache() -> None:
+    """Drop every cached impact summary (test hook / schema-change hook)."""
+    with _summary_cache_lock:
+        _summary_cache.clear()
+
+
+def _summary_cache_get(key: str) -> str | None:
+    with _summary_cache_lock:
+        if key in _summary_cache:
+            _summary_cache.move_to_end(key)
+            return _summary_cache[key]
+        return None
+
+
+def _summary_cache_put(key: str, answer: str) -> None:
+    with _summary_cache_lock:
+        _summary_cache[key] = answer
+        _summary_cache.move_to_end(key)
+        while len(_summary_cache) > SUMMARY_CACHE_MAX_ENTRIES:
+            _summary_cache.popitem(last=False)
+
+
 def summarize_storm_impact_with_openai(
     query: str,
     results: Sequence[RagResult],
@@ -72,6 +120,7 @@ def summarize_storm_impact_with_openai(
     max_output_tokens: int = 700,
     timeout: int = 30,
     opener: UrlOpener | None = None,
+    use_cache: bool = False,
 ) -> str:
     load_dotenv()
     resolved_api_key = api_key or os.environ.get("OPENAI_API_KEY")
@@ -80,7 +129,13 @@ def summarize_storm_impact_with_openai(
     if not results:
         raise OpenAISummarizationError("No retrieved context was provided.")
 
-    resolved_model = model or os.environ.get("WISER_OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
+    # WISER_SUMMARY_MODEL overrides just this client; WISER_OPENAI_MODEL is
+    # the shared fallback for every LLM client.
+    resolved_model = (
+        model
+        or os.environ.get("WISER_SUMMARY_MODEL")
+        or os.environ.get("WISER_OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
+    )
     request_body = {
         "model": resolved_model,
         "instructions": (
@@ -104,33 +159,35 @@ def summarize_storm_impact_with_openai(
     if _supports_reasoning_effort(resolved_model):
         request_body["reasoning"] = {"effort": "low"}
 
-    data = json.dumps(request_body).encode("utf-8")
-    request = Request(
-        OPENAI_RESPONSES_URL,
-        data=data,
-        headers={
-            "Authorization": f"Bearer {resolved_api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
+    cache_key = None
+    if use_cache:
+        cache_key = hashlib.sha256(
+            json.dumps(request_body, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        cached = _summary_cache_get(cache_key)
+        if cached is not None:
+            return cached
 
     try:
-        open_url = opener or urlopen
-        with open_url(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise OpenAISummarizationError(
-            f"OpenAI request failed with HTTP {exc.code}: {detail}"
-        ) from exc
-    except (OSError, URLError, json.JSONDecodeError) as exc:
-        raise OpenAISummarizationError(f"OpenAI request failed: {exc}") from exc
+        payload = llm_client.post_json(
+            OPENAI_RESPONSES_URL,
+            request_body,
+            api_key=resolved_api_key,
+            timeout=timeout,
+            opener=opener,
+        )
+    except llm_client.LlmRequestError as exc:
+        raise OpenAISummarizationError(str(exc)) from exc
 
     output_text = _extract_output_text(payload)
     if not output_text:
         raise OpenAISummarizationError(_missing_output_text_message(payload))
-    return output_text.strip()
+    answer = output_text.strip()
+    if cache_key is not None:
+        _summary_cache_put(cache_key, answer)
+    return answer
 
 
 def _build_openai_prompt(

@@ -220,20 +220,37 @@ CREATE TABLE ExternalOutageObservation (
 
 -- ============================================================================
 -- Indexes for common query patterns
+--
+-- Every county/state comparison in this codebase is case-insensitive --
+-- LOWER(c.county) = LOWER(w.county), WHERE LOWER(state) = LOWER(%s) -- which
+-- a plain b-tree on the raw column cannot serve. The expression indexes below
+-- match those predicates exactly, so no query text had to change.
+--
+-- Indexes deliberately NOT created:
+--   Storm(eventDateTime)                         -- UNIQUE already indexes it
+--   HourlyWeatherObservation(stormCode, county, hourOffset)
+--                                                -- exact prefix of the PK
+--   RegionCountyMapping(state, region, county)   -- superseded by the LOWER()
+--                                                   expression index below
+--   WeatherData(outage DESC)                     -- no query orders by raw
+--                                                   outage without first
+--                                                   filtering on the PK
 -- ============================================================================
-CREATE INDEX idx_weatherdata_outage ON WeatherData(outage DESC);
-CREATE INDEX idx_weatherdata_county ON WeatherData(county);
-CREATE INDEX idx_storm_datetime ON Storm(eventDateTime);
-CREATE INDEX idx_region_county_state
-    ON RegionCountyMapping(state, region, county);
-CREATE INDEX idx_hourly_weather_storm_county_hour
-    ON HourlyWeatherObservation(stormCode, county, hourOffset);
+CREATE INDEX idx_weatherdata_lower_county ON WeatherData(LOWER(county));
+CREATE INDEX idx_county_lower_county ON County(LOWER(county));
+CREATE INDEX idx_county_lower_state ON County(LOWER(state));
+CREATE INDEX idx_region_lower_state_region
+    ON RegionCountyMapping(LOWER(state), region, county);
+CREATE INDEX idx_hourly_weather_county
+    ON HourlyWeatherObservation(county);
 CREATE INDEX idx_hourly_weather_metric
     ON HourlyWeatherObservation(metricKey, metricValue DESC);
 CREATE INDEX idx_current_weather_time
     ON CurrentWeatherObservation(observedAt DESC);
 CREATE INDEX idx_current_weather_county_time
     ON CurrentWeatherObservation(county, observedAt DESC);
+CREATE INDEX idx_current_weather_lower_state_time
+    ON CurrentWeatherObservation(LOWER(state), observedAt);
 CREATE INDEX idx_external_outage_source_time
     ON ExternalOutageObservation(sourceSystem, observedAt DESC);
 CREATE INDEX idx_external_outage_county

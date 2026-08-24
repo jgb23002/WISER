@@ -282,12 +282,28 @@ class TaskRoutingAgent:
             reason="No strong keyword match; needs manual decision.",
         )
 
-    @staticmethod
-    def _matches_word(text: str, keywords) -> bool:
+    # One compiled alternation per keyword set, built on first use and reused
+    # for the life of the process. The previous form compiled a fresh pattern
+    # per keyword per call -- up to ~60 per route() -- for keyword sets that
+    # are class constants and never change.
+    _word_pattern_cache: dict[tuple[str, ...], "re.Pattern[str]"] = {}
+
+    @classmethod
+    def _word_pattern(cls, keywords) -> "re.Pattern[str]":
+        key = tuple(keywords)
+        pattern = cls._word_pattern_cache.get(key)
+        if pattern is None:
+            alternation = "|".join(re.escape(keyword) for keyword in key)
+            pattern = re.compile(rf"\b(?:{alternation})\b")
+            cls._word_pattern_cache[key] = pattern
+        return pattern
+
+    @classmethod
+    def _matches_word(cls, text: str, keywords) -> bool:
         """Whole-word match so "crawl" does not read as "raw"."""
-        return any(
-            re.search(rf"\b{re.escape(keyword)}\b", text) for keyword in keywords
-        )
+        if not keywords:
+            return False
+        return cls._word_pattern(keywords).search(text) is not None
 
     @classmethod
     def _storm_identifiers(cls, query: str) -> tuple[str, ...]:

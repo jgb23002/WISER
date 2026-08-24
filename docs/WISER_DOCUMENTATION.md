@@ -60,11 +60,21 @@ External staging table:
 
 Important indexes:
 
-- `idx_weatherdata_outage`
-- `idx_weatherdata_county`
-- `idx_storm_datetime`
+- `idx_weatherdata_lower_county`
+- `idx_county_lower_county`
+- `idx_county_lower_state`
+- `idx_region_lower_state_region`
 - `idx_external_outage_source_time`
 - `idx_external_outage_county`
+
+The county/state indexes are on `LOWER(...)` rather than the raw column.
+Every county join and state filter in the codebase compares case-insensitively
+(`JOIN County c ON LOWER(c.county) = LOWER(w.county)`), and PostgreSQL cannot
+use a plain b-tree for a function-wrapped predicate — so a raw-column index on
+these would never be chosen by the planner. Indexes that merely duplicate a
+primary key or `UNIQUE` constraint (`Storm(eventDateTime)`, the
+`HourlyWeatherObservation` PK prefix) are deliberately absent: they cost writes
+and serve no read.
 
 `ExternalOutageObservation` fields:
 
@@ -464,6 +474,57 @@ For a no-install professor walkthrough, open `mock_interface/index.html`. It
 mirrors the implementation status, external feed staging preview, agent demo
 queries, and architecture diagram without requiring Streamlit.
 
+## Performance And Caching
+
+Optimization work is concentrated in a few deliberate places; everything
+below degrades gracefully and none of it changes an answer.
+
+**Connections.** `database.connect()` folds `lock_timeout` into the libpq
+startup options, so a connection is ready in one round trip instead of three
+and no longer sits idle-in-transaction. `database.connect_pooled()` checks a
+connection out of a process-wide pool when the optional `psycopg_pool` is
+installed and falls back to a plain connect when it is not; `close()` returns
+it to the pool, so the calling convention is identical either way. The
+long-lived surfaces (Streamlit, the CLI REPL) use it; one-shot CLI commands
+do not, because a pool that outlives a single query buys nothing.
+
+**Bulk loading.** `database.copy_rows()` uses `COPY` for the plain inserts of
+a database build. `database.executemany()` routes batches under
+`EXECUTEMANY_PIPELINE_MIN_ROWS` (200) through a plain loop: psycopg's
+pipeline-mode `executemany` carries a fixed cost of roughly 100 ms per call
+regardless of batch size, so it only pays off on large batches. The constant's
+comment carries the measurements.
+
+**Process-level caches.** Each is keyed so it cannot serve one database's
+answer to another, and each has a reset hook the test harness calls:
+
+| Cache | Module | Invalidated by |
+|---|---|---|
+| Required-tables probe | `handlers` | `reset_schema_probe()`, database rebuild |
+| County/region lookups | `storm_analysis` | `clear_lookup_caches()`, database rebuild |
+| RAG schema, file manifest, chunk tokens | `rag` | `reset_rag_caches()`, any index write |
+| External staging schema | `integrations.external_outage` | `reset_external_outage_schema_cache()` |
+| Generated SQL / reasoning / summaries | agents, `openai_summarizer` | `clear_*_cache()` (all opt-in) |
+| Parsed GeoJSON | `visualization` | file mtime |
+
+The RAG file manifest short-circuits on `(mtime_ns, size)`, so a repeat query
+skips reading and hashing every source file. It is the usual stat-based
+staleness tradeoff — an edit that changes neither mtime nor size is not
+noticed — and it is process-local, so a restart or `rebuild=True` re-reads
+everything.
+
+**SQL pushdown.** `storm_analysis` filters by county, region, and period in
+SQL rather than fetching a state's whole table and filtering in Python.
+Period predicates use integer arithmetic on `stormCode` (`YYYYMMDDHH`), which
+keeps the module's no-date-functions rule intact. A month-by-month statewide
+analysis is one query.
+
+**LLM transport.** `wiser/llm_client.py` is the single OpenAI HTTP path for
+all three callers. It retries 429/5xx with backoff (honouring `Retry-After`)
+but never retries a timeout — retrying a 30 s stall only multiplies it. When
+SQL generation fails because the endpoint is unreachable, the handler skips
+the follow-up reasoning call instead of stalling a second time.
+
 ## Testing
 
 Run the full suite:
@@ -471,6 +532,16 @@ Run the full suite:
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+Or under pytest, which also supports parallel execution:
+
+```bash
+python -m pytest tests                 # whole suite
+python -m pytest tests -n auto         # parallel (needs pytest-xdist)
+```
+
+Each xdist worker takes its own PostgreSQL schema (`wiser_test_gw0`, …) so
+workers cannot drop each other's tables — see `tests/pg_harness.py`.
 
 Current expected status:
 
@@ -508,6 +579,7 @@ Core code:
 - `src/wiser/database.py`
 - `src/wiser/data_pipeline.py`
 - `src/wiser/query_engine.py`
+- `src/wiser/llm_client.py`
 - `src/wiser/rag.py`
 - `src/wiser/external_sources.py`
 - `src/wiser/similarity_engine.py`

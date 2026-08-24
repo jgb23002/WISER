@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+import textwrap
 from typing import Any, Sequence
 
 from wiser.agents.storm_reasoning_agent import normalized_ranking_divergence
@@ -89,8 +90,6 @@ def _wrap(lines: Sequence[str], width: int = REPORT_WIDTH) -> str:
     A line is treated as prose only when it has no run of two or more spaces
     after its leading indent — that run is what column alignment is made of.
     """
-    import textwrap
-
     out: list[str] = []
     for line in lines:
         stripped = line.lstrip(" ")
@@ -1363,5 +1362,3 @@ def _ordinal(number: int) -> str:
     return f"{value}{suffix}"
 
 
-def join_report_sections(sections: Sequence[str]) -> str:
-    return "\n\n".join(section for section in sections if section)

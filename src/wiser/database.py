@@ -1,9 +1,20 @@
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
+from typing import Iterable, Mapping, Sequence
 
 import psycopg
+from psycopg import conninfo as _conninfo
+
+# Optional pooling: psycopg_pool is a separate package. Everything here
+# degrades to plain per-call connections without it, matching how faiss and
+# sqlglot are treated elsewhere in the project.
+try:
+    from psycopg_pool import ConnectionPool as _ConnectionPool
+except ImportError:
+    _ConnectionPool = None
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "sql" / "schema.sql"
@@ -123,16 +134,67 @@ DEFAULT_METRIC_DEFINITION_ROWS: tuple[dict[str, object], ...] = (
 )
 
 
+# psycopg's executemany runs the batch in pipeline mode, which carries a
+# fixed setup cost of roughly 100 ms on this driver/server pair -- the same
+# whether the batch is 3 rows or 1000. Measured here (local PostgreSQL 17,
+# psycopg 3.3, per call, schema-rebuild baseline subtracted):
+#
+#     rows    executemany    per-row execute
+#        3        102 ms            3.1 ms
+#       10        100 ms            8.9 ms
+#       50         98 ms           30   ms
+#      200        104 ms           99   ms
+#     1000        123 ms          500   ms
+#
+# So pipeline mode only pays off past ~200 rows. Below that a plain loop is
+# much faster, and most batches in this codebase (9 metric definitions, 16
+# region mappings, a handful of test fixture rows) are far below it.
+EXECUTEMANY_PIPELINE_MIN_ROWS = 200
+
+
 def executemany(conn: psycopg.Connection, sql: str, rows) -> None:
     """Run a bulk statement, closing the cursor afterwards.
 
     psycopg puts ``executemany`` on the cursor, not the connection, so the
     obvious translation of ``conn.executemany(...)`` is
     ``conn.cursor().executemany(...)`` -- which leaks a cursor at every call
-    site. This is that translation, done once.
+    site. This is that translation, done once, plus the small-batch fast path
+    described above. Both forms send the same statements in the same order,
+    so callers see no behavioural difference.
     """
+    row_list = rows if isinstance(rows, (list, tuple)) else list(rows)
+    if not row_list:
+        return
+    if len(row_list) < EXECUTEMANY_PIPELINE_MIN_ROWS:
+        with conn.cursor() as cursor:
+            for row in row_list:
+                cursor.execute(sql, row)
+        return
     with conn.cursor() as cursor:
-        cursor.executemany(sql, rows)
+        cursor.executemany(sql, row_list)
+
+
+def copy_rows(
+    conn: psycopg.Connection,
+    table: str,
+    columns: Sequence[str],
+    rows: Iterable[Mapping[str, object]],
+) -> None:
+    """Bulk-load rows with COPY, the fastest path psycopg offers.
+
+    COPY streams one statement instead of round-tripping per row, which is
+    what makes it worth using for the WeatherData/hourly loads. It is only
+    valid for plain inserts: no ON CONFLICT clause, so callers needing upsert
+    semantics stay on :func:`executemany`.
+
+    A COPY failure aborts the whole batch, which suits every caller here --
+    the database build is all-or-nothing and runs inside one transaction.
+    """
+    column_list = ", ".join(columns)
+    with conn.cursor() as cursor:
+        with cursor.copy(f"COPY {table} ({column_list}) FROM STDIN") as copy:
+            for row in rows:
+                copy.write_row([row.get(column) for column in columns])
 
 
 def resolve_dsn(dsn: str | None = None) -> str:
@@ -144,19 +206,125 @@ def resolve_dsn(dsn: str | None = None) -> str:
     return dsn or os.environ.get("DATABASE_URL") or DEFAULT_DSN
 
 
+def _startup_conninfo(dsn: str | None, timeout: float) -> str:
+    """Resolve the DSN and fold lock_timeout into the libpq startup options.
+
+    Carrying lock_timeout in ``options`` makes the connection ready in a
+    single round trip; the old post-connect ``SET`` + ``COMMIT`` pair cost
+    two more and left every read-only session idle-in-transaction. Existing
+    ``options`` in the DSN (the test harness pins search_path there) are
+    preserved, not replaced.
+    """
+    params = _conninfo.conninfo_to_dict(resolve_dsn(dsn))
+    existing_options = str(params.get("options") or "")
+    lock_option = f"-c lock_timeout={int(timeout * 1000)}"
+    params["options"] = f"{existing_options} {lock_option}".strip()
+    # libpq reads connect_timeout=0 as "wait forever", so a sub-second
+    # timeout must not truncate to zero -- round up to one second instead.
+    params["connect_timeout"] = max(1, int(round(timeout)))
+    return _conninfo.make_conninfo(**params)
+
+
 def connect(
     dsn: str | None = None,
     *,
     timeout: float = DEFAULT_CONNECT_TIMEOUT_SECONDS,
 ) -> psycopg.Connection:
-    # libpq reads connect_timeout=0 as "wait forever", so a sub-second
-    # timeout must not truncate to zero -- round up to one second instead.
-    conn = psycopg.connect(
-        resolve_dsn(dsn), connect_timeout=max(1, int(round(timeout)))
-    )
-    conn.execute(f"SET lock_timeout = {int(timeout * 1000)}")
-    conn.commit()
-    return conn
+    return psycopg.connect(_startup_conninfo(dsn, timeout))
+
+
+# ---------------------------------------------------------------------------
+# Optional connection pooling
+# ---------------------------------------------------------------------------
+
+POOL_MAX_SIZE = 8
+
+_pools: dict[str, object] = {}
+_pools_lock = threading.Lock()
+
+
+def pooling_available() -> bool:
+    """True when psycopg_pool is importable."""
+    return _ConnectionPool is not None
+
+
+class PooledConnection:
+    """A pool checkout that behaves like the psycopg connection it wraps.
+
+    Every caller in this codebase owns its connection and calls ``close()``
+    when done; here ``close()`` returns the connection to the pool instead of
+    tearing it down, so the calling convention stays identical whether or not
+    pooling is active.
+    """
+
+    __slots__ = ("_pool", "_conn")
+
+    def __init__(self, pool: object, conn: psycopg.Connection) -> None:
+        self._pool = pool
+        self._conn = conn
+
+    @property
+    def closed(self) -> bool:
+        return self._conn is None or self._conn.closed
+
+    def close(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is None:
+            return
+        # psycopg starts an implicit transaction on the first execute, so a
+        # read-only user of this connection returns it INTRANS. The pool
+        # would roll that back itself, but with a warning per checkin.
+        try:
+            if not conn.closed and conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+                conn.rollback()
+        except Exception:  # noqa: BLE001 - a broken conn is the pool's problem
+            pass
+        self._pool.putconn(conn)
+
+    def __getattr__(self, name: str):
+        if self._conn is None:
+            raise psycopg.OperationalError(
+                "connection has been returned to the pool"
+            )
+        return getattr(self._conn, name)
+
+
+def connect_pooled(
+    dsn: str | None = None,
+    *,
+    timeout: float = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+) -> psycopg.Connection | PooledConnection:
+    """Check a connection out of a process-wide pool.
+
+    Falls back to a plain :func:`connect` when psycopg_pool is not installed.
+    Pools are keyed by the fully resolved conninfo, created lazily, and
+    checked on checkout so a server-side disconnect (common on serverless
+    Postgres) is repaired instead of surfacing as an error mid-query.
+    """
+    if _ConnectionPool is None:
+        return connect(dsn, timeout=timeout)
+    info = _startup_conninfo(dsn, timeout)
+    with _pools_lock:
+        pool = _pools.get(info)
+        if pool is None:
+            pool = _ConnectionPool(
+                info,
+                min_size=1,
+                max_size=POOL_MAX_SIZE,
+                open=True,
+                check=_ConnectionPool.check_connection,
+            )
+            _pools[info] = pool
+    return PooledConnection(pool, pool.getconn(timeout=timeout))
+
+
+def close_pools() -> None:
+    """Close every pool. Test hook, and a clean-shutdown aid."""
+    with _pools_lock:
+        pools = list(_pools.values())
+        _pools.clear()
+    for pool in pools:
+        pool.close()
 
 
 def has_required_tables(conn: psycopg.Connection) -> bool:
@@ -213,58 +381,35 @@ def load_normalized_rows(
     weather_data_rows: list[dict[str, object]],
     hourly_weather_rows: list[dict[str, object]] | None = None,
 ) -> None:
-    weather_rows = [
-        {**row, "peakGUST10": row.get("peakGUST10")}
-        for row in weather_data_rows
-    ]
-    executemany(
+    # Plain inserts into freshly created tables, so COPY applies: one
+    # statement per table instead of a round trip per row.
+    copy_rows(
         conn,
-        """
-        INSERT INTO Storm(stormCode, eventDateTime, eventLength)
-        VALUES(%(stormCode)s, %(eventDateTime)s, %(eventLength)s)
-        """,
+        "Storm",
+        ("stormCode", "eventDateTime", "eventLength"),
         storm_rows,
     )
-    executemany(
+    copy_rows(conn, "County", ("county", "state", "ohLine"), county_rows)
+    copy_rows(
         conn,
-        """
-        INSERT INTO County(county, state, ohLine)
-        VALUES(%(county)s, %(state)s, %(ohLine)s)
-        """,
-        county_rows,
-    )
-    executemany(
-        conn,
-        """
-        INSERT INTO WeatherData(
-            stormCode,
-            county,
-            sumAFWA_TOTPRECIP,
-            peakWSPD10,
-            peakGUST10,
-            wgt5,
-            wgt9,
-            wgt13,
-            wgt18,
-            outage
-        ) VALUES(
-            %(stormCode)s,
-            %(county)s,
-            %(sumAFWA_TOTPRECIP)s,
-            %(peakWSPD10)s,
-            %(peakGUST10)s,
-            %(wgt5)s,
-            %(wgt9)s,
-            %(wgt13)s,
-            %(wgt18)s,
-            %(outage)s
-        )
-        """,
-        weather_rows,
+        "WeatherData",
+        (
+            "stormCode",
+            "county",
+            "sumAFWA_TOTPRECIP",
+            "peakWSPD10",
+            "peakGUST10",
+            "wgt5",
+            "wgt9",
+            "wgt13",
+            "wgt18",
+            "outage",
+        ),
+        weather_data_rows,
     )
     ensure_reference_data(conn)
     if hourly_weather_rows:
-        load_hourly_weather_rows(conn, hourly_weather_rows)
+        load_hourly_weather_rows(conn, hourly_weather_rows, reference_ensured=True)
     conn.commit()
 
 
@@ -315,13 +460,20 @@ def ensure_reference_data(conn: psycopg.Connection) -> None:
 def load_hourly_weather_rows(
     conn: psycopg.Connection,
     hourly_weather_rows: list[dict[str, object]],
+    *,
+    reference_ensured: bool = False,
 ) -> None:
-    """Load normalized hourly weather rows into the optional hourly table."""
+    """Load normalized hourly weather rows into the optional hourly table.
+
+    ``reference_ensured`` lets load_normalized_rows say it already seeded the
+    reference tables, so a combined load does that work once rather than twice.
+    """
     if not _table_exists(conn, "HourlyWeatherObservation"):
         raise psycopg.OperationalError(
             "HourlyWeatherObservation is not present in this database schema"
         )
-    ensure_reference_data(conn)
+    if not reference_ensured:
+        ensure_reference_data(conn)
     _ensure_hourly_metric_definitions(conn, hourly_weather_rows)
     # SQLite's INSERT OR REPLACE deleted and reinserted the row; every column
     # is listed here, so updating all non-key columns is equivalent.

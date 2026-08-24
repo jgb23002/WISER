@@ -76,7 +76,9 @@ class TestCountyVisualization(unittest.TestCase):
         self.conn.commit()
 
     def tearDown(self):
-        self.conn.close()
+        # rollback, not close: the harness owns this shared connection, and
+        # closing it makes the next reset_schema pay a fresh TCP+auth.
+        self.conn.rollback()
 
     def test_county_metric_rows_aggregate_and_normalize(self):
         rows = county_metric_rows(self.conn, "outage_per_million_ohline")
@@ -122,6 +124,34 @@ class TestCountyVisualization(unittest.TestCase):
     def test_rejects_unknown_metric(self):
         with self.assertRaises(ValueError):
             county_metric_rows(self.conn, "bogus_metric")
+
+    def test_outage_metric_rows_carry_an_outage_value(self):
+        """Regression: the "outage" heat map drew every county as no-data.
+
+        "outage" is a selectable metric, but the row builder emitted no
+        "outage" key, so the renderer's row[metric_key] lookup missed for
+        every county and the whole map fell through to the no-data fill.
+        """
+        rows = county_metric_rows(self.conn, "outage", storm_code=2020080406)
+
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertIn("outage", row)
+            self.assertIsInstance(row["outage"], int)
+        # Scoped to one storm there is a single row per county, so the
+        # aggregate is that storm's own outage figure.
+        by_county = {row["county"]: row["outage"] for row in rows}
+        self.assertEqual(by_county["Hartford"], 500)
+
+    def test_outage_heatmap_renders_values_not_no_data(self):
+        geojson = load_county_geojson()
+        rows = county_metric_rows(self.conn, "outage", storm_code=2020080406)
+
+        svg = render_county_heatmap_svg(geojson, rows, "outage")
+
+        self.assertIn("Hartford", svg)
+        # The seeded counties must show a measured value, not the no-data fill.
+        self.assertIn("500", svg)
 
 
 class TestSharedColourScale(unittest.TestCase):

@@ -116,6 +116,7 @@ def _make_ctx(query: str, conn: psycopg.Connection, **overrides) -> SimpleNamesp
         use_openai_summary=False,
         sql_model=None,
         dry_run_sql=False,
+        use_sql_cache=False,
         history=None,
     )
     defaults.update(overrides)

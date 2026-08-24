@@ -12,6 +12,7 @@ No interface-specific concerns (argparse, Streamlit widgets) belong here.
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
@@ -23,13 +24,23 @@ import psycopg
 from wiser.agents.data_retrieval_processing_agent import DataRetrievalProcessingAgent
 from wiser.agents.rag_knowledge_agent import RAGKnowledgeAgent
 from wiser.agents.similarity_query_agent import SimilarityQueryAgent
-from wiser.agents.sql_ai_agent import SqlAiAgent, SqlValidationError
+from wiser.agents.sql_ai_agent import (
+    SqlAgentUnavailableError,
+    SqlAiAgent,
+    SqlValidationError,
+)
 from wiser.agents.storm_reasoning_agent import StormReasoningAgent
 from wiser.agents.storm_weather_analytics_agent import StormWeatherAnalyticsAgent
 from wiser.agents.task_routing_agent import Route
 from wiser.cli_helpers import FEATURE_ALIASES, validate_wind_positive
 from wiser.conversation import ConversationTurn
-from wiser.database import connect, get_table_counts, has_required_tables
+from wiser.database import (
+    connect,
+    connect_pooled,
+    get_table_counts,
+    has_required_tables,
+    resolve_dsn,
+)
 from wiser.external_sources import (
     DEFAULT_STORM_CONTEXT_URLS,
     ExternalSourceIndexSummary,
@@ -48,8 +59,10 @@ from wiser.storm_analysis import (
     MONTH_NAMES,
     PeriodSpec,
     StormAnalysisError,
+    StormGroupAnalysis,
     ThresholdSpec,
     all_period,
+    clear_lookup_caches,
     compare_forecast,
     compare_storms,
     current_threshold_analysis,
@@ -222,6 +235,7 @@ class HandlerContext:
     use_openai_summary: bool
     sql_model: str | None = None
     dry_run_sql: bool = False
+    use_sql_cache: bool = False
     history: tuple[ConversationTurn, ...] | None = None
 
 
@@ -324,16 +338,90 @@ HandlerResult = Union[
 # Database bootstrap
 # ---------------------------------------------------------------------------
 
+# The required-tables probe costs two information_schema queries. Its answer
+# only changes when the schema itself does — and the one code path that does
+# that (handle_data_retrieval) invalidates below — so each DSN is probed once
+# per process, not once per request.
+_schema_probe_lock = threading.Lock()
+_verified_schema_dsns: set[str] = set()
+
+
+def reset_schema_probe() -> None:
+    """Forget which DSNs passed the required-tables probe (test hook, and
+    for anything that rebuilds the schema outside handle_data_retrieval)."""
+    with _schema_probe_lock:
+        _verified_schema_dsns.clear()
+
+
+def _mark_schema_verified(dsn: str | None) -> None:
+    with _schema_probe_lock:
+        _verified_schema_dsns.add(resolve_dsn(dsn))
+
 
 def ensure_database(
     data_agent: DataRetrievalProcessingAgent,
     dsn: str | None = None,
+    *,
+    pooled: bool = False,
 ) -> psycopg.Connection:
-    conn = connect(dsn)
+    conn = connect_pooled(dsn) if pooled else connect(dsn)
+    with _schema_probe_lock:
+        already_verified = resolve_dsn(dsn) in _verified_schema_dsns
+    if already_verified:
+        return conn
     if has_required_tables(conn):
+        _mark_schema_verified(dsn)
         return conn
     conn.close()
-    return data_agent.build_database(dsn)
+    conn = data_agent.build_database(dsn)
+    _mark_schema_verified(dsn)
+    return conn
+
+
+# Agents constructed by build_context are stateless or hold only derived,
+# input-addressed state (the data agent memoizes its CSV normalization), so
+# one instance per configuration serves every request. Keys carry the source
+# file's mtime/size so an edited CSV gets a fresh agent, never a stale memo.
+_agent_cache_lock = threading.Lock()
+_data_agent_cache: dict[tuple[str, int, int], DataRetrievalProcessingAgent] = {}
+_rag_agent_cache: dict[tuple[str | Path, ...], RAGKnowledgeAgent] = {}
+_shared_analytics_agent = StormWeatherAnalyticsAgent()
+_shared_similarity_agent = SimilarityQueryAgent()
+
+
+def reset_agent_caches() -> None:
+    """Drop memoized agents (test hook)."""
+    with _agent_cache_lock:
+        _data_agent_cache.clear()
+        _rag_agent_cache.clear()
+
+
+def _data_agent_for(input_csv: str) -> DataRetrievalProcessingAgent:
+    try:
+        stat = Path(input_csv).stat()
+        key = (str(input_csv), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        key = (str(input_csv), -1, -1)
+    with _agent_cache_lock:
+        agent = _data_agent_cache.get(key)
+        if agent is None:
+            if len(_data_agent_cache) >= 8:
+                _data_agent_cache.clear()
+            agent = DataRetrievalProcessingAgent(input_csv)
+            _data_agent_cache[key] = agent
+    return agent
+
+
+def _rag_agent_for(rag_sources: Sequence[str] | None) -> RAGKnowledgeAgent:
+    sources = tuple(rag_sources) if rag_sources else DEFAULT_RAG_SOURCES
+    with _agent_cache_lock:
+        agent = _rag_agent_cache.get(sources)
+        if agent is None:
+            if len(_rag_agent_cache) >= 8:
+                _rag_agent_cache.clear()
+            agent = RAGKnowledgeAgent(sources)
+            _rag_agent_cache[sources] = agent
+    return agent
 
 
 def build_context(
@@ -354,18 +442,20 @@ def build_context(
     use_openai_summary: bool = True,
     sql_model: str | None = None,
     dry_run_sql: bool = False,
+    use_sql_cache: bool = False,
     history: Sequence[ConversationTurn] | None = None,
+    pooled: bool = False,
 ) -> HandlerContext:
     """Construct agents, open (or bootstrap) the database, and bundle a context.
 
     The caller owns ctx.conn and must close it — note handlers may replace it
-    (a database rebuild), so close whichever connection is current.
+    (a database rebuild), so close whichever connection is current. With
+    pooled=True, close() returns the connection to a process-wide pool when
+    psycopg_pool is installed (long-lived surfaces: Streamlit, the CLI REPL).
     """
-    data_agent = DataRetrievalProcessingAgent(input_csv)
-    rag_agent = RAGKnowledgeAgent(
-        tuple(rag_sources) if rag_sources else DEFAULT_RAG_SOURCES
-    )
-    conn = ensure_database(data_agent, dsn)
+    data_agent = _data_agent_for(input_csv)
+    rag_agent = _rag_agent_for(rag_sources)
+    conn = ensure_database(data_agent, dsn, pooled=pooled)
     return HandlerContext(
         query=query,
         conn=conn,
@@ -373,9 +463,9 @@ def build_context(
         limit=limit,
         county=county,
         data_agent=data_agent,
-        analytics_agent=StormWeatherAnalyticsAgent(),
+        analytics_agent=_shared_analytics_agent,
         rag_agent=rag_agent,
-        similarity_agent=SimilarityQueryAgent(),
+        similarity_agent=_shared_similarity_agent,
         rebuild_rag=rebuild_rag,
         web_sources=(
             tuple(web_sources) if web_sources else DEFAULT_STORM_CONTEXT_URLS
@@ -388,6 +478,7 @@ def build_context(
         use_openai_summary=use_openai_summary,
         sql_model=sql_model,
         dry_run_sql=dry_run_sql,
+        use_sql_cache=use_sql_cache,
         history=tuple(history) if history else None,
     )
 
@@ -401,7 +492,10 @@ def handle_data_retrieval(ctx: HandlerContext) -> DataRetrievalResult:
     # Rebuild from CSV even when the database already exists — schema.sql
     # drops and recreates the tables, so this is a true refresh.
     ctx.conn.close()
+    reset_schema_probe()
+    clear_lookup_caches()
     ctx.conn = ctx.data_agent.build_database(ctx.dsn)
+    _mark_schema_verified(ctx.dsn)
     return DataRetrievalResult(table_counts=get_table_counts(ctx.conn))
 
 
@@ -410,7 +504,9 @@ def handle_weather_analytics(ctx: HandlerContext) -> AnalyticsResult:
     if sponsor_result is not None:
         return sponsor_result
 
-    agent = SqlAiAgent(model=ctx.sql_model, dry_run=ctx.dry_run_sql)
+    agent = SqlAiAgent(
+        model=ctx.sql_model, dry_run=ctx.dry_run_sql, use_cache=ctx.use_sql_cache
+    )
     # getattr: interface tests fake the context with SimpleNamespace objects
     # that may predate the history field.
     history = getattr(ctx, "history", None)
@@ -422,6 +518,7 @@ def handle_weather_analytics(ctx: HandlerContext) -> AnalyticsResult:
     # Reasoning is attached after the try/except so a reasoning-layer failure is
     # never misreported as an SQL agent error, nor discards a valid SQL result.
     analytics = None
+    llm_unreachable = False
     try:
         result = agent.run(ctx.query, ctx.conn, limit=ctx.limit, history=history)
         analytics = AnalyticsResult(
@@ -429,6 +526,11 @@ def handle_weather_analytics(ctx: HandlerContext) -> AnalyticsResult:
             rows=result["rows"],
             answer=result["answer"],
         )
+    except SqlAgentUnavailableError as exc:
+        # Transport-level failure: the reasoning call would hit the same dead
+        # network and stall another 30 s, so it is skipped below.
+        warning = f"SQL AI Agent validation failed ({exc}) — falling back to fixed queries"
+        llm_unreachable = True
     except SqlValidationError as exc:
         warning = f"SQL AI Agent validation failed ({exc}) — falling back to fixed queries"
     except Exception as exc:  # noqa: BLE001
@@ -441,25 +543,36 @@ def handle_weather_analytics(ctx: HandlerContext) -> AnalyticsResult:
 
     fallback = _weather_analytics_fallback(ctx)
     fallback.notices.insert(0, Notice(f"[Warning: {warning}]", level="warning"))
-    return _attach_reasoning(ctx, fallback)
+    return _attach_reasoning(ctx, fallback, skip_openai=llm_unreachable)
 
 
 def _attach_reasoning(
     ctx: HandlerContext,
     result: AnalyticsResult,
+    *,
+    skip_openai: bool = False,
 ) -> AnalyticsResult:
+    """Attach the reasoning layer's answer to an analytics result.
+
+    ``skip_openai`` forces the local analytical mode — used when the SQL step
+    already proved the OpenAI endpoint unreachable, so a second 30 s network
+    stall is pointless.
+    """
     if result.dry_run_prompt is not None or not result.rows:
         return result
 
     reasoning_agent = StormReasoningAgent(
-        model=getattr(ctx, "openai_model", None) or getattr(ctx, "sql_model", None)
+        model=getattr(ctx, "openai_model", None) or getattr(ctx, "sql_model", None),
+        use_cache=bool(getattr(ctx, "use_sql_cache", False)),
     )
     try:
         reasoning = reasoning_agent.run(
             ctx.query,
             sql=result.sql,
             rows=result.rows,
-            use_openai=getattr(ctx, "use_openai_summary", True),
+            use_openai=(
+                getattr(ctx, "use_openai_summary", True) and not skip_openai
+            ),
         )
     except Exception as exc:  # noqa: BLE001 - reasoning is additive; keep the rows
         result.notices.append(
@@ -473,6 +586,13 @@ def _attach_reasoning(
     result.reasoning = reasoning.answer
     result.reasoning_prompt = reasoning.prompt
     result.reasoning_mode = reasoning.mode
+    if skip_openai and getattr(ctx, "use_openai_summary", True):
+        result.notices.append(
+            Notice(
+                "OpenAI reasoning skipped: the API was unreachable during SQL "
+                "generation; using the local analytical fallback."
+            )
+        )
     if reasoning.openai_error:
         result.notices.append(
             Notice(
@@ -654,12 +774,12 @@ def _sponsor_group_analytics(ctx: HandlerContext) -> AnalyticsResult | None:
 
     try:
         if len(regions) >= 2:
-            analysis = storm_group_analysis(
-                ctx.conn,
-                (all_period(),),
+            # Assembled per region below; the container starts empty rather
+            # than paying a full statewide analysis only to overwrite it.
+            analysis = StormGroupAnalysis.empty(
                 title="Regional storm comparison",
+                scope_label=regions[0],
                 group_by="region",
-                region=regions[0],
             )
             rows = []
             distribution = []
@@ -1960,7 +2080,15 @@ def _attach_forecast_report(
 
     try:
         comparison = compare_forecast(
-            ctx.conn, result.params, county=result.county, limit=ctx.limit
+            ctx.conn,
+            result.params,
+            county=result.county,
+            limit=ctx.limit,
+            # The handler already ran find_similar for this county with these
+            # params; hand those rows over instead of recomputing them.
+            precomputed_matches=(
+                {result.county: result.rows} if result.county else None
+            ),
         )
         report = render_forecast_comparison(comparison)
     except StormAnalysisError as exc:

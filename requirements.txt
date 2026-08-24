@@ -2,6 +2,15 @@
 # on the connection object, which is the shape this codebase already uses.
 psycopg[binary]
 #
+# Optional connection pooling (recommended for long-lived surfaces —
+# Streamlit, the CLI REPL — and for remote/serverless Postgres, where each
+# new connection costs a TLS handshake). Code falls back to per-request
+# connections without it:
+# psycopg[pool]
+#
+# Dev-only: parallel test runs (pytest -n auto):
+# pytest-xdist
+#
 # Optional external-context accelerators:
 # faiss-cpu
 # numpy

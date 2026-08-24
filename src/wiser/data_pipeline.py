@@ -4,7 +4,8 @@ import csv
 import json
 import re
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 
 EXPECTED_COLUMNS = [
@@ -132,7 +133,8 @@ def normalize_rows(
         }
 
         direct_gust = _optional_float(row, PEAK_GUST_ALIASES)
-        hourly_peak_gust = _peak_hourly_metric(row, "peakGUST10")
+        # One scan of the row's hourly columns serves both gust lookups.
+        hourly_peaks = _peak_hourly_metrics(row) if direct_gust is None else {}
         weather_data_rows.append(
             {
                 "stormCode": storm_code,
@@ -142,9 +144,7 @@ def normalize_rows(
                 "peakGUST10": (
                     direct_gust
                     if direct_gust is not None
-                    else hourly_peak_gust
-                    if hourly_peak_gust is not None
-                    else _peak_hourly_metric(row, "gust")
+                    else hourly_peaks.get("peakGUST10", hourly_peaks.get("gust"))
                 ),
                 "wgt5": int(row["wgt5"]),
                 "wgt9": int(row["wgt9"]),
@@ -216,8 +216,10 @@ def normalize_hourly_rows(rows: list[dict[str, str]]) -> list[dict[str, object]]
         storm_code, event_datetime, _state = parse_event_code(row["eventCode"])
         county = row["County"]
         for column, raw_value in row.items():
+            if raw_value in (None, ""):
+                continue
             match = HOURLY_COLUMN_PATTERN.match(column)
-            if not match or raw_value in (None, ""):
+            if not match:
                 continue
             hour_offset = int(match.group("hour"))
             if not 0 <= hour_offset < HOURLY_WINDOW_HOURS:
@@ -245,22 +247,47 @@ def normalize_hourly_rows(rows: list[dict[str, str]]) -> list[dict[str, object]]
     return hourly_rows
 
 
+# The column set repeats for every row of the CSV, so the pattern match and
+# the alias normalization are memoized on the column name rather than redone
+# per row. maxsize covers a wide hourly file (48 hours x several metrics).
+@lru_cache(maxsize=4096)
+def _hourly_column_metric(column: str) -> str | None:
+    """The canonical metric an hourly column names, or None if it is not one."""
+    match = HOURLY_COLUMN_PATTERN.match(column)
+    if not match:
+        return None
+    return _canonical_hourly_metric(match.group("metric"))
+
+
+@lru_cache(maxsize=4096)
 def _canonical_hourly_metric(raw: str) -> str:
     compact = raw.lower().replace("-", "_")
     compact = re.sub(r"_+", "_", compact).strip("_")
     return HOURLY_METRIC_ALIASES.get(compact, compact)
 
 
-def _peak_hourly_metric(row: dict[str, str], metric_alias: str) -> float | None:
-    values: list[float] = []
+def _peak_hourly_metrics(row: dict[str, str]) -> dict[str, float]:
+    """Peak value per hourly metric in one pass over the row's columns.
+
+    Callers previously asked for one metric at a time, walking every column
+    of every row once per metric.
+    """
+    peaks: dict[str, float] = {}
     for column, raw_value in row.items():
-        match = HOURLY_COLUMN_PATTERN.match(column)
-        if not match or raw_value in (None, ""):
+        if raw_value in (None, ""):
             continue
-        metric_key = _canonical_hourly_metric(match.group("metric"))
-        if metric_key == metric_alias:
-            values.append(float(raw_value))
-    return max(values) if values else None
+        metric_key = _hourly_column_metric(column)
+        if metric_key is None:
+            continue
+        value = float(raw_value)
+        current = peaks.get(metric_key)
+        if current is None or value > current:
+            peaks[metric_key] = value
+    return peaks
+
+
+def _peak_hourly_metric(row: dict[str, str], metric_alias: str) -> float | None:
+    return _peak_hourly_metrics(row).get(metric_alias)
 
 
 def _first_present(row: dict[str, str], aliases: tuple[str, ...]) -> str | None:
@@ -298,8 +325,6 @@ def _normalize_observed_at(raw: str) -> str:
 
 
 def _hourly_timestamp(event_datetime: datetime, hour_offset: int) -> str:
-    from datetime import timedelta
-
     return (event_datetime + timedelta(hours=hour_offset)).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
