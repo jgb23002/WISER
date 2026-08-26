@@ -13,12 +13,12 @@
 | 4 | Harden + verify | 5 of 6 done; only the budget cap remains |
 | 5 | Hand off | Sponsor guide written; cold-start warning and spend-watch are the rest |
 
-The two Phase 4 items that cannot be done in advance are confirming `sqlglot`
-actually loaded in the cloud environment (its failure mode is silent — SQL
-validation drops to regex and nothing says so) and walking the sponsor routes
-through the deployed app. The one item that needs no URL and is still
-outstanding is the **OpenAI budget cap**, which is the only control in this
-plan with no technical backstop behind it.
+The two items that needed the live URL are both closed: a real query showed
+`sqlglot`-backed generated SQL rather than a silent regex fallback, and every
+sponsor-facing route has returned a correct result against the deployed app.
+What's left is the **OpenAI budget cap** — the one control in this plan with
+no technical backstop behind it, and the only remaining blocker before
+sending sponsors the link.
 
 Measured on the live database:
 
