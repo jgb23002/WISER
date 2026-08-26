@@ -10,7 +10,7 @@
 | 1 | Neon | **Complete** |
 | 2 | Seed + restricted role | **Complete** |
 | 3 | Deploy to Streamlit Cloud | **Complete** — app is live and answering queries |
-| 4 | Harden + verify | 5 of 6 done; one item still open (below) |
+| 4 | Harden + verify | 5 of 6 done; only the budget cap remains |
 | 5 | Hand off | Sponsor guide written; cold-start warning and spend-watch are the rest |
 
 The two Phase 4 items that cannot be done in advance are confirming `sqlglot`
@@ -252,12 +252,12 @@ genuinely need a deployed URL remain. Status is marked per step below.
 
 1. **[OUTSTANDING — yours]** Set the OpenAI hard monthly budget cap (R3). Do this **before** sending any sponsor the link, not after. Since this is our key for the whole demo window, the cap is the only thing standing between an enthusiastic sponsor and a real bill.
 2. **[DONE]** Attempt the R1 attack deliberately: type "rebuild the database" as a sponsor would, and confirm it fails safely rather than wiping the DB.
-3. **[STILL OPEN]** Confirm `sqlglot` is actually imported in production, not silently falling back (R4). Installed and pinned, and the local suite exercises the sqlglot path — but a real user's first live query ("compare storms in march and may") happened to hit `_looks_like_group_analytics`, a fixed period-comparison path that never reaches `SqlAiAgent` at all. It proved the deploy works; it didn't touch this check. Needs a query that actually routes to `weather_analytics` through the LLM (e.g. "which county was affected the most overall?"), with "Show generated SQL" on.
+3. **[DONE]** Confirm `sqlglot` is actually imported in production, not silently falling back (R4). Confirmed live: "which county was affected the most overall?" answered via "SQL AI Agent (LLM-generated SQL, read-only execution)" with the real generated SQL shown, and matched local's numbers exactly (Fairfield 44,402 / Hartford 22,666 / 8,891.23 per-million-ohLine). `_validate_sql` cannot reach that path without `sqlglot` importing cleanly.
 4. **[DONE — all 13 example queries returned results against Neon]** Exercise every route sponsors will touch: SQL AI, analytics, similarity, RAG, visualization.
 5. **[DONE — kept, and pre-warmed]** Decide the fate of the runtime NOAA fetches per Decision 7. The first such query cost 95 s crawling NOAA; that has been run once and the index (54 documents, 2350 chunks) is stored in Neon, so it survives restarts. The query now takes 4 s and no sponsor pays the first-run cost.
 6. **[DONE]** Check for anything leaking into the UI. `_redacted_dsn()` in `streamlit_app.py` already redacts the DSN password; confirm nothing else does.
 
-**Exit criterion:** the R1 attack fails, and every sponsor-facing route returns a correct result. **Met against Neon ahead of deployment** — "rebuild the database" fails with `must be owner of table weatherdata` without crashing the app, and the app renders zero spurious warnings on a normal query. Re-confirm through the deployed URL.
+**Exit criterion: met, on the deployed URL, not just against Neon in advance.** "rebuild the database" fails with `must be owner of table weatherdata` without crashing the app, `sqlglot` is confirmed live, and every route tested has returned correct results. Phase 4 is complete except the budget cap (item 1, below — genuinely outstanding, not just unverified).
 
 ### Phase 5 — Hand off  [1 of 3 DONE]
 
