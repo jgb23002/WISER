@@ -2,18 +2,16 @@
 
 **Goal:** a stable public URL we send to sponsors, who open it and run their own queries.
 **Budget:** $0 infrastructure. OpenAI usage is the only variable cost, and only during the demo.
-**Status:** **Phases 0–2 complete, Phase 4 largely pre-verified.** The Neon project is live on PostgreSQL 17.11 (`neondb`, AWS us-east-1), seeded, and serving the app through the restricted `wiser_app` role.
-
-**Phase 3 is the only thing blocking a URL**, and it needs a person with GitHub access to the repo — see [DEPLOY_HANDOFF.md](DEPLOY_HANDOFF.md).
+**Status:** **Live.** `https://wisergit-l2kpgy8mouxa5oqpptnvwd.streamlit.app/` is up on Streamlit Community Cloud, tracking `deploy`, backed by the Neon project on PostgreSQL 17.11 through the restricted `wiser_app` role. Confirmed by a real signed-in user running a real query and getting a correct, correctly-formatted answer against live data.
 
 | Phase | | |
 |---|---|---|
 | 0 | Repo prep | **Complete** |
 | 1 | Neon | **Complete** |
 | 2 | Seed + restricted role | **Complete** |
-| 3 | Deploy to Streamlit Cloud | **Not started** — owner only |
-| 4 | Harden + verify | 4 of 6 done ahead of deploy; two need the live URL |
-| 5 | Hand off | Sponsor guide written; the rest needs a URL |
+| 3 | Deploy to Streamlit Cloud | **Complete** — app is live and answering queries |
+| 4 | Harden + verify | 5 of 6 done; one item still open (below) |
+| 5 | Hand off | Sponsor guide written; cold-start warning and spend-watch are the rest |
 
 The two Phase 4 items that cannot be done in advance are confirming `sqlglot`
 actually loaded in the cloud environment (its failure mode is silent — SQL
@@ -238,16 +236,13 @@ These are the reason the script exists rather than a handful of GRANT lines in t
 
 Once against the seeded local database, and once against a **fresh, empty database named `neondb`** — because Neon starts empty and the two cases differ in a way that matters. On a fresh database `RagDocument`/`RagChunk` do not exist yet, so the grants skip them and the app creates and *owns* them on first use; on a re-used database the owner already holds them and the grants apply. The script handles both, and the full sequence was verified end to end: `bootstrap_wiser.py` seeds → role script runs → the app self-bootstraps its RAG tables → writes succeed → `DROP`/`TRUNCATE` on core tables still refused.
 
-### Phase 3 — Deploy the app  [NEXT]
+### Phase 3 — Deploy the app  [COMPLETE]
 
-0. Create the `deploy` branch from `main` (Decision 6) and push it.
-1. Authorize Streamlit Cloud against the private GitHub repo (Decision 1). Confirm whether the second teammate gets admin automatically via repo write access, or must be added explicitly — this is the one unverified item from §1.
-2. Create the app tracking **`deploy`**, entrypoint `streamlit_app.py`.
-3. Populate secrets: `DATABASE_URL` (runtime role, `sslmode=require`), `OPENAI_API_KEY`, `WISER_OPENAI_MODEL`. The key here is **ours** — this is Milestone A. Milestone B replaces it with per-user input (§8), it does not add to it.
-4. Confirm the app is private, then add each sponsor's email to the viewer list (Decision 3). Keep that list somewhere we can audit later.
-5. Set the app subdomain — pick a name worth putting in front of sponsors, since a custom domain is not available on this tier.
+Live at `https://wisergit-l2kpgy8mouxa5oqpptnvwd.streamlit.app/`, tracking `deploy`, entrypoint `streamlit_app.py`.
 
-**Exit criterion:** the public URL loads and answers a query end to end.
+One real snag on the way, worth recording: Streamlit's private-app access list is keyed by **email**, separate from GitHub repo permissions. A teammate with GitHub write access to the repo still got "you do not have access to this app" until explicitly added under **Settings → Sharing** — GitHub collaborator status does not carry over to Streamlit Cloud viewer access. Signing in via GitHub OAuth also surfaced a different identity than the invited email; Google sign-in with the exact invited address is the reliable path.
+
+**Exit criterion:** met. A real signed-in user ran "compare storms in march and may" and got a correct, correctly-formatted answer against live Neon data, no crash, no errors.
 
 ### Phase 4 — Harden and verify  [4 of 6 DONE]
 
@@ -257,7 +252,7 @@ genuinely need a deployed URL remain. Status is marked per step below.
 
 1. **[OUTSTANDING — yours]** Set the OpenAI hard monthly budget cap (R3). Do this **before** sending any sponsor the link, not after. Since this is our key for the whole demo window, the cap is the only thing standing between an enthusiastic sponsor and a real bill.
 2. **[DONE]** Attempt the R1 attack deliberately: type "rebuild the database" as a sponsor would, and confirm it fails safely rather than wiping the DB.
-3. **[NEEDS THE LIVE URL]** Confirm `sqlglot` is actually imported in production, not silently falling back (R4). Installed and pinned, and the local suite exercises the sqlglot path — but the cloud environment is the thing being checked, and the failure is silent.
+3. **[STILL OPEN]** Confirm `sqlglot` is actually imported in production, not silently falling back (R4). Installed and pinned, and the local suite exercises the sqlglot path — but a real user's first live query ("compare storms in march and may") happened to hit `_looks_like_group_analytics`, a fixed period-comparison path that never reaches `SqlAiAgent` at all. It proved the deploy works; it didn't touch this check. Needs a query that actually routes to `weather_analytics` through the LLM (e.g. "which county was affected the most overall?"), with "Show generated SQL" on.
 4. **[DONE — all 13 example queries returned results against Neon]** Exercise every route sponsors will touch: SQL AI, analytics, similarity, RAG, visualization.
 5. **[DONE — kept, and pre-warmed]** Decide the fate of the runtime NOAA fetches per Decision 7. The first such query cost 95 s crawling NOAA; that has been run once and the index (54 documents, 2350 chunks) is stored in Neon, so it survives restarts. The query now takes 4 s and no sponsor pays the first-run cost.
 6. **[DONE]** Check for anything leaking into the UI. `_redacted_dsn()` in `streamlit_app.py` already redacts the DSN password; confirm nothing else does.
