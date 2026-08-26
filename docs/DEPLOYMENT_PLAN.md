@@ -11,7 +11,7 @@
 | 2 | Seed + restricted role | **Complete** |
 | 3 | Deploy to Streamlit Cloud | **Complete** — app is live and answering queries |
 | 4 | Harden + verify | 5 of 6 done; only the budget cap remains |
-| 5 | Hand off | Sponsor guide written; cold-start warning and spend-watch are the rest |
+| 5 | Hand off | Sponsor guide + cold-start warning written; agreeing who watches spend is the rest |
 
 The two items that needed the live URL are both closed: a real query showed
 `sqlglot`-backed generated SQL rather than a silent regex fallback, and every
@@ -85,7 +85,7 @@ Verified against live docs, August 2026:
 
 **Mitigation for the sleep problem:** warm the app once each morning of a sponsor window. Because sleep needs 12 quiet hours, this is a once-a-day action, not a per-call one — much less of a liability than it first appeared. This remains the main thing we trade away by not paying for Render.
 
-**Unverified:** whether Streamlit app-admin rights follow GitHub write permission automatically. The docs describe full-admin vs view-only roles but do not state the inheritance model. Confirm in Phase 3 — it determines whether both teammates get admin for free or one must be added explicitly.
+**Still unverified, carried past Phase 3 (now complete) without being checked:** whether Streamlit app-admin rights follow GitHub write permission automatically. The docs describe full-admin vs view-only roles but do not state the inheritance model, and nothing in the Phase 3 deploy confirmed it either way. If the second teammate needs admin on the live app and doesn't have it, add them explicitly under Settings — don't assume GitHub write access carried over.
 
 Sources: [Streamlit status and limitations](https://docs.streamlit.io/deploy/streamlit-community-cloud/status) · [Streamlit manage-your-app](https://docs.streamlit.io/deploy/streamlit-community-cloud/manage-your-app) · [Neon changelog 2026-03-13](https://neon.com/docs/changelog/2026-03-13) · [Neon plans](https://neon.com/docs/introduction/plans)
 
@@ -172,7 +172,7 @@ Once a user types their key into the app, that key is in our process memory. Fou
 
 | # | Decision | Resolution | Consequence |
 |---|---|---|---|
-| **1** | Repo visibility | **Keep `jgb23002/WISER` private** | Spends the free tier's private-app allowance. Verify the current allowance before Phase 3 — if it is one app, this is our only one. Code and history stay closed. |
+| **1** | Repo visibility | **Keep `jgb23002/WISER` private** | Spends the free tier's private-app allowance. That allowance was never independently re-checked before Phase 3 deployed — the deploy succeeded, which is consistent with one private app being enough, but isn't the same as having confirmed the current limit. Code and history stay closed. |
 | **3** | Auth model | **Streamlit private-app email invites** | Native to a private-repo deploy, so no gate code in `streamlit_app.py`. Per-person revocation, which matters because Decision 4 ships a live API key. Cost: sponsors sign in on first open, and we need their addresses up front. |
 | **4** | AI key ownership | **Demo: our key, hard-capped. Product: user-supplied (BYOK).** | For the demo, sponsors see AI SQL generation and impact summaries at our expense — R3 is live but bounded by the cap and the invite list. For the finished product the cost and abuse surface transfer to the user entirely, which retires R3 but introduces R6. BYOK work is scoped in §8 and is **not** part of this deployment. |
 | **5** | DB write posture | **Scoped role** (R2 option a) | Every feature keeps working, and R1 is closed — `DROP` is denied at the role level. Costs extra grant setup in Phase 2. |
@@ -244,7 +244,7 @@ One real snag on the way, worth recording: Streamlit's private-app access list i
 
 **Exit criterion:** met. A real signed-in user ran "compare storms in march and may" and got a correct, correctly-formatted answer against live Neon data, no crash, no errors.
 
-### Phase 4 — Harden and verify  [4 of 6 DONE]
+### Phase 4 — Harden and verify  [5 of 6 DONE]
 
 Most of this was pulled forward by driving the real app against the live Neon
 database with `streamlit.testing.v1.AppTest`, so only the two items that
@@ -259,10 +259,10 @@ genuinely need a deployed URL remain. Status is marked per step below.
 
 **Exit criterion: met, on the deployed URL, not just against Neon in advance.** "rebuild the database" fails with `must be owner of table weatherdata` without crashing the app, `sqlglot` is confirmed live, and every route tested has returned correct results. Phase 4 is complete except the budget cap (item 1, below — genuinely outstanding, not just unverified).
 
-### Phase 5 — Hand off  [1 of 3 DONE]
+### Phase 5 — Hand off  [2 of 3 DONE]
 
 1. **[DONE]** Write a short sponsor-facing note — [SPONSOR_GUIDE.md](SPONSOR_GUIDE.md). It lists only queries actually executed against Neon, including the ones that legitimately return nothing, and records that similarity search needs `key=value` pairs rather than prose.
-2. **[BLOCKED on a URL]** Warn sponsors about the cold start, or warm the app before sending the link. Sleep needs 12 quiet hours, so this is a once-a-morning action, not a per-call one.
+2. **[DONE — warning written; warming is a recurring action, not a doc task]** Warn sponsors about the cold start: [SPONSOR_GUIDE.md](SPONSOR_GUIDE.md) already covers it ("If the first load takes a while, that is expected..."). Warming the app before a sponsor session remains an ongoing operational habit, not a one-time checklist item — sleep needs 12 quiet hours, so it's a once-a-morning action, not a per-call one.
 3. **[OUTSTANDING]** Agree who watches the OpenAI spend and the Neon usage in the first week. A conversation, not a task — but note that whoever's API key ships is also who must set the cap in Phase 4.
 
 ---
@@ -280,7 +280,7 @@ genuinely need a deployed URL remain. Status is marked per step below.
 
 **Infrastructure: $0**, at the tiers described, for both milestones. Streamlit Community Cloud and Neon are free, and Neon's unlimited free org members mean adding teammates costs nothing.
 
-**OpenAI: the only variable cost, and only during Milestone A.** Bounded by the hard monthly cap set in Phase 4 and by the invite list from Decision 3. At Milestone B this line goes to zero for us — each user's queries bill their own key.
+**OpenAI: the only variable cost, and only during Milestone A.** The invite list from Decision 3 already bounds *who* can spend it. The hard monthly cap — the bound on *how much* — is Phase 4 item 1 and **has not been set yet**; see the phase table above for current status before treating this line as closed. At Milestone B this line goes to zero for us — each user's queries bill their own key.
 
 Infrastructure cost only appears if we outgrow the free tiers: sustained traffic past the 1 GB app cap, or a decision to eliminate the 12-hour sleep. The paid fallback is Render at roughly $14/month for app plus database, which also buys a custom domain.
 

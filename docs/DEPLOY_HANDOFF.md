@@ -1,11 +1,21 @@
 # Streamlit deploy — the only steps that need the repo owner
 
-Everything else is done. Neon is live, seeded, hardened, and already answering
-real queries; the app has been run against it end to end. What remains cannot
-be done by anyone without GitHub access to `jgb23002/WISER`, because Streamlit
-Community Cloud authorizes against the repo itself.
+> **Already done.** This deploy happened — the app is live at
+> `https://wisergit-l2kpgy8mouxa5oqpptnvwd.streamlit.app/`, tracking `deploy`.
+> Steps 1–6 below are kept as a record of what was done and why, not as a
+> pending checklist — **do not re-run "Create the app"; that would produce a
+> second, separate deployment.** See [DEPLOYMENT_PLAN.md](DEPLOYMENT_PLAN.md)
+> for current status, including the one thing still outstanding: the OpenAI
+> budget cap.
+>
+> Only genuinely reusable now: **§3's secrets format** (the root-level-only
+> rule) if you're ever adding a secret, and **§5** if a new person needs
+> access — Streamlit's viewer list is separate from GitHub permissions, and a
+> repo collaborator does not automatically get it. See DEPLOYMENT_PLAN.md
+> Phase 3 for the exact failure this produced the first time.
 
-Budget about five minutes, plus a few minutes of build time.
+Everything else is done. Neon is live, seeded, hardened, and already answering
+real queries; the app has been run against it end to end.
 
 ---
 
@@ -113,9 +123,13 @@ bills this key, and the cap is the only backstop if a link is forwarded.
 - **The evaluation panel works and is worth showing**: 27/27 SQL ground-truth
   cases and 73/73 routing cases pass against the deployed database.
 
-## After it is up
+## After it went up
 
-Tell whoever is running the deployment. Two checks need the live URL and
-cannot be done in advance: confirming `sqlglot` loaded in the cloud
-environment rather than silently falling back to regex SQL validation, and
-walking the sponsor-facing routes through the deployed app.
+Both checks that needed the live URL are done. A real signed-in user ran
+"which county was affected the most overall?" and got back "Answered by the
+SQL AI Agent (LLM-generated SQL, read-only execution)" with the real SQL
+shown and numbers matching local exactly — confirming `sqlglot` loaded in the
+cloud rather than silently falling back to regex validation. Every
+sponsor-facing route has since returned a correct result through the
+deployed app. Details and the one remaining item (the budget cap) are in
+[DEPLOYMENT_PLAN.md](DEPLOYMENT_PLAN.md).
