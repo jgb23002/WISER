@@ -12,6 +12,7 @@ venv/
 
 output/
 data/normalized/
+data/*.db
 
 .DS_Store
 .vscode/
